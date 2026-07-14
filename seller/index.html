@@ -435,16 +435,16 @@ function attachAuthHandlers(){
   const btn = document.getElementById('authBtn');
   if(btn) btn.addEventListener('click', async function(){
     const email = val('a-email'), password = val('a-password');
+    const shopName = val('a-shop'), phoneField = val('a-phone'), locationField = val('a-location');
     if(!email || !password){ state.authError='Email and password are required.'; render(); return; }
+    if(state.authMode==='signup' && !shopName){ state.authError='Shop name is required.'; render(); return; }
     state.authBusy = true; state.authError = null; render();
     try{
       if(state.authMode==='signup'){
-        const shopName = val('a-shop');
-        if(!shopName){ throw new Error('Shop name is required.'); }
         const shopSlug = slugify(shopName) + '-' + Math.random().toString(36).slice(2,6);
         const { data, error } = await sb.auth.signUp({
           email:email, password:password,
-          options:{ data:{ shop_name:shopName, shop_slug:shopSlug, phone:val('a-phone'), location:val('a-location') } }
+          options:{ data:{ shop_name:shopName, shop_slug:shopSlug, phone:phoneField, location:locationField } }
         });
         if(error) throw error;
         if(!data.session){
