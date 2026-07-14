@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PhoneHub Pro</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&display=swap');
+  *{box-sizing:border-box;}
+  body{margin:0;min-height:100vh;background:#10141C;color:#EDEFF3;font-family:'Inter',sans-serif;
+    display:flex;align-items:center;justify-content:center;padding:20px;}
+  .wrap{max-width:520px;text-align:center;}
+  h1{font-family:'Space Grotesk',sans-serif;font-size:32px;margin:0 0 10px;}
+  p{color:#8C96AA;margin:0 0 34px;font-size:15px;}
+  .cards{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;}
+  a.card{flex:1;min-width:200px;background:#171C27;border:1px solid #2A3140;border-radius:12px;
+    padding:24px 20px;text-decoration:none;color:#EDEFF3;transition:.15s;}
+  a.card:hover{border-color:#E8A93A;transform:translateY(-2px);}
+  a.card .label{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:17px;color:#E8A93A;margin-bottom:6px;}
+  a.card .desc{font-size:13px;color:#8C96AA;}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>PhoneHub Pro</h1>
+    <p>Business management for Computer Village phone dealers.</p>
+    <div class="cards">
+      <a class="card" href="./seller/">
+        <div class="label">Seller App →</div>
+        <div class="desc">Register your shop, manage inventory, sales, and the dealer network.</div>
+      </a>
+      <a class="card" href="./customer/">
+        <div class="label">Customer App →</div>
+        <div class="desc">Browse a shop's stock, request a phone, or check your warranty.</div>
+      </a>
+    </div>
+  </div>
+</body>
+</html>
