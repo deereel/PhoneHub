@@ -177,6 +177,12 @@ const ICONS = {
 };
 
 const CONFIG_KEY = 'phonehub-supabase-config';
+// If you've deployed this app for real, paste your Supabase project URL and anon key here.
+// Doing so skips the "Connect" screen entirely for every dealer who opens this app.
+// Safe to leave blank while testing — the app will ask for them once and remember
+// them in this browser via localStorage.
+const HARDCODED_SUPABASE_URL = '';
+const HARDCODED_SUPABASE_ANON_KEY = '';
 let sb = null;
 
 let state = {
@@ -199,11 +205,16 @@ function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').repl
 function val(id){ const el = document.getElementById(id); return el ? el.value : ''; }
 function slugify(s){ return (s||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,''); }
 
-async function loadConfig(){
-  try{ const r = await window.storage.get(CONFIG_KEY, true); return r && r.value ? JSON.parse(r.value) : null; }
+function loadConfig(){
+  if(HARDCODED_SUPABASE_URL && HARDCODED_SUPABASE_ANON_KEY){
+    return { url: HARDCODED_SUPABASE_URL, key: HARDCODED_SUPABASE_ANON_KEY };
+  }
+  try{ const raw = localStorage.getItem(CONFIG_KEY); return raw ? JSON.parse(raw) : null; }
   catch(e){ return null; }
 }
-async function saveConfig(url,key){ await window.storage.set(CONFIG_KEY, JSON.stringify({url:url,key:key}), true); }
+function saveConfig(url,key){
+  try{ localStorage.setItem(CONFIG_KEY, JSON.stringify({url:url,key:key})); } catch(e){ /* ignore */ }
+}
 
 async function init(){
   const cfg = await loadConfig();
