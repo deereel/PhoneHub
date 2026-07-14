@@ -62,3 +62,12 @@ Supabase's free tier includes 500MB database storage and 50,000 monthly active u
 - Invoice/receipt PDF generation
 - A dealer reputation/verification layer (fulfillment rate, response time) now that broadcasts have real responders
 - Paid plans / monetization once dealers are asking to pay
+
+
+Future plan
+
+The bucket refills roughly every hour. If you've only tested with 2 real signups but tried a few times each (typos, password-too-short errors, etc.), those failed attempts count too. Waiting ~30–60 minutes usually clears it.
+For the real fix once you're ready to onboard actual dealers: set up free custom SMTP so you're no longer using Supabase's shared/testing email service at all. This removes the 2/hour cap entirely (limits become whatever your SMTP provider allows).
+
+Resend (free tier: 3,000 emails/month, no credit card) or Brevo are both good, free, and take about 2 minutes.
+Configure it under Authentication → Settings → SMTP Settings in your Supabase dashboard.

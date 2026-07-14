@@ -86,7 +86,7 @@ grant select on public_shops to anon, authenticated;
 create table if not exists inventory (
   id uuid primary key default gen_random_uuid(),
   dealer_id uuid not null references dealers(id) on delete cascade,
-  imei text not null,
+  imei text,
   imei2 text,
   model text not null,
   storage text,
@@ -98,6 +98,7 @@ create table if not exists inventory (
   cost numeric,
   price numeric,
   status text not null default 'In Stock' check (status in ('In Stock','Reserved','Sold','In Repair')),
+  quantity int not null default 1,
   shelf text,
   notes text,
   created_at timestamptz not null default now(),
@@ -143,7 +144,7 @@ create table if not exists sales (
   id uuid primary key default gen_random_uuid(),
   dealer_id uuid not null references dealers(id) on delete cascade,
   date date not null default current_date,
-  imei text not null,
+  imei text,
   model text,
   cost numeric,
   sale_price numeric,
@@ -152,6 +153,7 @@ create table if not exists sales (
   payment_method text,
   staff text,
   warranty_days int default 0,
+  quantity int not null default 1,
   accessories text,
   notes text,
   created_at timestamptz not null default now()
@@ -184,9 +186,14 @@ grant execute on function lookup_my_purchases(text) to anon, authenticated;
 -- Records a sale and marks the phone Sold, atomically, for the CURRENT dealer only.
 -- Runs with the caller's own privileges (not security definer), so normal RLS
 -- still applies — a dealer can only ever sell their own in-stock phones.
+-- Matches by inventory id (not IMEI) since IMEI is optional and multiple
+-- IMEI-less phones would otherwise be indistinguishable.
+drop function if exists sell_phone(uuid,numeric,text,text,text,text,int,text,text);
+
 create or replace function sell_phone(
-  p_imei text, p_sale_price numeric, p_customer_name text, p_customer_phone text,
-  p_payment_method text, p_staff text, p_warranty_days int, p_accessories text, p_notes text
+  p_inventory_id uuid, p_sale_price numeric, p_customer_name text, p_customer_phone text,
+  p_payment_method text, p_staff text, p_warranty_days int, p_accessories text, p_notes text,
+  p_imei text default null, p_quantity int default 1
 )
 returns sales
 language plpgsql
@@ -194,27 +201,42 @@ as $$
 declare
   v_phone inventory%rowtype;
   v_sale sales%rowtype;
+  v_remaining int;
 begin
   select * into v_phone from inventory
-    where imei = p_imei and dealer_id = auth.uid() and status = 'In Stock'
+    where id = p_inventory_id and dealer_id = auth.uid() and status = 'In Stock'
     limit 1;
 
   if v_phone.id is null then
-    raise exception 'No in-stock phone found for IMEI %', p_imei;
+    raise exception 'No in-stock phone found for that selection';
+  end if;
+
+  if p_quantity is null or p_quantity < 1 then
+    p_quantity := 1;
+  end if;
+
+  if v_phone.quantity < p_quantity then
+    raise exception 'Only % in stock — cannot sell %', v_phone.quantity, p_quantity;
   end if;
 
   insert into sales (dealer_id, imei, model, cost, sale_price, customer_name, customer_phone,
-                      payment_method, staff, warranty_days, accessories, notes)
-  values (auth.uid(), p_imei, v_phone.model, v_phone.cost, p_sale_price, p_customer_name, p_customer_phone,
-          p_payment_method, p_staff, p_warranty_days, p_accessories, p_notes)
+                      payment_method, staff, warranty_days, accessories, notes, quantity)
+  values (auth.uid(), coalesce(p_imei, v_phone.imei), v_phone.model, v_phone.cost, p_sale_price, p_customer_name, p_customer_phone,
+          p_payment_method, p_staff, p_warranty_days, p_accessories, p_notes, p_quantity)
   returning * into v_sale;
 
-  update inventory set status = 'Sold', updated_at = now() where id = v_phone.id;
+  v_remaining := v_phone.quantity - p_quantity;
+
+  update inventory
+    set quantity = v_remaining,
+        status = case when v_remaining <= 0 then 'Sold' else 'In Stock' end,
+        updated_at = now()
+    where id = v_phone.id;
 
   return v_sale;
 end;
 $$;
-grant execute on function sell_phone(text,numeric,text,text,text,text,int,text,text) to authenticated;
+grant execute on function sell_phone(uuid,numeric,text,text,text,text,int,text,text,text,int) to authenticated;
 
 -- ------------------------------------------------------------
 -- 4. REQUESTS  (customer waiting-list asks, submitted from the Customer App)

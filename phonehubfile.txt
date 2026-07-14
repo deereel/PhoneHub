@@ -1,0 +1,2973 @@
+customer_index.html
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap');
+
+:root{
+  --bg:#FAF6F0; --panel:#FFFFFF; --panel-2:#FFFDFA; --border:#E8DFD2;
+  --text:#262038; --text-dim:#6B6580; --text-faint:#A79FB8;
+  --primary:#2B3155; --primary-2:#3B4270; --accent:#FF6B4A; --accent-dim:#FFE3DA;
+  --gold:#F0B429; --gold-dim:#FDF1D0; --success:#2F9E64; --success-dim:#E1F3E9; --danger:#D6483C; --danger-dim:#FBE6E3;
+  --radius:14px; --radius-sm:9px;
+  --font-display:'Fraunces',serif; --font-body:'Inter',sans-serif;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-body);}
+#app{min-height:600px;background:var(--bg);}
+::selection{background:var(--accent);color:#fff;}
+
+.topbar{position:sticky;top:0;z-index:40;background:var(--bg);border-bottom:1px solid var(--border);
+  padding:16px 22px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;}
+.brand{font-family:var(--font-display);font-weight:700;font-size:20px;color:var(--primary);display:flex;align-items:center;gap:8px;}
+.brand .mark{width:30px;height:30px;border-radius:8px;background:var(--primary);color:#fff;display:flex;align-items:center;
+  justify-content:center;font-size:13px;font-weight:700;font-family:var(--font-body);}
+.shop-pill{font-size:12px;color:var(--text-dim);background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:6px 12px;cursor:pointer;}
+.shop-pill:hover{border-color:var(--primary);}
+.nav-tabs{margin-left:auto;display:flex;gap:4px;background:var(--panel);padding:4px;border-radius:30px;border:1px solid var(--border);}
+.nav-tab{padding:8px 16px;border-radius:20px;font-size:13px;font-weight:600;color:var(--text-dim);cursor:pointer;}
+.nav-tab.active{background:var(--primary);color:#fff;}
+
+.wrap{max-width:960px;margin:0 auto;padding:28px 22px 70px;}
+.hero{margin-bottom:24px;}
+.hero h1{font-family:var(--font-display);font-size:32px;font-weight:700;margin:0 0 6px;color:var(--primary);letter-spacing:-.01em;}
+.hero p{color:var(--text-dim);margin:0;font-size:14.5px;}
+
+.filter-row{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0 22px;}
+.filter-row input, .filter-row select{
+  background:var(--panel);border:1px solid var(--border);border-radius:30px;padding:10px 16px;
+  font-family:var(--font-body);font-size:13px;color:var(--text);outline:none;}
+.filter-row input:focus, .filter-row select:focus{border-color:var(--primary);}
+.filter-row input{flex:1;min-width:180px;}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:18px;}
+
+.tag-card{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  padding:18px 16px 16px;border-left:2px dashed var(--border);cursor:pointer;transition:.15s;}
+.tag-card:hover{border-color:var(--accent);transform:translateY(-2px);box-shadow:0 8px 20px rgba(43,49,85,.08);}
+.tag-card::before{content:'';position:absolute;left:-7px;top:20px;width:14px;height:14px;border-radius:50%;
+  background:var(--bg);border:1px solid var(--border);}
+.tag-condition{display:inline-block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  padding:3px 9px;border-radius:20px;margin-bottom:10px;}
+.tag-condition.new{background:var(--success-dim);color:var(--success);}
+.tag-condition.used{background:var(--gold-dim);color:#9A7412;}
+.tag-model{font-family:var(--font-display);font-weight:600;font-size:17px;line-height:1.25;margin-bottom:4px;color:var(--primary);}
+.tag-spec{font-size:12.5px;color:var(--text-dim);margin-bottom:12px;}
+.tag-price{font-family:var(--font-display);font-weight:700;font-size:20px;color:var(--accent);}
+.tag-battery{font-size:11px;color:var(--text-faint);margin-top:6px;}
+
+.empty{text-align:center;padding:60px 20px;color:var(--text-faint);}
+.empty .big{font-family:var(--font-display);font-size:19px;color:var(--text-dim);margin-bottom:8px;}
+
+.btn{font-family:var(--font-body);font-weight:600;font-size:13.5px;border-radius:30px;border:none;
+  padding:11px 22px;cursor:pointer;transition:.15s;}
+.btn-primary{background:var(--accent);color:#fff;}
+.btn-primary:hover{background:#F0563A;}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text);}
+.btn-outline:hover{border-color:var(--primary);}
+.btn-block{width:100%;}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+
+.overlay{position:fixed;inset:0;background:rgba(38,32,56,.5);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px;}
+.sheet{background:var(--panel);border-radius:20px;width:100%;max-width:480px;max-height:88vh;overflow-y:auto;padding:26px;position:relative;}
+.sheet .close-x{position:absolute;top:16px;right:18px;background:none;border:none;font-size:22px;color:var(--text-faint);cursor:pointer;}
+.sheet h2{font-family:var(--font-display);font-size:24px;color:var(--primary);margin:6px 0 4px;}
+.detail-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:14px;}
+.detail-row:last-of-type{border-bottom:none;}
+.detail-row .k{color:var(--text-dim);}
+.detail-row .v{font-weight:600;}
+.price-big{font-family:var(--font-display);font-weight:700;font-size:28px;color:var(--accent);margin:14px 0;}
+
+.form-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:22px;max-width:520px;}
+.field{margin-bottom:14px;display:flex;flex-direction:column;gap:6px;}
+.field label{font-size:12.5px;font-weight:600;color:var(--text-dim);}
+.field input, .field select, .field textarea{
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:11px 13px;
+  font-family:var(--font-body);font-size:14px;color:var(--text);outline:none;}
+.field input:focus, .field select:focus, .field textarea:focus{border-color:var(--primary);}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+
+.lookup-result{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-top:16px;}
+.lookup-item{padding:12px 0;border-bottom:1px solid var(--border);}
+.lookup-item:last-child{border-bottom:none;}
+.lookup-item .m{font-family:var(--font-display);font-weight:600;font-size:16px;color:var(--primary);}
+.warranty-pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;margin-top:6px;}
+.warranty-pill.active{background:var(--success-dim);color:var(--success);}
+.warranty-pill.soon{background:#FDEBD0;color:#9A5A12;}
+.warranty-pill.expired{background:var(--danger-dim);color:var(--danger);}
+
+.loading-screen{display:flex;flex-direction:column;gap:14px;align-items:center;justify-content:center;height:600px;color:var(--text-faint);font-family:var(--font-display);font-size:16px;}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--primary);color:#fff;
+  padding:12px 22px;border-radius:30px;font-size:13.5px;font-weight:600;z-index:200;box-shadow:0 8px 24px rgba(43,49,85,.3);max-width:80%;text-align:center;}
+.toast.err{background:var(--danger);}
+
+.connect-wrap{max-width:480px;margin:50px auto;padding:0 20px;}
+.connect-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:28px;}
+.connect-card h2{font-family:var(--font-display);margin:0 0 6px;font-size:22px;color:var(--primary);}
+.connect-card p{color:var(--text-dim);font-size:13.5px;line-height:1.5;margin:0 0 18px;}
+.connect-card input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);
+  padding:11px 13px;color:var(--text);font-family:var(--font-body);font-size:13px;outline:none;margin-bottom:12px;}
+.connect-card input:focus{border-color:var(--primary);}
+.connect-status{font-size:12.5px;padding:10px 12px;border-radius:var(--radius-sm);margin-bottom:12px;}
+.connect-status.err{background:var(--danger-dim);color:var(--danger);}
+.spinner{width:26px;height:26px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+.shop-list{display:flex;flex-direction:column;gap:10px;}
+.shop-item{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px 16px;cursor:pointer;
+  display:flex;justify-content:space-between;align-items:center;}
+.shop-item:hover{border-color:var(--primary);}
+.shop-item .name{font-family:var(--font-display);font-weight:600;color:var(--primary);}
+.shop-item .loc{font-size:12px;color:var(--text-faint);}
+</style>
+
+<div id="app"><div class="loading-screen"><div class="spinner"></div>Setting up the shop…</div></div>
+
+<script>
+(function(){
+const CONFIG_KEY = 'phonehub-supabase-config';
+const MY_SHOP_KEY = 'phonehub-my-shop';
+// If you've deployed this app for real, paste your Supabase project URL and anon key here.
+// Doing so skips the "Connect" screen entirely for every customer who opens this app.
+const HARDCODED_SUPABASE_URL = 'https://qqlykvrofoobowrsarxi.supabase.co';
+const HARDCODED_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFxbHlrdnJvZm9vYm93cnNhcnhpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQwMDc0MzcsImV4cCI6MjA5OTU4MzQzN30.3G0yVZbfkoBexdWj_YM9lqC-u4SSQxVgQOxgN-RruAc';
+let sb = null;
+
+let state = {
+  stage:'loading', // loading -> configure -> pickShop -> shop
+  configError:null, configuring:false, urlInput:'', keyInput:'',
+  shops:[], selectedShop:null,
+  tab:'shop', inventory:[], q:'', condFilter:'All', maxPrice:'', modal:null, toast:null, toastErr:false,
+  lookupPhone:'', lookupDone:false, lookupResults:[]
+};
+
+function naira(n){ n = Number(n)||0; return '₦'+n.toLocaleString('en-NG',{maximumFractionDigits:0}); }
+function todayISO(){ return new Date().toISOString().slice(0,10); }
+function daysBetween(a,b){ return Math.round((new Date(b)-new Date(a))/86400000); }
+function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escapeAttr(s){ return (s||'').toString().replace(/"/g,'&quot;'); }
+function val(id){ const el=document.getElementById(id); return el?el.value:''; }
+
+function loadConfig(){
+  if(HARDCODED_SUPABASE_URL && HARDCODED_SUPABASE_ANON_KEY){
+    return { url: HARDCODED_SUPABASE_URL, key: HARDCODED_SUPABASE_ANON_KEY };
+  }
+  try{ const raw = localStorage.getItem(CONFIG_KEY); return raw ? JSON.parse(raw) : null; }
+  catch(e){ return null; }
+}
+function saveConfig(url,key){
+  try{ localStorage.setItem(CONFIG_KEY, JSON.stringify({url:url,key:key})); } catch(e){ /* ignore */ }
+}
+function loadMyShop(){
+  try{ const raw = localStorage.getItem(MY_SHOP_KEY); return raw ? JSON.parse(raw) : null; }
+  catch(e){ return null; }
+}
+function saveMyShop(shop){
+  try{ localStorage.setItem(MY_SHOP_KEY, JSON.stringify(shop)); } catch(e){ /* ignore */ }
+}
+
+async function init(){
+  const cfg = await loadConfig();
+  if(!cfg){ state.stage='configure'; render(); return; }
+  await connectSupabase(cfg.url, cfg.key, false);
+}
+
+async function connectSupabase(url, key, persist){
+  try{
+    sb = window.supabase.createClient(url, key);
+    const { error: pingErr } = await sb.from('public_shops').select('id').limit(1);
+    if(pingErr) throw pingErr;
+    if(persist) await saveConfig(url, key);
+    const myShop = await loadMyShop();
+    if(myShop){ state.selectedShop = myShop; await loadShopCatalog(); }
+    else { await loadShopPicker(); }
+  } catch(e){
+    state.stage = 'configure'; state.configError = e.message || String(e); render();
+  }
+}
+
+async function loadShopPicker(){
+  try{
+    const { data, error } = await sb.from('public_shops').select('*').order('shop_name');
+    if(error) throw error;
+    state.shops = data || [];
+    state.stage = 'pickShop';
+  } catch(e){
+    state.stage = 'configure'; state.configError = e.message || String(e);
+  }
+  render();
+}
+
+async function loadShopCatalog(){
+  state.stage = 'loading'; render();
+  try{
+    const { data, error } = await sb.from('public_catalog').select('*').eq('dealer_id', state.selectedShop.id);
+    if(error) throw error;
+    state.inventory = data || [];
+    state.stage = 'shop';
+  } catch(e){
+    state.stage = 'configure'; state.configError = e.message || String(e);
+  }
+  render();
+}
+
+function showToast(msg, err){ state.toast = msg; state.toastErr = !!err; render(); setTimeout(function(){ state.toast=null; render(); }, 3000); }
+function setTab(t){ state.tab = t; state.modal=null; render(); }
+function openModal(name, payload){ state.modal={name:name, payload:payload||{}}; render(); }
+function closeModal(){ state.modal=null; render(); }
+
+function catalog(){
+  return state.inventory.filter(function(p){ return p.status==='In Stock'; }).filter(function(p){
+    if(state.q && !((String(p.model||'').toLowerCase().includes(state.q.toLowerCase())) || (String(p.color||'').toLowerCase().includes(state.q.toLowerCase())))) return false;
+    if(state.condFilter!=='All' && p.condition!==state.condFilter) return false;
+    if(state.maxPrice && Number(p.price) > Number(state.maxPrice)) return false;
+    return true;
+  }).sort(function(a,b){ return (a.price||0)-(b.price||0); });
+}
+
+function render(){
+  const app = document.getElementById('app');
+  if(state.stage==='loading'){ app.innerHTML='<div class="loading-screen"><div class="spinner"></div>Setting up the shop…</div>'; return; }
+  if(state.stage==='configure'){ app.innerHTML = renderConfigureScreen(); attachConfigureHandlers(); return; }
+  if(state.stage==='pickShop'){ app.innerHTML = renderShopPicker(); attachShopPickerHandlers(); return; }
+
+  app.innerHTML =
+    '<div class="topbar"><div class="brand"><div class="mark">PH</div>PhoneHub</div>' +
+      '<div class="shop-pill" id="switchShopBtn">'+escapeHtml(state.selectedShop.shop_name)+' · switch shop</div>' +
+      '<div class="nav-tabs">' + navTab('shop','Shop') + navTab('request','Request a phone') + navTab('lookup','My purchases') + '</div>' +
+    '</div>' +
+    '<div class="wrap">'+renderTab()+'</div>' +
+    (state.modal ? renderModal() : '') +
+    (state.toast ? ('<div class="toast '+(state.toastErr?'err':'')+'">'+escapeHtml(state.toast)+'</div>') : '');
+  attachHandlers();
+}
+
+function renderConfigureScreen(){
+  return '<div class="connect-wrap"><div class="connect-card">' +
+    '<h2>Connect this app to Supabase</h2>' +
+    '<p>Paste the same Supabase project URL and anon key used in the Seller App.</p>' +
+    (state.configError ? ('<div class="connect-status err">'+escapeHtml(state.configError)+'</div>') : '') +
+    '<input id="cfgUrl" placeholder="https://xxxxx.supabase.co" value="'+escapeAttr(state.urlInput)+'"/>' +
+    '<input id="cfgKey" placeholder="anon public key (eyJ...)" value="'+escapeAttr(state.keyInput)+'"/>' +
+    '<button class="btn btn-primary btn-block" id="cfgConnectBtn" '+(state.configuring?'disabled':'')+'>'+(state.configuring?'Connecting…':'Connect')+'</button>' +
+  '</div></div>';
+}
+function attachConfigureHandlers(){
+  const u = document.getElementById('cfgUrl'), k = document.getElementById('cfgKey');
+  if(u) u.addEventListener('input', function(e){ state.urlInput = e.target.value; });
+  if(k) k.addEventListener('input', function(e){ state.keyInput = e.target.value; });
+  const btn = document.getElementById('cfgConnectBtn');
+  if(btn) btn.addEventListener('click', async function(){
+    const url = (document.getElementById('cfgUrl').value||'').trim();
+    const key = (document.getElementById('cfgKey').value||'').trim();
+    if(!url || !key){ state.configError='Please fill in both fields.'; render(); return; }
+    state.configuring = true; state.configError=null; render();
+    await connectSupabase(url, key, true);
+    state.configuring = false;
+  });
+}
+
+function renderShopPicker(){
+  return '<div class="wrap"><div class="hero"><h1>Choose a shop</h1><p>Pick the phone shop you want to browse.</p></div>' +
+    '<div class="shop-list">' +
+      state.shops.map(function(s){ return '<div class="shop-item" data-pick-shop="'+s.id+'">' +
+        '<div><div class="name">'+escapeHtml(s.shop_name)+'</div><div class="loc">'+escapeHtml(s.location||'')+'</div></div>' +
+        '<div style="color:var(--accent);font-size:18px;">→</div></div>'; }).join('') +
+    '</div>' +
+    (!state.shops.length ? '<div class="empty"><div class="big">No shops registered yet</div>Check back soon.</div>' : '') +
+  '</div>';
+}
+function attachShopPickerHandlers(){
+  document.querySelectorAll('[data-pick-shop]').forEach(function(el){
+    el.addEventListener('click', async function(){
+      const id = el.getAttribute('data-pick-shop');
+      const shop = state.shops.find(function(s){ return s.id===id; });
+      state.selectedShop = shop;
+      await saveMyShop(shop);
+      await loadShopCatalog();
+    });
+  });
+}
+
+function navTab(key,label){ return '<div class="nav-tab '+(state.tab===key?'active':'')+'" data-tab="'+key+'">'+label+'</div>'; }
+
+function renderTab(){
+  if(state.tab==='shop') return renderShop();
+  if(state.tab==='request') return renderRequestForm();
+  if(state.tab==='lookup') return renderLookup();
+  return '';
+}
+
+function renderShop(){
+  const items = catalog();
+  return '<div class="hero"><h1>Find your next phone</h1><p>Everything below is verified and in stock at '+escapeHtml(state.selectedShop.shop_name)+' right now.</p></div>' +
+    '<div class="filter-row">' +
+      '<input id="q" placeholder="Search model or color…" value="'+escapeHtml(state.q)+'"/>' +
+      '<select id="cond"><option '+(state.condFilter==='All'?'selected':'')+'>All</option><option '+(state.condFilter==='New'?'selected':'')+'>New</option><option '+(state.condFilter==='Used'?'selected':'')+'>Used</option></select>' +
+      '<input id="maxPrice" type="number" placeholder="Max budget (₦)" value="'+escapeHtml(state.maxPrice)+'"/>' +
+    '</div>' +
+    '<div class="grid">' + items.map(function(p){
+      return '<div class="tag-card" data-view-phone="'+p.id+'">' +
+        '<span class="tag-condition '+(p.condition==='New'?'new':'used')+'">'+escapeHtml(p.condition)+'</span>' +
+        '<div class="tag-model">'+escapeHtml(p.model)+'</div>' +
+        '<div class="tag-spec">'+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</div>' +
+        '<div class="tag-price">'+naira(p.price)+'</div>' +
+        (p.condition==='Used' ? ('<div class="tag-battery">Battery health '+p.battery+'%</div>') : '') +
+      '</div>';
+    }).join('') + '</div>' +
+    (!items.length ? ('<div class="empty"><div class="big">Nothing matches right now</div>Try a wider budget, or tell us what you\'re looking for.<br/><br/>' +
+      '<button class="btn btn-primary" data-tab="request">Request a phone</button></div>') : '');
+}
+
+function renderModal(){
+  const p = state.inventory.find(function(x){ return x.id===state.modal.payload.id; });
+  if(!p) return '';
+  return '<div class="overlay" data-close-overlay="1"><div class="sheet" data-stop="1">' +
+    '<button class="close-x" data-close-modal="1">×</button>' +
+    '<span class="tag-condition '+(p.condition==='New'?'new':'used')+'">'+escapeHtml(p.condition)+'</span>' +
+    '<h2>'+escapeHtml(p.model)+'</h2>' +
+    '<div class="price-big">'+naira(p.price)+'</div>' +
+    '<div class="detail-row"><span class="k">Storage</span><span class="v">'+escapeHtml(p.storage)+'</span></div>' +
+    '<div class="detail-row"><span class="k">Color</span><span class="v">'+escapeHtml(p.color)+'</span></div>' +
+    (p.condition==='Used' ? ('<div class="detail-row"><span class="k">Battery health</span><span class="v">'+p.battery+'%</span></div>') : '') +
+    '<div class="detail-row"><span class="k">Warranty</span><span class="v">Included on purchase</span></div>' +
+    '<div class="detail-row"><span class="k">Availability</span><span class="v" style="color:var(--success)">In stock now</span></div>' +
+    '<button class="btn btn-primary btn-block" style="margin-top:18px;" data-tab="request" data-close-modal="1">Ask about this phone</button>' +
+  '</div></div>';
+}
+
+function renderRequestForm(){
+  return '<div class="hero"><h1>Can\'t find it?</h1><p>Tell '+escapeHtml(state.selectedShop.shop_name)+' what you want — they\'ll reach out the moment it\'s available, sometimes from their trusted dealer network.</p></div>' +
+    '<div class="form-card">' +
+      '<div class="two-col"><div class="field"><label>Your name</label><input id="r-name"/></div><div class="field"><label>Phone number</label><input id="r-phone"/></div></div>' +
+      '<div class="two-col"><div class="field"><label>Phone model</label><input id="r-model" placeholder="e.g. Google Pixel 9"/></div><div class="field"><label>Storage / color (optional)</label><input id="r-variant" placeholder="256GB, Black"/></div></div>' +
+      '<div class="field"><label>Your budget (₦, optional)</label><input type="number" id="r-budget"/></div>' +
+      '<div class="field"><label>Anything else?</label><textarea id="r-notes" rows="2"></textarea></div>' +
+      '<button class="btn btn-primary btn-block" id="submitRequestBtn">Send request</button>' +
+    '</div>';
+}
+
+function renderLookup(){
+  return '<div class="hero"><h1>My purchases</h1><p>Enter the phone number you bought with to see your purchase history and warranty status — across any shop on PhoneHub.</p></div>' +
+    '<div class="form-card">' +
+      '<div class="field"><label>Phone number</label><input id="lk-phone" placeholder="0803 123 4567" value="'+escapeHtml(state.lookupPhone)+'"/></div>' +
+      '<button class="btn btn-primary btn-block" id="lookupBtn">Check my purchases</button>' +
+    '</div>' +
+    (state.lookupDone ? ('<div class="lookup-result">' +
+      (state.lookupResults.length ? state.lookupResults.map(function(s){
+        const expiry = new Date(s.date); expiry.setDate(expiry.getDate()+Number(s.warranty_days||0));
+        const daysLeft = daysBetween(todayISO(), expiry.toISOString().slice(0,10));
+        const cls = !s.warranty_days ? '' : daysLeft<0 ? 'expired' : daysLeft<=7 ? 'soon' : 'active';
+        const label = !s.warranty_days ? 'No warranty on file' : daysLeft<0 ? 'Warranty expired' : daysLeft<=7 ? ('Warranty ends in '+daysLeft+' day'+(daysLeft===1?'':'s')) : ('Warranty active — '+daysLeft+' days left');
+        return '<div class="lookup-item"><div class="m">'+escapeHtml(s.model)+'</div>' +
+          '<div style="color:var(--text-dim);font-size:13px;">Bought at '+escapeHtml(s.shop_name)+' · '+escapeHtml(s.date)+' · '+naira(s.sale_price)+'</div>' +
+          '<span class="warranty-pill '+cls+'">'+label+'</span></div>';
+      }).join('') : '<div class="empty"><div class="big">No purchases found</div>Double-check the phone number used at checkout.</div>') +
+    '</div>') : '');
+}
+
+function attachHandlers(){
+  const app = document.getElementById('app');
+  app.querySelectorAll('[data-tab]').forEach(function(el){ el.addEventListener('click', function(){ setTab(el.getAttribute('data-tab')); }); });
+  const switchBtn = document.getElementById('switchShopBtn');
+  if(switchBtn) switchBtn.addEventListener('click', async function(){
+    try{ localStorage.removeItem(MY_SHOP_KEY); } catch(e){ /* ignore */ }
+    state.selectedShop = null; await loadShopPicker();
+  });
+  app.querySelectorAll('[data-view-phone]').forEach(function(el){ el.addEventListener('click', function(){ openModal('view',{id:el.getAttribute('data-view-phone')}); }); });
+  app.querySelectorAll('[data-close-modal]').forEach(function(el){ el.addEventListener('click', closeModal); });
+  app.querySelectorAll('[data-close-overlay]').forEach(function(el){ el.addEventListener('click', closeModal); });
+  app.querySelectorAll('[data-stop]').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); });
+
+  const q = document.getElementById('q');
+  if(q) q.addEventListener('input', function(e){ state.q=e.target.value; render(); focusEnd('q'); });
+  const cond = document.getElementById('cond');
+  if(cond) cond.addEventListener('change', function(e){ state.condFilter=e.target.value; render(); });
+  const maxPrice = document.getElementById('maxPrice');
+  if(maxPrice) maxPrice.addEventListener('input', function(e){ state.maxPrice=e.target.value; render(); focusEnd('maxPrice'); });
+
+  const lkBtn = document.getElementById('lookupBtn');
+  if(lkBtn) lkBtn.addEventListener('click', async function(){
+    const phone = val('lk-phone');
+    state.lookupPhone = phone;
+    try{
+      const { data, error } = await sb.rpc('lookup_my_purchases', { p_phone: phone });
+      if(error) throw error;
+      state.lookupResults = data || [];
+    } catch(e){ state.lookupResults = []; showToast('Could not look up purchases: '+e.message, true); }
+    state.lookupDone = true; render();
+  });
+
+  const reqBtn = document.getElementById('submitRequestBtn');
+  if(reqBtn) reqBtn.addEventListener('click', async function(){
+    const name = val('r-name'), phone = val('r-phone'), model = val('r-model');
+    if(!name || !phone || !model){ showToast('Please fill in your name, phone, and the model you want', true); return; }
+    const data = { dealer_id: state.selectedShop.id, customer_name:name, customer_phone:phone, model:model, storage:val('r-variant'), budget:val('r-budget')||null, status:'Pending', notes:val('r-notes') };
+    try{
+      const { error } = await sb.from('requests').insert(data);
+      if(error) throw error;
+      showToast('Request sent — we will reach out as soon as it is available');
+      state.tab = 'request'; render();
+    } catch(e){ showToast('Could not send request: '+e.message, true); render(); }
+  });
+}
+function focusEnd(id){ const el=document.getElementById(id); if(el){ el.focus(); const v=el.value; el.value=''; el.value=v; } }
+
+init();
+})();
+</script>
+
+
+======================================================================================================================================================
+
+Ideas.txt
+
+i need automation ideas and business improvement solutions for a phone sales business, in computer village ikeja, lagos nigeria, a very busy electronic gadget market. The business gets some phones from overseas, some from local vendors and some from colleagues, at times, when a customer comes into the store for a phone that isnt available, the owner can quickly reach out to a friend who has it, get it at first owners price, add his own profit and sell to the customer. friends and colleagues also get phone from him to sell
+
+This type of business is actually one of the best candidates for automation because most of the work revolves around:
+
+Inventory management
+Price changes
+Supplier relationships
+Customer inquiries
+WhatsApp communication
+Sales tracking
+Profit calculation
+Warranty management
+Staff accountability
+
+Computer Village businesses also operate much faster than conventional retail stores, so speed is usually more valuable than complexity.
+
+1. Live Phone Inventory Dashboard
+
+Problem
+
+Employees constantly ask:
+
+"Do we have iPhone 13 Pro 256GB Sierra Blue?"
+
+Sometimes they physically search the shelves.
+
+Automation
+
+Every purchase or sale automatically updates inventory.
+
+Search box instantly tells:
+
+Available
+Quantity
+Color
+Storage
+Battery health (used phones)
+Supplier
+Cost price
+Selling price
+Shelf location
+
+Tools
+
+Google Sheets
+AppSheet
+Apps Script
+2. Supplier Price Request System
+
+This alone can make thousands every day.
+
+Current process:
+
+Customer:
+
+Do you have Samsung S24 Ultra?
+
+Owner:
+
+Calls 5 friends.
+
+Friend 1
+
+No.
+
+Friend 2
+
+Wait.
+
+Friend 3
+
+I have one.
+
+Takes several minutes.
+
+Automation:
+
+Create a Google Form or mini web app shared among trusted suppliers.
+
+Each supplier updates:
+
+Phone
+Color
+Storage
+Quantity
+Price
+
+Now the owner searches
+
+S24 Ultra
+
+and instantly sees
+
+Supplier A — ₦1,250,000
+
+Supplier B — ₦1,245,000
+
+Supplier C — Out of stock
+
+No phone calls.
+
+3. Smart Profit Calculator
+
+When buying from another dealer:
+
+Dealer price
+
+₦1,150,000
+
+Desired profit
+
+₦45,000
+
+Customer negotiates.
+
+Automation instantly shows:
+
+Selling Price
+
+₦1,195,000
+
+Minimum Price
+
+₦1,175,000
+
+Profit
+
+₦25,000
+
+Never calculate manually again.
+
+4. Automatic Invoice Generator
+
+After a sale
+
+Enter:
+
+Customer
+
+IMEI
+
+Phone
+
+Accessories
+
+Warranty
+
+System generates
+
+Invoice PDF
+Warranty Card
+Receipt
+
+Automatically sent through WhatsApp or email.
+
+5. Phone IMEI Tracker
+
+Every phone has IMEI.
+
+Track:
+
+IMEI
+
+Supplier
+
+Purchase date
+
+Purchase price
+
+Sale date
+
+Customer
+
+Warranty
+
+If customer returns after 6 months
+
+Search IMEI
+
+Instant history.
+
+6. WhatsApp Auto Catalogue
+
+Customer asks
+
+Do you have iPhone 14?
+
+Automation replies with:
+
+Pictures
+
+Available colors
+
+Storage
+
+Prices
+
+Condition
+
+Warranty
+
+Without employee typing everything.
+
+Could use:
+
+WhatsApp Business API
+Twilio
+Meta Cloud API
+n8n
+7. Customer Waiting List
+
+Customer wants
+
+Google Pixel 9
+
+Unavailable.
+
+Instead of forgetting,
+
+Automation records
+
+Customer
+
+Phone
+
+Budget
+
+Phone number
+
+When stock arrives
+
+Customer automatically receives
+
+Hello.
+
+The Google Pixel 9 you requested is now available.
+
+8. Dealer Request Broadcast
+
+Need one phone urgently?
+
+Instead of calling 20 dealers
+
+Owner clicks
+
+Broadcast Request
+
+Automation sends WhatsApp
+
+Need:
+
+iPhone 15 Pro Max
+
+256GB
+
+Natural Titanium
+
+Dealers reply.
+
+Responses collected into spreadsheet.
+
+9. Price Change Notification
+
+Exchange rates change.
+
+Owner updates
+
+Dollar rate
+
+Automation recalculates every phone price.
+
+Or
+
+Supplier updates price.
+
+Affected products automatically update.
+
+10. Used Phone Inspection Form
+
+Technician checks
+
+Screen
+
+Battery
+
+Camera
+
+Face ID
+
+Speaker
+
+Charging
+
+Network
+
+Everything saved.
+
+Customer receives report.
+
+11. Warranty Expiry Reminder
+
+Customer bought phone
+
+Warranty
+
+30 days
+
+Automation sends
+
+Your warranty expires next week.
+
+Excellent customer service.
+
+12. Daily Sales Dashboard
+
+Shows
+
+Today's Sales
+
+Cash
+
+Transfer
+
+POS
+
+Profit
+
+Top-selling brands
+
+Most profitable phone
+
+Remaining stock
+
+13. Staff Sales Tracker
+
+Tracks
+
+Employee
+
+Phones sold
+
+Revenue
+
+Profit
+
+Commission
+
+Leaderboard
+
+14. Accessory Cross-Sell Automation
+
+Selling iPhone?
+
+Automation reminds salesperson
+
+Offer:
+
+Case
+
+Tempered Glass
+
+AirPods
+
+Charger
+
+Power Bank
+
+Increasing average order value.
+
+15. Customer Purchase History
+
+Customer returns.
+
+Search phone number.
+
+Shows
+
+All previous purchases
+
+Warranty
+
+Repairs
+
+Accessories
+
+Preferred brands
+
+Budget
+
+16. Supplier Debt Tracker
+
+Some suppliers allow payment later.
+
+Track
+
+Supplier
+
+Amount owed
+
+Due date
+
+Balance
+
+Automatic reminders.
+
+17. Customer Debt Tracker
+
+Customers paying installment?
+
+Track
+
+Amount paid
+
+Balance
+
+Due date
+
+Automatic reminders.
+
+18. Foreign Shipment Tracker
+
+Phones ordered from Dubai, UK, China.
+
+Track
+
+Supplier
+
+Courier
+
+Tracking number
+
+Expected arrival
+
+Value
+
+Customs
+
+Status
+
+19. Currency Conversion Automation
+
+Owner updates
+
+USD/NGN
+
+Every imported phone
+
+Automatically recalculates
+
+Cost
+
+Selling price
+
+Profit
+
+20. Best Supplier Report
+
+Every month
+
+Automation ranks suppliers by
+
+Lowest prices
+
+Fast delivery
+
+Fewest defective phones
+
+Highest profit
+
+Most purchases
+
+Helps decide who deserves more business.
+
+21. Phone Reservation System
+
+Customer reserves phone.
+
+System records
+
+Deposit
+
+Expiry time
+
+Balance
+
+Reservation automatically expires after 48 hours if unpaid.
+
+22. Repair Job Tracker
+
+Track
+
+Customer
+
+Phone
+
+Problem
+
+Technician
+
+Parts
+
+Status
+
+Completion
+
+Collection
+
+Automatic status updates to customers.
+
+23. Sales Forecast Dashboard
+
+Using previous sales
+
+Predict
+
+Phones likely to sell next week
+
+Phones to reorder
+
+Slow-moving inventory
+
+24. Fraud Detection Checklist
+
+Before releasing expensive phone
+
+Checklist:
+
+Transfer confirmed?
+
+Bank alert?
+
+Account credited?
+
+Customer ID?
+
+Delivery proof?
+
+Reduces scams.
+
+25. Trade-In Valuation Tool
+
+Customer wants to exchange phone.
+
+Technician enters
+
+Model
+
+Battery Health
+
+Condition
+
+Storage
+
+Faults
+
+Automation estimates
+
+Trade-in value
+
+Recommended resale price
+
+Expected profit
+
+26. Competitor Price Monitor
+
+Track prices from selected competitors daily (where publicly available), compare them with your own, and flag products where you're significantly above or below the market. This helps you stay competitive without manually checking multiple stores.
+
+27. Automated Purchase Order Generator
+
+When stock for a particular phone drops below a minimum threshold, the system automatically prepares a purchase order for your preferred supplier, including quantities based on recent sales trends.
+
+28. Business Performance Dashboard
+
+Instead of just tracking sales, this dashboard answers questions like:
+
+Which phone brand generates the highest profit?
+Which supplier provides the best margins?
+Which employee closes the most sales?
+What is the average profit per transaction?
+Which models remain unsold for over 30 days?
+How much capital is tied up in inventory?
+A Complete Solution: The "Computer Village Smart Store"
+
+Instead of building isolated automations, I would package them into one integrated system.
+
+Module 1: Inventory & Procurement
+Live inventory management
+IMEI tracking
+Stock alerts
+Supplier directory
+Purchase order generation
+Overseas shipment tracking
+Module 2: Supplier Network
+Shared supplier inventory
+Dealer price requests
+Broadcast requests
+Supplier performance analytics
+Debt management
+Module 3: Sales
+Point-of-sale
+Smart profit calculator
+Invoice and receipt generation
+Warranty management
+Cross-selling prompts
+Customer reservations
+Module 4: Customer Management
+Customer profiles
+Purchase history
+Waiting lists
+Warranty reminders
+Marketing broadcasts
+Trade-in records
+Module 5: Repairs
+Device diagnostics
+Repair workflow
+Parts tracking
+Customer notifications
+Module 6: Management Dashboard
+Daily sales
+Profit analysis
+Staff performance
+Inventory aging
+Cash flow
+Supplier analytics
+Sales forecasting
+Why this is a strong opportunity
+
+The business model you've described is common across many stores in Computer Village, Ikeja. Most traders still rely on phone calls, WhatsApp chats, notebooks, and memory to coordinate inventory and supplier networks. A lightweight system built with Google Sheets, Google Apps Script, AppSheet, Forms, and WhatsApp integrations, with a PHP/MySQL backend added later if needed, could solve real operational problems without requiring expensive software.
+
+Such a platform could start with a single shop and later be adapted into a multi-store solution where trusted dealers share inventory securely while keeping their own business records private. That makes it both a practical automation project and a potential commercial product for one of Nigeria's busiest electronics markets.
+
+
+
+
+I completely agree. In fact, I would move that feature from being just another bullet point to being the hero feature of the proposal.
+
+This solves the biggest daily headache of almost every phone dealer in Computer Village:
+
+"Customer is standing in my shop, I don't have the phone, now I have to start calling everyone I know."
+
+Instead, position it as the feature that turns every trusted colleague into part of your inventory.
+
+Here's how I'd rewrite the beginning of the document.
+
+Smart Phone Store Management System
+A Digital Solution Designed for Modern Phone Dealers
+Never Lose Another Customer Because a Phone Isn't in Stock
+
+Imagine a customer walks into your shop asking for an iPhone 16 Pro Max, but you don't have it.
+
+Instead of calling 10 different dealers one after another while the customer waits—or worse, walks away—you simply search the phone in your system.
+
+Within seconds, you can see:
+
+Which trusted colleague has the phone
+Who is offering the lowest price
+Available colors and storage options
+Who has multiple units in stock
+Your expected profit before quoting the customer
+
+You purchase from the dealer instantly, add your profit, complete the sale, and the customer never knows the phone wasn't originally in your shop.
+
+Your shop instantly becomes bigger than your physical inventory.
+
+⭐ Flagship Feature: Smart Dealer Network
+
+This is the heart of the entire system.
+
+Instead of relying on endless phone calls and WhatsApp messages, every trusted supplier and colleague becomes part of one connected network.
+
+Whenever a customer requests a phone you don't have, simply search the model and instantly see who has it available.
+
+Instantly Find
+Available dealers
+Dealer prices
+Available colors
+Storage variants
+Quantity available
+Last updated stock
+
+No more guessing.
+
+No more calling multiple people.
+
+No more losing impatient customers.
+
+🚀 Dealer Request Broadcast
+
+Need a phone urgently?
+
+With one click, send a request to all your trusted dealers.
+
+Example:
+
+Need urgently
+
+iPhone 15 Pro Max
+256GB
+Natural Titanium
+
+Within minutes, responses begin coming in automatically.
+
+Instead of spending 15–20 minutes making calls, your suppliers come directly to you.
+
+The fastest supplier wins the sale.
+
+💰 Live Price Comparison
+
+Never overpay another supplier.
+
+Whenever multiple dealers have the same phone, the system automatically compares their prices.
+
+Instead of calling around asking,
+
+"How much last?"
+
+you instantly know:
+
+Cheapest supplier
+Highest supplier
+Average market price
+Your expected profit
+
+This means:
+
+Higher profit margins
+Faster negotiations
+Better purchasing decisions
+More competitive selling prices
+🌍 Your Inventory Becomes Unlimited
+
+Today, your business is limited to the phones inside your shop.
+
+With the Smart Dealer Network, your inventory expands to include the stock of every trusted dealer in your network.
+
+Customers no longer hear:
+
+"Sorry, we don't have it."
+
+Instead, they hear:
+
+"Yes, we can get it for you."
+
+That single difference turns missed opportunities into completed sales and gives your business a significant competitive advantage.
+
+I would also rename the entire project to something stronger than "Smart Phone Store Management System." Something like:
+
+PhoneHub Pro (my favorite)
+DealerLink
+SmartDealer Network
+PhoneConnect
+PhoneTrade Pro
+CV Connect (Computer Village Connect)
+DealerSync
+Phone Market OS
+PhoneFlow
+PhoneXchange
+
+These names immediately emphasize that this isn't just inventory software—it's a network-powered sales platform, which is the feature most likely to make your client say, "I need this."
+
+this is good, plus it eliminates the eliminates the issue of having to look for whatsapp contacts and group when whatsapp bans their account which happens very often due to broadcast message sending.
+
+
+
+
+
+for IMEI tracking, is it possible to build an actual tracker that tracks the phone current location, in case of theft, also a means of registering the new user once they input their details on the phone in case of user to user sales
+
+Short answer: not in the way most people imagine.
+
+An independent phone store cannot build a system that tracks the live location of any phone by IMEI alone. That capability belongs to mobile network operators, phone manufacturers, and law enforcement through legal processes.
+
+However, you can build something that provides significant business value and theft protection without making unrealistic claims.
+
+Here's what is realistically possible.
+
+Option 1: IMEI Registration & Ownership Database ⭐⭐⭐⭐⭐ (Highly Recommended)
+
+Every phone sold is registered in your database with:
+
+IMEI 1 & IMEI 2
+Serial Number
+Phone Model
+Purchase Date
+Warranty
+Original Buyer
+Receipt
+Photos
+Accessories
+Payment Method
+
+If someone walks into your shop with that phone months later, simply search the IMEI.
+
+You'll instantly know:
+
+Was it sold by you?
+Who bought it?
+Warranty status
+Purchase history
+Trade-in history
+Repair history
+
+This alone is extremely valuable.
+
+Option 2: Digital Ownership Transfer ⭐⭐⭐⭐⭐
+
+This is something most phone stores don't offer.
+
+Imagine this scenario.
+
+John buys an iPhone today.
+
+A year later he sells it to Mary.
+
+Instead of the phone permanently belonging to John in your records...
+
+Mary scans a QR Code or visits your web portal.
+
+She enters:
+
+Name
+Phone Number
+Email
+Receipt Number (optional)
+OTP verification
+
+Ownership is transferred.
+
+Now your system shows
+
+Current Owner:
+
+Mary Johnson
+
+Previous Owner:
+
+John Doe
+
+Transfer Date:
+
+15 June 2027
+
+You now have a complete ownership chain.
+
+This is excellent for:
+
+Warranty
+Trade-ins
+Resale trust
+Stolen phone verification
+Option 3: Theft Reporting System ⭐⭐⭐⭐⭐
+
+Customer reports
+
+"My phone was stolen."
+
+You click
+
+Mark as Stolen.
+
+Now if that IMEI ever appears in your:
+
+Repair department
+Trade-in desk
+Buy-back service
+
+The system immediately alerts staff.
+
+This alone can recover many phones.
+
+Option 4: Shared Blacklist Network ⭐⭐⭐⭐⭐
+
+This is huge.
+
+Imagine 200 phone shops using your software.
+
+Once a phone is reported stolen...
+
+Every participating shop receives the IMEI blacklist.
+
+If the thief tries to:
+
+Sell it
+
+Trade it
+
+Repair it
+
+Unlock it
+
+Any participating dealer immediately sees
+
+⚠️ Reported Stolen
+
+Original Owner
+
+Report Date
+
+Police Case Number (optional)
+
+This could become the "Computer Village Anti-Theft Network."
+
+That alone would be a massive selling point.
+
+Option 5: Find My Phone Integration ⭐⭐⭐⭐☆
+
+Instead of pretending you can locate the phone...
+
+Your system stores links to:
+
+Android
+
+Find My Device
+
+Apple
+
+Find My
+
+Samsung SmartThings Find
+
+When customer reports theft
+
+One click opens the official tracking service.
+
+Professional.
+
+Legal.
+
+Reliable.
+
+Option 6: Customer Registration App ⭐⭐⭐⭐⭐
+
+When customer buys a phone
+
+They receive
+
+QR Code
+
+Scan it.
+
+Complete registration.
+
+Now your database has
+
+Current owner
+
+Address
+
+Email
+
+Phone
+
+Emergency contact
+
+Purchase receipt
+
+Warranty
+
+Trade-in history
+
+Repair history
+
+Future transfers become easy.
+
+Option 7: Device Check-In Verification ⭐⭐⭐⭐⭐
+
+Whenever someone wants to
+
+Sell
+
+Trade
+
+Repair
+
+Unlock
+
+their phone
+
+Staff scan IMEI.
+
+System checks
+
+✓ Stolen?
+
+✓ Original owner?
+
+✓ Warranty?
+
+✓ Outstanding finance?
+
+✓ Previous repairs?
+
+Great fraud prevention.
+
+About Live GPS Tracking
+
+This is where many people misunderstand what IMEI can do.
+
+You CANNOT
+Track live GPS using IMEI.
+See a phone's current location from your own software.
+Turn on GPS remotely.
+Access mobile network location data.
+Locate a phone after the SIM card is changed.
+
+Those capabilities require access to carrier infrastructure or the phone manufacturer's ecosystem.
+
+What is possible with a companion app (if the customer opts in)
+
+If you develop a companion Android application and the customer voluntarily installs it and grants the required permissions, you can offer features such as:
+
+Sharing the phone's last known location with the owner.
+Sending an alert if the SIM card is changed.
+Recording the new SIM number (where platform permissions allow).
+Detecting factory reset attempts (with limitations).
+Periodically syncing location when the phone is online.
+Displaying a message on the lock screen with contact information.
+
+This would be an opt-in security service, not IMEI tracking.
+
+Note: On iPhones, Apple imposes much stricter restrictions, so a third-party app cannot provide the same level of device monitoring.
+
+A feature that could truly differentiate your platform
+
+If your long-term goal is to build a product for Computer Village rather than just one shop, I'd position it as:
+
+PhoneHub Secure™ – Dealer Anti-Theft Network
+
+When a phone is sold:
+
+Register its IMEI and ownership.
+Generate a digital ownership certificate.
+Allow ownership transfers through the platform.
+Let owners report devices as stolen.
+Instantly share stolen IMEI alerts with participating dealers.
+Flag stolen devices during sales, repairs, or trade-ins.
+Maintain a complete ownership history for every device.
+
+This is a realistic, legally compliant feature that creates real value. As more dealers join the network, the platform becomes increasingly effective at discouraging the resale of stolen phones while giving legitimate buyers and sellers greater confidence.
+
+======================================================================================================================================================
+
+index.html
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PhoneHub Pro</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&display=swap');
+  *{box-sizing:border-box;}
+  body{margin:0;min-height:100vh;background:#10141C;color:#EDEFF3;font-family:'Inter',sans-serif;
+    display:flex;align-items:center;justify-content:center;padding:20px;}
+  .wrap{max-width:520px;text-align:center;}
+  h1{font-family:'Space Grotesk',sans-serif;font-size:32px;margin:0 0 10px;}
+  p{color:#8C96AA;margin:0 0 34px;font-size:15px;}
+  .cards{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;}
+  a.card{flex:1;min-width:200px;background:#171C27;border:1px solid #2A3140;border-radius:12px;
+    padding:24px 20px;text-decoration:none;color:#EDEFF3;transition:.15s;}
+  a.card:hover{border-color:#E8A93A;transform:translateY(-2px);}
+  a.card .label{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:17px;color:#E8A93A;margin-bottom:6px;}
+  a.card .desc{font-size:13px;color:#8C96AA;}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>PhoneHub Pro</h1>
+    <p>Business management for Computer Village phone dealers.</p>
+    <div class="cards">
+      <a class="card" href="./seller/">
+        <div class="label">Seller App →</div>
+        <div class="desc">Register your shop, manage inventory, sales, and the dealer network.</div>
+      </a>
+      <a class="card" href="./customer/">
+        <div class="label">Customer App →</div>
+        <div class="desc">Browse a shop's stock, request a phone, or check your warranty.</div>
+      </a>
+    </div>
+  </div>
+</body>
+</html>
+
+
+======================================================================================================================================================
+
+migration_optional_imei.sql
+
+-- ============================================================
+-- PhoneHub Pro — Migration: make IMEI optional
+-- ============================================================
+-- Run this once in Supabase: Dashboard > SQL Editor > New query > paste > Run.
+-- Safe to re-run.
+-- ============================================================
+
+-- 1. Allow phones/sales to be saved without an IMEI (e.g. accessories,
+--    or stock not yet logged with its IMEI).
+alter table inventory alter column imei drop not null;
+alter table sales alter column imei drop not null;
+
+-- 2. Replace sell_phone() to match by the phone's internal id instead of
+--    its IMEI. This avoids ambiguity now that IMEI can be blank (multiple
+--    IMEI-less phones would otherwise be indistinguishable when selling).
+drop function if exists sell_phone(text,numeric,text,text,text,text,int,text,text);
+
+create or replace function sell_phone(
+  p_inventory_id uuid, p_sale_price numeric, p_customer_name text, p_customer_phone text,
+  p_payment_method text, p_staff text, p_warranty_days int, p_accessories text, p_notes text
+)
+returns sales
+language plpgsql
+as $$
+declare
+  v_phone inventory%rowtype;
+  v_sale sales%rowtype;
+begin
+  select * into v_phone from inventory
+    where id = p_inventory_id and dealer_id = auth.uid() and status = 'In Stock'
+    limit 1;
+
+  if v_phone.id is null then
+    raise exception 'No in-stock phone found for that selection';
+  end if;
+
+  insert into sales (dealer_id, imei, model, cost, sale_price, customer_name, customer_phone,
+                      payment_method, staff, warranty_days, accessories, notes)
+  values (auth.uid(), v_phone.imei, v_phone.model, v_phone.cost, p_sale_price, p_customer_name, p_customer_phone,
+          p_payment_method, p_staff, p_warranty_days, p_accessories, p_notes)
+  returning * into v_sale;
+
+  update inventory set status = 'Sold', updated_at = now() where id = v_phone.id;
+
+  return v_sale;
+end;
+$$;
+grant execute on function sell_phone(uuid,numeric,text,text,text,text,int,text,text) to authenticated;
+
+
+======================================================================================================================================================
+
+README.md
+
+# PhoneHub Pro
+
+Business management platform for Computer Village phone dealers — inventory, sales, profit calculator, and a shared dealer network, backed by Supabase.
+
+## Structure
+
+- `/seller/` — Seller App (dealer registration, inventory, sales, dealer network, admin oversight)
+- `/customer/` — Customer App (shop browsing, phone requests, warranty lookup)
+- `schema.sql` — Supabase/Postgres schema. Run this once in your Supabase project's SQL Editor before using the apps.
+- `SUPABASE_SETUP_GUIDE.md` — step-by-step setup instructions.
+
+## Live URLs (once GitHub Pages is enabled)
+
+- Seller App: `https://<your-username>.github.io/<repo-name>/seller/`
+- Customer App: `https://<your-username>.github.io/<repo-name>/customer/`
+
+## Updating the apps
+
+Both apps are single static HTML files. To ship a change: edit the file, commit, push — GitHub Pages redeploys automatically within a minute or two.
+
+
+======================================================================================================================================================
+
+schema.sql
+
+-- ============================================================
+-- PhoneHub Pro — Supabase Schema (Phase 2, multi-tenant)
+-- ============================================================
+-- Run this whole file once in Supabase: Dashboard > SQL Editor > New query > paste > Run.
+-- Safe to re-run top-to-bottom on a fresh project.
+-- ============================================================
+
+-- Needed for gen_random_uuid()
+create extension if not exists "pgcrypto";
+
+-- ------------------------------------------------------------
+-- 1. DEALERS  (one row per registered seller, linked to their auth account)
+-- ------------------------------------------------------------
+create table if not exists dealers (
+  id uuid primary key references auth.users(id) on delete cascade,
+  shop_name text not null,
+  shop_slug text unique not null,        -- used in the customer app's shareable link, e.g. /shop/musa-electronics
+  phone text,
+  whatsapp text,
+  location text,
+  is_admin boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+alter table dealers enable row level security;
+
+-- Security-definer helper: checks admin status while bypassing dealers' own RLS,
+-- so policies that need to check "is this caller an admin?" don't recursively
+-- re-trigger the dealers table's RLS (which would otherwise infinite-loop).
+create or replace function is_admin()
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select coalesce((select d.is_admin from dealers d where d.id = auth.uid()), false);
+$$;
+
+-- Dealers can see & edit their own profile row.
+create policy "dealers_select_own" on dealers for select
+  using (id = auth.uid());
+create policy "dealers_update_own" on dealers for update
+  using (id = auth.uid());
+
+-- Admins (you) can see every dealer's profile.
+create policy "dealers_select_admin" on dealers for select
+  using (is_admin());
+
+-- Auto-create a dealer profile row whenever someone signs up.
+-- Expects shop_name / phone / shop_slug passed in as auth signup metadata.
+create or replace function handle_new_dealer()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  insert into dealers (id, shop_name, shop_slug, phone, location)
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data->>'shop_name', 'New Shop'),
+    coalesce(new.raw_user_meta_data->>'shop_slug', 'shop-' || substr(new.id::text, 1, 8)),
+    new.raw_user_meta_data->>'phone',
+    new.raw_user_meta_data->>'location'
+  );
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function handle_new_dealer();
+
+-- Public, read-only directory so the Customer App can resolve a shop_slug to a dealer
+-- without exposing anything private. Runs as the (trusted) view owner, so it works
+-- even though the requester (a customer) isn't logged in.
+create or replace view public_shops
+  with (security_invoker = false) as
+  select id, shop_name, shop_slug, location from dealers;
+grant select on public_shops to anon, authenticated;
+
+-- ------------------------------------------------------------
+-- 2. INVENTORY
+-- ------------------------------------------------------------
+create table if not exists inventory (
+  id uuid primary key default gen_random_uuid(),
+  dealer_id uuid not null references dealers(id) on delete cascade,
+  imei text,
+  imei2 text,
+  model text not null,
+  storage text,
+  color text,
+  condition text check (condition in ('New','Used')),
+  battery int,
+  supplier text,
+  purchase_date date,
+  cost numeric,
+  price numeric,
+  status text not null default 'In Stock' check (status in ('In Stock','Reserved','Sold','In Repair')),
+  shelf text,
+  notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists idx_inventory_dealer on inventory(dealer_id);
+create index if not exists idx_inventory_model on inventory using gin (to_tsvector('simple', model));
+
+alter table inventory enable row level security;
+
+create policy "inventory_all_own" on inventory for all
+  using (dealer_id = auth.uid())
+  with check (dealer_id = auth.uid());
+
+create policy "inventory_select_admin" on inventory for select
+  using (is_admin());
+
+-- Cross-dealer search, for logged-in dealers only. Deliberately excludes cost/supplier
+-- so no dealer can see another dealer's margins — only what a buyer needs to know.
+create or replace view dealer_network_view
+  with (security_invoker = false) as
+  select
+    i.id, i.dealer_id, d.shop_name as dealer_name, d.phone as dealer_phone,
+    i.model, i.storage, i.color, i.condition, i.battery, i.price, i.updated_at
+  from inventory i
+  join dealers d on d.id = i.dealer_id
+  where i.status = 'In Stock';
+grant select on dealer_network_view to authenticated;
+
+-- Public storefront catalog for the Customer App (one dealer's in-stock phones only,
+-- no cost/supplier/IMEI exposed).
+create or replace view public_catalog
+  with (security_invoker = false) as
+  select id, dealer_id, model, storage, color, condition, battery, price, status
+  from inventory
+  where status = 'In Stock';
+grant select on public_catalog to anon, authenticated;
+
+-- ------------------------------------------------------------
+-- 3. SALES
+-- ------------------------------------------------------------
+create table if not exists sales (
+  id uuid primary key default gen_random_uuid(),
+  dealer_id uuid not null references dealers(id) on delete cascade,
+  date date not null default current_date,
+  imei text,
+  model text,
+  cost numeric,
+  sale_price numeric,
+  customer_name text,
+  customer_phone text,
+  payment_method text,
+  staff text,
+  warranty_days int default 0,
+  accessories text,
+  notes text,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_sales_dealer on sales(dealer_id);
+create index if not exists idx_sales_customer_phone on sales(customer_phone);
+
+alter table sales enable row level security;
+
+create policy "sales_all_own" on sales for all
+  using (dealer_id = auth.uid())
+  with check (dealer_id = auth.uid());
+
+create policy "sales_select_admin" on sales for select
+  using (is_admin());
+
+-- Lets a customer look up THEIR OWN purchase/warranty history by phone number,
+-- without exposing anyone else's sales. Only the fields they need, nothing private.
+create or replace function lookup_my_purchases(p_phone text)
+returns table (model text, date date, sale_price numeric, warranty_days int, shop_name text)
+language sql
+security definer set search_path = public
+as $$
+  select s.model, s.date, s.sale_price, s.warranty_days, d.shop_name
+  from sales s join dealers d on d.id = s.dealer_id
+  where regexp_replace(s.customer_phone, '\s', '', 'g') = regexp_replace(p_phone, '\s', '', 'g');
+$$;
+grant execute on function lookup_my_purchases(text) to anon, authenticated;
+
+-- Records a sale and marks the phone Sold, atomically, for the CURRENT dealer only.
+-- Runs with the caller's own privileges (not security definer), so normal RLS
+-- still applies — a dealer can only ever sell their own in-stock phones.
+-- Matches by inventory id (not IMEI) since IMEI is optional and multiple
+-- IMEI-less phones would otherwise be indistinguishable.
+create or replace function sell_phone(
+  p_inventory_id uuid, p_sale_price numeric, p_customer_name text, p_customer_phone text,
+  p_payment_method text, p_staff text, p_warranty_days int, p_accessories text, p_notes text
+)
+returns sales
+language plpgsql
+as $$
+declare
+  v_phone inventory%rowtype;
+  v_sale sales%rowtype;
+begin
+  select * into v_phone from inventory
+    where id = p_inventory_id and dealer_id = auth.uid() and status = 'In Stock'
+    limit 1;
+
+  if v_phone.id is null then
+    raise exception 'No in-stock phone found for that selection';
+  end if;
+
+  insert into sales (dealer_id, imei, model, cost, sale_price, customer_name, customer_phone,
+                      payment_method, staff, warranty_days, accessories, notes)
+  values (auth.uid(), v_phone.imei, v_phone.model, v_phone.cost, p_sale_price, p_customer_name, p_customer_phone,
+          p_payment_method, p_staff, p_warranty_days, p_accessories, p_notes)
+  returning * into v_sale;
+
+  update inventory set status = 'Sold', updated_at = now() where id = v_phone.id;
+
+  return v_sale;
+end;
+$$;
+grant execute on function sell_phone(uuid,numeric,text,text,text,text,int,text,text) to authenticated;
+
+-- ------------------------------------------------------------
+-- 4. REQUESTS  (customer waiting-list asks, submitted from the Customer App)
+-- ------------------------------------------------------------
+create table if not exists requests (
+  id uuid primary key default gen_random_uuid(),
+  dealer_id uuid not null references dealers(id) on delete cascade,
+  date date not null default current_date,
+  customer_name text,
+  customer_phone text,
+  model text not null,
+  storage text,
+  color text,
+  budget numeric,
+  status text not null default 'Pending' check (status in ('Pending','Fulfilled','Cancelled')),
+  notes text,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_requests_dealer on requests(dealer_id);
+
+alter table requests enable row level security;
+
+-- Anyone (a customer, not logged in) can submit a request to a specific shop.
+create policy "requests_insert_anyone" on requests for insert
+  with check (true);
+
+-- Only the shop it was sent to (or an admin) can read/manage it.
+create policy "requests_select_own" on requests for select
+  using (dealer_id = auth.uid());
+create policy "requests_update_own" on requests for update
+  using (dealer_id = auth.uid());
+create policy "requests_select_admin" on requests for select
+  using (is_admin());
+
+-- ------------------------------------------------------------
+-- 5. SUPPLIERS  (each dealer's own private colleague/supplier contacts)
+-- ------------------------------------------------------------
+create table if not exists suppliers (
+  id uuid primary key default gen_random_uuid(),
+  dealer_id uuid not null references dealers(id) on delete cascade,
+  name text not null,
+  phone text,
+  whatsapp text,
+  location text,
+  supplies text,
+  notes text,
+  owed numeric default 0,
+  due date,
+  created_at timestamptz not null default now()
+);
+alter table suppliers enable row level security;
+create policy "suppliers_all_own" on suppliers for all
+  using (dealer_id = auth.uid())
+  with check (dealer_id = auth.uid());
+create policy "suppliers_select_admin" on suppliers for select
+  using (is_admin());
+
+-- ------------------------------------------------------------
+-- 6. BROADCASTS + RESPONSES  (network-wide "need this phone urgently")
+-- ------------------------------------------------------------
+create table if not exists broadcasts (
+  id uuid primary key default gen_random_uuid(),
+  dealer_id uuid not null references dealers(id) on delete cascade,   -- who's asking
+  date date not null default current_date,
+  model text not null,
+  storage text,
+  color text,
+  urgency text,
+  status text not null default 'Open' check (status in ('Open','Closed')),
+  created_at timestamptz not null default now()
+);
+alter table broadcasts enable row level security;
+
+-- Every registered dealer can see every open broadcast — that's the point of the network.
+create policy "broadcasts_select_all" on broadcasts for select
+  using (auth.uid() is not null);
+create policy "broadcasts_insert_own" on broadcasts for insert
+  with check (dealer_id = auth.uid());
+create policy "broadcasts_update_own" on broadcasts for update
+  using (dealer_id = auth.uid());
+
+create table if not exists broadcast_responses (
+  id uuid primary key default gen_random_uuid(),
+  broadcast_id uuid not null references broadcasts(id) on delete cascade,
+  dealer_id uuid not null references dealers(id) on delete cascade,   -- who's responding
+  price numeric,
+  quantity int default 1,
+  contact_phone text,
+  created_at timestamptz not null default now()
+);
+alter table broadcast_responses enable row level security;
+
+create policy "broadcast_responses_select_all" on broadcast_responses for select
+  using (auth.uid() is not null);
+create policy "broadcast_responses_insert_own" on broadcast_responses for insert
+  with check (dealer_id = auth.uid());
+
+-- ============================================================
+-- After running this file:
+-- 1. Sign up your own account through the Seller App (this creates your dealer row).
+-- 2. Run:  update dealers set is_admin = true where shop_slug = 'your-shop-slug';
+--    (or `where id = 'your-auth-user-id'` — find it in Authentication > Users)
+-- ============================================================
+
+
+======================================================================================================================================================
+
+seller_index.html
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+:root{
+  --bg:#10141C; --panel:#171C27; --panel-2:#1F2530; --panel-3:#252C3A;
+  --border:#2A3140; --text:#EDEFF3; --text-dim:#8C96AA; --text-faint:#5C6577;
+  --accent:#E8A93A; --accent-dim:#7A6633; --success:#3FAE6C; --success-dim:#1E3A2A;
+  --danger:#E15B5B; --danger-dim:#3A2323; --info:#5B9CE1;
+  --radius:10px; --radius-sm:6px;
+  --font-display:'Space Grotesk',sans-serif; --font-body:'Inter',sans-serif; --font-mono:'JetBrains Mono',monospace;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-body);}
+#app{display:flex;min-height:600px;background:var(--bg);}
+::selection{background:var(--accent);color:#10141C;}
+::-webkit-scrollbar{width:8px;height:8px;}
+::-webkit-scrollbar-thumb{background:var(--panel-3);border-radius:4px;}
+::-webkit-scrollbar-track{background:transparent;}
+
+.rail{width:76px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;align-items:center;padding:18px 0;gap:4px;}
+.rail-logo{width:38px;height:38px;border-radius:9px;background:linear-gradient(145deg,var(--accent),#C4881F);
+  display:flex;align-items:center;justify-content:center;font-family:var(--font-display);font-weight:700;
+  color:#10141C;font-size:15px;margin-bottom:18px;}
+.rail-item{width:56px;height:52px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:4px;border-radius:var(--radius-sm);cursor:pointer;color:var(--text-faint);transition:.15s;position:relative;}
+.rail-item:hover{background:var(--panel-2);color:var(--text-dim);}
+.rail-item.active{background:var(--panel-2);color:var(--accent);}
+.rail-item.active::before{content:'';position:absolute;left:-18px;top:8px;bottom:8px;width:3px;background:var(--accent);border-radius:2px;}
+.rail-item svg{width:19px;height:19px;}
+.rail-item span{font-size:9.5px;font-weight:600;letter-spacing:.02em;}
+.rail-bottom{margin-top:auto;}
+
+.main{flex:1;display:flex;flex-direction:column;min-width:0;}
+.topbar{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--border);background:var(--panel);}
+.search-wrap{flex:1;max-width:560px;display:flex;align-items:center;gap:10px;background:var(--bg);
+  border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 14px;font-family:var(--font-mono);}
+.search-wrap:focus-within{border-color:var(--accent);}
+.search-wrap .prompt{color:var(--accent);font-weight:700;}
+.search-wrap input{flex:1;background:none;border:none;outline:none;color:var(--text);font-family:var(--font-mono);font-size:13px;}
+.search-wrap input::placeholder{color:var(--text-faint);}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:14px;color:var(--text-dim);font-size:12.5px;}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--success);box-shadow:0 0 0 3px var(--success-dim);}
+.gear{cursor:pointer;color:var(--text-faint);}
+.gear:hover{color:var(--text-dim);}
+.content{flex:1;overflow-y:auto;padding:24px 28px 60px;}
+.page-title{font-family:var(--font-display);font-size:22px;font-weight:700;margin:0 0 4px;}
+.page-sub{color:var(--text-dim);font-size:13px;margin:0 0 22px;}
+
+.search-results{position:absolute;top:56px;left:22px;right:22px;max-width:560px;background:var(--panel-2);
+  border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 12px 30px rgba(0,0,0,.4);z-index:50;
+  max-height:340px;overflow-y:auto;}
+.search-row{padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;justify-content:space-between;align-items:center;}
+.search-row:last-child{border-bottom:none;}
+.search-row:hover{background:var(--panel-3);}
+.search-row .sr-main{font-weight:600;font-size:13px;}
+.search-row .sr-sub{color:var(--text-faint);font-size:11.5px;font-family:var(--font-mono);}
+.search-row .sr-price{font-family:var(--font-mono);color:var(--accent);font-size:13px;}
+
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:26px;}
+.kpi{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;}
+.kpi-label{font-size:11.5px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;}
+.kpi-value{font-family:var(--font-mono);font-size:24px;font-weight:600;}
+.kpi-value.accent{color:var(--accent);}
+.kpi-value.good{color:var(--success);}
+.kpi-value.warn{color:var(--danger);}
+.kpi-delta{font-size:11px;color:var(--text-faint);margin-top:4px;}
+
+.section{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:20px;overflow:hidden;}
+.section-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+.section-head h3{margin:0;font-family:var(--font-display);font-size:14.5px;font-weight:600;}
+.section-body{padding:16px 18px;}
+
+.btn{font-family:var(--font-body);font-weight:600;font-size:12.5px;border-radius:var(--radius-sm);
+  border:1px solid var(--border);background:var(--panel-2);color:var(--text);padding:8px 14px;cursor:pointer;transition:.15s;
+  display:inline-flex;align-items:center;gap:6px;}
+.btn:hover{background:var(--panel-3);}
+.btn-accent{background:var(--accent);border-color:var(--accent);color:#10141C;}
+.btn-accent:hover{background:#F2B950;}
+.btn-danger{background:transparent;border-color:var(--danger);color:var(--danger);}
+.btn-danger:hover{background:var(--danger-dim);}
+.btn-sm{padding:5px 10px;font-size:11.5px;}
+.btn:disabled{opacity:.4;cursor:not-allowed;}
+
+table{width:100%;border-collapse:collapse;font-size:13px;}
+th{text-align:left;color:var(--text-faint);font-weight:600;font-size:11px;text-transform:uppercase;
+  letter-spacing:.04em;padding:8px 12px;border-bottom:1px solid var(--border);}
+td{padding:11px 12px;border-bottom:1px solid var(--border);color:var(--text-dim);}
+tr:last-child td{border-bottom:none;}
+td.mono, .mono{font-family:var(--font-mono);}
+td.strong{color:var(--text);font-weight:600;}
+tr:hover td{background:var(--panel-2);}
+
+.badge{display:inline-flex;align-items:center;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;font-family:var(--font-body);}
+.badge-stock{background:var(--success-dim);color:var(--success);}
+.badge-sold{background:var(--panel-3);color:var(--text-faint);}
+.badge-reserved{background:#3A3320;color:var(--accent);}
+.badge-repair{background:#2A2C3A;color:var(--info);}
+.badge-new{background:var(--panel-3);color:var(--text-dim);}
+.badge-danger{background:var(--danger-dim);color:var(--danger);}
+.badge-open{background:#3A3320;color:var(--accent);}
+.badge-closed{background:var(--panel-3);color:var(--text-faint);}
+.badge-admin{background:linear-gradient(90deg,#3A3320,#4A3C1F);color:var(--accent);}
+
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+.field{display:flex;flex-direction:column;gap:6px;}
+.field.full{grid-column:1/-1;}
+.field label{font-size:11.5px;color:var(--text-dim);font-weight:600;}
+.field input, .field select, .field textarea{
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 11px;
+  color:var(--text);font-family:var(--font-body);font-size:13px;outline:none;}
+.field input:focus, .field select:focus, .field textarea:focus{border-color:var(--accent);}
+.field.mono input{font-family:var(--font-mono);}
+
+.overlay{position:fixed;inset:0;background:rgba(8,10,15,.65);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px;}
+.modal{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);width:100%;max-width:620px;max-height:88vh;overflow-y:auto;}
+.modal-head{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;}
+.modal-head h3{margin:0;font-family:var(--font-display);font-size:16px;}
+.modal-body{padding:20px;}
+.modal-foot{padding:14px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px;}
+.close-x{background:none;border:none;color:var(--text-faint);font-size:20px;cursor:pointer;line-height:1;}
+
+.empty{text-align:center;padding:44px 20px;color:var(--text-faint);}
+.empty svg{width:36px;height:36px;margin-bottom:10px;opacity:.5;}
+.toast{position:fixed;bottom:24px;right:24px;background:var(--panel-2);border:1px solid var(--accent);
+  color:var(--text);padding:12px 18px;border-radius:var(--radius-sm);font-size:13px;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.4);max-width:340px;}
+.toast.err{border-color:var(--danger);color:var(--danger);}
+.pill-tabs{display:flex;gap:6px;margin-bottom:18px;background:var(--panel);padding:4px;border-radius:var(--radius-sm);
+  border:1px solid var(--border);width:fit-content;}
+.pill-tab{padding:7px 14px;border-radius:5px;font-size:12.5px;font-weight:600;color:var(--text-dim);cursor:pointer;}
+.pill-tab.active{background:var(--panel-3);color:var(--accent);}
+.calc-result{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px;margin-top:6px;}
+.calc-result .row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;}
+.calc-result .row:last-child{border-bottom:none;}
+.calc-result .row .v{font-family:var(--font-mono);font-weight:600;}
+.verdict{margin-top:10px;padding:12px 14px;border-radius:var(--radius-sm);font-weight:600;font-size:13px;text-align:center;}
+.verdict.ok{background:var(--success-dim);color:var(--success);}
+.verdict.no{background:var(--danger-dim);color:var(--danger);}
+.loading-screen{display:flex;align-items:center;justify-content:center;height:600px;color:var(--text-faint);font-family:var(--font-mono);font-size:13px;width:100%;flex-direction:column;gap:14px;text-align:center;padding:20px;}
+.footer-note{color:var(--text-faint);font-size:11px;text-align:center;padding:14px;}
+a.linklike{color:var(--info);cursor:pointer;text-decoration:underline;}
+
+.connect-wrap{max-width:480px;margin:50px auto;padding:0 20px;}
+.connect-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:28px;}
+.connect-card h2{font-family:var(--font-display);margin:0 0 6px;font-size:20px;}
+.connect-card p{color:var(--text-dim);font-size:13px;line-height:1.5;margin:0 0 18px;}
+.connect-card input, .connect-card select{width:100%;background:var(--bg);border:1px solid var(--border);
+  border-radius:var(--radius-sm);padding:10px 12px;color:var(--text);font-family:var(--font-body);font-size:13px;outline:none;margin-bottom:12px;}
+.connect-card input.mono{font-family:var(--font-mono);font-size:12px;}
+.connect-card input:focus{border-color:var(--accent);}
+.connect-status{font-size:12.5px;padding:10px 12px;border-radius:var(--radius-sm);margin-bottom:12px;}
+.connect-status.ok{background:var(--success-dim);color:var(--success);}
+.connect-status.err{background:var(--danger-dim);color:var(--danger);}
+.spinner{width:26px;height:26px;border:3px solid var(--panel-3);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.auth-tabs{display:flex;gap:4px;background:var(--bg);padding:4px;border-radius:var(--radius-sm);margin-bottom:18px;border:1px solid var(--border);}
+.auth-tab{flex:1;text-align:center;padding:8px;border-radius:5px;font-size:12.5px;font-weight:600;color:var(--text-dim);cursor:pointer;}
+.auth-tab.active{background:var(--panel-3);color:var(--accent);}
+</style>
+
+<div id="app"><div class="loading-screen"><div class="spinner"></div>booting dealer console…</div></div>
+
+<script>
+(function(){
+const ICONS = {
+  dashboard:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>',
+  inventory:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>',
+  sales:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>',
+  calc:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M8 6h8M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01M8 19h.01M12 19h.01M16 19h.01"/></svg>',
+  requests:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>',
+  network:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><path d="M12 8v5M12 13l-5 3M12 13l5 3"/></svg>',
+  admin:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/></svg>',
+  gear:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 005 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 005 8.6a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019 8.6a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>',
+  plus:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>',
+  empty:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg>'
+};
+
+const CONFIG_KEY = 'phonehub-supabase-config';
+// If you've deployed this app for real, paste your Supabase project URL and anon key here.
+// Doing so skips the "Connect" screen entirely for every dealer who opens this app.
+// Safe to leave blank while testing — the app will ask for them once and remember
+// them in this browser via localStorage.
+const HARDCODED_SUPABASE_URL = 'https://qqlykvrofoobowrsarxi.supabase.co';
+const HARDCODED_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFxbHlrdnJvZm9vYm93cnNhcnhpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQwMDc0MzcsImV4cCI6MjA5OTU4MzQzN30.3G0yVZbfkoBexdWj_YM9lqC-u4SSQxVgQOxgN-RruAc';
+let sb = null;
+
+let state = {
+  stage:'loading', // loading -> configure -> auth -> app
+  configError:null, configuring:false, urlInput:'', keyInput:'',
+  authMode:'login', authError:null, authBusy:false,
+  profile:null, isAdmin:false,
+  tab:'dashboard', inventory:[], sales:[], requests:[], suppliers:[], dealerNetwork:[], broadcasts:[], broadcastResponses:[],
+  adminDealers:[], adminInventory:[], adminSales:[],
+  searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
+  networkView:'search', dealerSearchQuery:''
+};
+
+function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function naira(n){ n = Number(n)||0; return '₦'+n.toLocaleString('en-NG',{maximumFractionDigits:0}); }
+function todayISO(){ return new Date().toISOString().slice(0,10); }
+function daysBetween(a,b){ return Math.round((new Date(b)-new Date(a))/86400000); }
+function escapeAttr(s){ return (s||'').toString().replace(/"/g,'&quot;'); }
+function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function val(id){ const el = document.getElementById(id); return el ? el.value : ''; }
+function slugify(s){ return (s||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,''); }
+
+function loadConfig(){
+  if(HARDCODED_SUPABASE_URL && HARDCODED_SUPABASE_ANON_KEY){
+    return { url: HARDCODED_SUPABASE_URL, key: HARDCODED_SUPABASE_ANON_KEY };
+  }
+  try{ const raw = localStorage.getItem(CONFIG_KEY); return raw ? JSON.parse(raw) : null; }
+  catch(e){ return null; }
+}
+function saveConfig(url,key){
+  try{ localStorage.setItem(CONFIG_KEY, JSON.stringify({url:url,key:key})); } catch(e){ /* ignore */ }
+}
+
+async function init(){
+  const cfg = await loadConfig();
+  if(!cfg){ state.stage='configure'; render(); return; }
+  await connectSupabase(cfg.url, cfg.key, false);
+}
+
+async function connectSupabase(url, key, persist){
+  try{
+    sb = window.supabase.createClient(url, key);
+    const { data, error } = await sb.auth.getSession();
+    if(error) throw error;
+    if(persist) await saveConfig(url, key);
+    if(data.session){
+      await loadAfterAuth();
+    } else {
+      state.stage = 'auth'; render();
+    }
+  } catch(e){
+    state.stage = 'configure'; state.configError = e.message || String(e); render();
+  }
+}
+
+async function loadAfterAuth(){
+  try{
+    const { data: { user } } = await sb.auth.getUser();
+    const { data: profile, error: pErr } = await sb.from('dealers').select('*').eq('id', user.id).single();
+    if(pErr) throw pErr;
+    state.profile = profile; state.isAdmin = !!profile.is_admin;
+    await refreshAll();
+    state.stage = 'app';
+  } catch(e){
+    state.stage = 'auth'; state.authError = 'Could not load your shop profile: ' + (e.message||e);
+  }
+  render();
+}
+
+async function refreshAll(){
+  const [inv, sales, reqs, sups, dn, bc] = await Promise.all([
+    sb.from('inventory').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
+    sb.from('sales').select('*').eq('dealer_id', state.profile.id).order('date',{ascending:false}),
+    sb.from('requests').select('*').eq('dealer_id', state.profile.id).order('date',{ascending:false}),
+    sb.from('suppliers').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
+    sb.from('dealer_network_view').select('*'),
+    sb.from('broadcasts').select('*').order('date',{ascending:false}),
+  ]);
+  state.inventory = inv.data || []; state.sales = sales.data || []; state.requests = reqs.data || [];
+  state.suppliers = sups.data || []; state.dealerNetwork = dn.data || []; state.broadcasts = bc.data || [];
+  const bcIds = state.broadcasts.map(function(b){return b.id;});
+  if(bcIds.length){
+    const br = await sb.from('broadcast_responses').select('*').in('broadcast_id', bcIds);
+    state.broadcastResponses = br.data || [];
+  } else { state.broadcastResponses = []; }
+
+  if(state.isAdmin){
+    const [ad, ai, as_] = await Promise.all([
+      sb.from('dealers').select('*'),
+      sb.from('inventory').select('*'),
+      sb.from('sales').select('*'),
+    ]);
+    state.adminDealers = ad.data || []; state.adminInventory = ai.data || []; state.adminSales = as_.data || [];
+  }
+}
+
+async function refreshOne(table, target, extraFilter){
+  let q = sb.from(table).select('*').eq('dealer_id', state.profile.id);
+  const { data, error } = await q;
+  if(!error) state[target] = data || [];
+}
+
+function showToast(msg, err){ state.toast = msg; state.toastErr = !!err; render(); setTimeout(function(){ state.toast=null; render(); }, 3200); }
+function setTab(t){ state.tab = t; state.modal=null; render(); }
+function openModal(name, payload){ state.modal = {name:name, payload: payload||{}}; render(); }
+function closeModal(){ state.modal = null; render(); }
+
+function isToday(d){ return d === todayISO(); }
+function thisMonth(d){ if(!d) return false; const now=new Date(); const dd=new Date(d); return dd.getFullYear()===now.getFullYear() && dd.getMonth()===now.getMonth(); }
+
+function computeKPIs(){
+  const salesToday = state.sales.filter(function(s){ return isToday(s.date); });
+  const salesMonth = state.sales.filter(function(s){ return thisMonth(s.date); });
+  const profit = function(s){ return (Number(s.sale_price)||0) - (Number(s.cost)||0); };
+  const inStock = state.inventory.filter(function(p){ return p.status==='In Stock'; });
+  const reserved = state.inventory.filter(function(p){ return p.status==='Reserved'; });
+  const stockValue = inStock.reduce(function(a,p){ return a+(Number(p.cost)||0); },0);
+  const warrantyList = state.sales.map(function(s){
+    if(!s.date || !s.warranty_days) return null;
+    const expiry = new Date(s.date); expiry.setDate(expiry.getDate()+Number(s.warranty_days));
+    const daysLeft = daysBetween(todayISO(), expiry.toISOString().slice(0,10));
+    return Object.assign({}, s, {daysLeft:daysLeft});
+  }).filter(Boolean);
+  const expiringSoon = warrantyList.filter(function(w){ return w.daysLeft>=0 && w.daysLeft<=7; }).length;
+  const expired = warrantyList.filter(function(w){ return w.daysLeft<0; }).length;
+  const pendingRequests = state.requests.filter(function(r){ return r.status==='Pending'; }).length;
+  const openBroadcasts = state.broadcasts.filter(function(b){ return b.status==='Open'; }).length;
+  return {
+    unitsToday: salesToday.length,
+    revenueToday: salesToday.reduce(function(a,s){ return a+(Number(s.sale_price)||0); },0),
+    profitToday: salesToday.reduce(function(a,s){ return a+profit(s); },0),
+    unitsMonth: salesMonth.length,
+    revenueMonth: salesMonth.reduce(function(a,s){ return a+(Number(s.sale_price)||0); },0),
+    profitMonth: salesMonth.reduce(function(a,s){ return a+profit(s); },0),
+    inStockCount: inStock.length, reservedCount: reserved.length, stockValue: stockValue,
+    expiringSoon: expiringSoon, expired: expired, pendingRequests: pendingRequests, openBroadcasts: openBroadcasts
+  };
+}
+
+function staffLeaderboard(){
+  const map = {};
+  state.sales.filter(function(s){ return thisMonth(s.date); }).forEach(function(s){
+    const k = s.staff || 'Unassigned';
+    if(!map[k]) map[k] = {staff:k, units:0, revenue:0, profit:0};
+    map[k].units++; map[k].revenue += Number(s.sale_price)||0;
+    map[k].profit += (Number(s.sale_price)||0)-(Number(s.cost)||0);
+  });
+  return Object.values(map).sort(function(a,b){ return b.profit-a.profit; });
+}
+
+function searchAll(q){
+  if(!q || q.trim().length<1) return [];
+  q = q.toLowerCase();
+  const invHits = state.inventory.filter(function(p){
+    return String(p.imei||'').includes(q) || String(p.imei2||'').includes(q) || String(p.model||'').toLowerCase().includes(q) ||
+      String(p.color||'').toLowerCase().includes(q) || String(p.supplier||'').toLowerCase().includes(q);
+  }).map(function(p){ return {type:'phone', item:p}; });
+  const saleHits = state.sales.filter(function(s){
+    return String(s.customer_name||'').toLowerCase().includes(q) || String(s.customer_phone||'').includes(q);
+  }).map(function(s){ return {type:'sale', item:s}; });
+  return invHits.concat(saleHits).slice(0,8);
+}
+
+/* ---------- render root ---------- */
+function render(){
+  const app = document.getElementById('app');
+  if(state.stage==='loading'){ app.innerHTML = '<div class="loading-screen"><div class="spinner"></div>booting dealer console…</div>'; return; }
+  if(state.stage==='configure'){ app.innerHTML = renderConfigureScreen(); attachConfigureHandlers(); return; }
+  if(state.stage==='auth'){ app.innerHTML = renderAuthScreen(); attachAuthHandlers(); return; }
+
+  app.innerHTML =
+    '<div class="rail">' +
+      '<div class="rail-logo">PH</div>' +
+      railItem('dashboard','Home') + railItem('inventory','Stock') + railItem('sales','Sales') +
+      railItem('calc','Price') + railItem('requests','Asks', badgeCount(state.requests.filter(function(r){return r.status==='Pending';}).length)) +
+      railItem('network','Network', badgeCount(state.broadcasts.filter(function(b){return b.status==='Open';}).length)) +
+      (state.isAdmin ? railItem('admin','Admin') : '') +
+    '</div>' +
+    '<div class="main">' +
+      '<div class="topbar" style="position:relative;">' +
+        '<div class="search-wrap"><span class="prompt">›</span>' +
+        '<input id="globalSearch" placeholder="Search IMEI, model, or customer…" value="'+escapeAttr(state.searchQuery)+'"/></div>' +
+        (state.searchQuery ? renderSearchDropdown() : '') +
+        '<div class="topbar-right">' +
+          '<span class="dot"></span> '+escapeHtml(state.profile.shop_name)+(state.isAdmin?' <span class="badge badge-admin">admin</span>':'') +
+          '<span class="gear" id="logoutBtn" title="Log out">'+ICONS.gear+'</span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="content">'+renderTab()+'</div>' +
+    '</div>' +
+    (state.modal ? renderModal() : '') +
+    (state.toast ? ('<div class="toast '+(state.toastErr?'err':'')+'">'+escapeHtml(state.toast)+'</div>') : '');
+  attachHandlers();
+}
+
+/* ---------- configure (one-time, platform-wide) ---------- */
+function renderConfigureScreen(){
+  return '<div class="connect-wrap"><div class="connect-card">' +
+    '<h2>Connect this app to Supabase</h2>' +
+    '<p>One-time setup for the whole platform. Paste your Supabase project URL and anon (public) key — find both in your Supabase project under Settings → API.</p>' +
+    (state.configError ? ('<div class="connect-status err">'+escapeHtml(state.configError)+'</div>') : '') +
+    '<input id="cfgUrl" placeholder="https://xxxxx.supabase.co" value="'+escapeAttr(state.urlInput)+'"/>' +
+    '<input id="cfgKey" class="mono" placeholder="anon public key (eyJ...)" value="'+escapeAttr(state.keyInput)+'"/>' +
+    '<button class="btn btn-accent" id="cfgConnectBtn" style="width:100%;justify-content:center;" '+(state.configuring?'disabled':'')+'>'+(state.configuring?'Connecting…':'Connect')+'</button>' +
+    '<div class="footer-note" style="padding-top:16px;">See SUPABASE_SETUP_GUIDE.md for how to create the project and run the schema.</div>' +
+  '</div></div>';
+}
+function attachConfigureHandlers(){
+  const u = document.getElementById('cfgUrl'), k = document.getElementById('cfgKey');
+  if(u) u.addEventListener('input', function(e){ state.urlInput = e.target.value; });
+  if(k) k.addEventListener('input', function(e){ state.keyInput = e.target.value; });
+  const btn = document.getElementById('cfgConnectBtn');
+  if(btn) btn.addEventListener('click', async function(){
+    const url = (document.getElementById('cfgUrl').value||'').trim();
+    const key = (document.getElementById('cfgKey').value||'').trim();
+    if(!url || !key){ state.configError = 'Please fill in both fields.'; render(); return; }
+    state.configuring = true; state.configError=null; render();
+    await connectSupabase(url, key, true);
+    state.configuring = false;
+  });
+}
+
+/* ---------- auth (sign up / log in) ---------- */
+function renderAuthScreen(){
+  const signup = state.authMode==='signup';
+  return '<div class="connect-wrap"><div class="connect-card">' +
+    '<h2>'+(signup?'Register your shop':'Welcome back')+'</h2>' +
+    '<div class="auth-tabs">' +
+      '<div class="auth-tab '+(!signup?'active':'')+'" data-auth-mode="login">Log in</div>' +
+      '<div class="auth-tab '+(signup?'active':'')+'" data-auth-mode="signup">Register</div>' +
+    '</div>' +
+    (state.authError ? ('<div class="connect-status err">'+escapeHtml(state.authError)+'</div>') : '') +
+    (signup ? (
+      '<input id="a-shop" placeholder="Shop name (e.g. Musa Electronics)"/>' +
+      '<input id="a-phone" placeholder="Phone number"/>' +
+      '<input id="a-location" placeholder="Location (e.g. Otigba Street)"/>'
+    ) : '') +
+    '<input id="a-email" placeholder="Email" type="email"/>' +
+    '<input id="a-password" placeholder="Password" type="password"/>' +
+    '<button class="btn btn-accent" id="authBtn" style="width:100%;justify-content:center;" '+(state.authBusy?'disabled':'')+'>' +
+      (state.authBusy ? 'Please wait…' : (signup?'Create shop account':'Log in')) +
+    '</button>' +
+    (signup ? '<div class="footer-note">If email confirmation is on in your Supabase project, check your inbox after registering.</div>' : '') +
+  '</div></div>';
+}
+function attachAuthHandlers(){
+  document.querySelectorAll('[data-auth-mode]').forEach(function(el){
+    el.addEventListener('click', function(){ state.authMode = el.getAttribute('data-auth-mode'); state.authError=null; render(); });
+  });
+  const btn = document.getElementById('authBtn');
+  if(btn) btn.addEventListener('click', async function(){
+    const email = val('a-email'), password = val('a-password');
+    const shopName = val('a-shop'), phoneField = val('a-phone'), locationField = val('a-location');
+    if(!email || !password){ state.authError='Email and password are required.'; render(); return; }
+    if(state.authMode==='signup' && !shopName){ state.authError='Shop name is required.'; render(); return; }
+    state.authBusy = true; state.authError = null; render();
+    try{
+      if(state.authMode==='signup'){
+        const shopSlug = slugify(shopName) + '-' + Math.random().toString(36).slice(2,6);
+        const { data, error } = await sb.auth.signUp({
+          email:email, password:password,
+          options:{ data:{ shop_name:shopName, shop_slug:shopSlug, phone:phoneField, location:locationField } }
+        });
+        if(error) throw error;
+        if(!data.session){
+          state.authBusy = false;
+          state.authError = 'Check your email to confirm your account, then log in.';
+          state.authMode = 'login'; render(); return;
+        }
+      } else {
+        const { error } = await sb.auth.signInWithPassword({ email:email, password:password });
+        if(error) throw error;
+      }
+      state.authBusy = false;
+      await loadAfterAuth();
+    } catch(e){
+      state.authBusy = false; state.authError = e.message || String(e); render();
+    }
+  });
+}
+
+function badgeCount(n){ return n>0 ? '<span style="position:absolute;margin-left:26px;margin-top:-30px;background:var(--accent);color:#10141C;font-size:9px;font-weight:700;border-radius:8px;padding:1px 5px;">'+n+'</span>' : ''; }
+function railItem(key, label, extra){
+  return '<div class="rail-item '+(state.tab===key?'active':'')+'" data-tab="'+key+'" style="position:relative">'+ICONS[key]+'<span>'+label+'</span>'+(extra||'')+'</div>';
+}
+
+function renderSearchDropdown(){
+  const results = searchAll(state.searchQuery);
+  if(!results.length) return '<div class="search-results"><div class="search-row" style="color:var(--text-faint)">No matches for "'+escapeHtml(state.searchQuery)+'"</div></div>';
+  return '<div class="search-results">' + results.map(function(r){
+    if(r.type==='phone'){
+      const p = r.item;
+      return '<div class="search-row" data-open-phone="'+p.id+'">' +
+        '<div><div class="sr-main">'+escapeHtml(p.model)+' · '+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</div>' +
+        '<div class="sr-sub">IMEI '+escapeHtml(p.imei)+' · '+badge(p.status)+'</div></div>' +
+        '<div class="sr-price">'+naira(p.price)+'</div></div>';
+    } else {
+      const s = r.item;
+      return '<div class="search-row">' +
+        '<div><div class="sr-main">'+escapeHtml(s.customer_name)+'</div>' +
+        '<div class="sr-sub">'+escapeHtml(s.customer_phone)+' · bought '+escapeHtml(s.model)+'</div></div>' +
+        '<div class="sr-price">'+naira(s.sale_price)+'</div></div>';
+    }
+  }).join('') + '</div>';
+}
+
+function badge(status){
+  const map = {'In Stock':'badge-stock','Sold':'badge-sold','Reserved':'badge-reserved','In Repair':'badge-repair','Pending':'badge-reserved','Fulfilled':'badge-stock','Cancelled':'badge-sold','Open':'badge-open','Closed':'badge-closed'};
+  return '<span class="badge '+(map[status]||'badge-new')+'">'+escapeHtml(status)+'</span>';
+}
+
+function renderTab(){
+  if(state.tab==='dashboard') return renderDashboard();
+  if(state.tab==='inventory') return renderInventory();
+  if(state.tab==='sales') return renderSales();
+  if(state.tab==='calc') return renderCalc();
+  if(state.tab==='requests') return renderRequests();
+  if(state.tab==='network') return renderNetwork();
+  if(state.tab==='admin') return renderAdmin();
+  return '';
+}
+
+function renderDashboard(){
+  const k = computeKPIs();
+  const board = staffLeaderboard();
+  return '<h1 class="page-title">Today on the floor</h1>' +
+    '<p class="page-sub">'+new Date().toLocaleDateString('en-NG',{weekday:'long', year:'numeric', month:'long', day:'numeric'})+'</p>' +
+    '<div class="kpi-grid">' +
+      '<div class="kpi"><div class="kpi-label">Units sold today</div><div class="kpi-value">'+k.unitsToday+'</div></div>' +
+      '<div class="kpi"><div class="kpi-label">Revenue today</div><div class="kpi-value accent">'+naira(k.revenueToday)+'</div></div>' +
+      '<div class="kpi"><div class="kpi-label">Profit today</div><div class="kpi-value good">'+naira(k.profitToday)+'</div></div>' +
+      '<div class="kpi"><div class="kpi-label">Phones in stock</div><div class="kpi-value">'+k.inStockCount+'</div><div class="kpi-delta">'+k.reservedCount+' reserved</div></div>' +
+      '<div class="kpi"><div class="kpi-label">Stock value (cost)</div><div class="kpi-value">'+naira(k.stockValue)+'</div></div>' +
+      '<div class="kpi"><div class="kpi-label">Warranty alerts</div><div class="kpi-value '+(k.expired>0?'warn':'')+'">'+(k.expiringSoon+k.expired)+'</div><div class="kpi-delta">'+k.expiringSoon+' expiring soon · '+k.expired+' expired</div></div>' +
+    '</div>' +
+    '<div class="section"><div class="section-head"><h3>This month</h3></div>' +
+      '<div class="section-body kpi-grid" style="margin:0;">' +
+        '<div><div class="kpi-label">Units sold</div><div class="kpi-value" style="font-size:19px">'+k.unitsMonth+'</div></div>' +
+        '<div><div class="kpi-label">Revenue</div><div class="kpi-value" style="font-size:19px">'+naira(k.revenueMonth)+'</div></div>' +
+        '<div><div class="kpi-label">Profit</div><div class="kpi-value good" style="font-size:19px">'+naira(k.profitMonth)+'</div></div>' +
+      '</div></div>' +
+    '<div class="section"><div class="section-head"><h3>Staff leaderboard — this month</h3></div>' +
+      '<div class="section-body" style="padding:0;">' +
+        (board.length ? ('<table><thead><tr><th>Staff</th><th>Units</th><th>Revenue</th><th>Profit</th></tr></thead><tbody>' +
+          board.map(function(b){ return '<tr><td class="strong">'+escapeHtml(b.staff)+'</td><td class="mono">'+b.units+'</td><td class="mono">'+naira(b.revenue)+'</td><td class="mono" style="color:var(--success)">'+naira(b.profit)+'</td></tr>'; }).join('') +
+        '</tbody></table>') : '<div class="empty">No sales logged yet this month.</div>') +
+      '</div></div>' +
+    ((k.pendingRequests>0 || k.openBroadcasts>0) ? ('<div class="section"><div class="section-body" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between;">' +
+      '<div>'+(k.pendingRequests>0?('<strong style="color:var(--accent)">'+k.pendingRequests+' customer request'+(k.pendingRequests>1?'s':'')+'</strong> waiting. '):'')+(k.openBroadcasts>0?('<strong style="color:var(--accent)">'+k.openBroadcasts+' open broadcast'+(k.openBroadcasts>1?'s':'')+'</strong> across the network.'):'')+'</div>' +
+      '<div style="display:flex;gap:8px;">' +
+        (k.pendingRequests>0?'<button class="btn btn-sm" data-tab="requests">View requests</button>':'') +
+        (k.openBroadcasts>0?'<button class="btn btn-sm" data-tab="network">View network</button>':'') +
+      '</div></div></div>') : '');
+}
+
+function renderInventory(){
+  const items = state.inventory.slice().sort(function(a,b){ return (a.status==='In Stock'?0:1)-(b.status==='In Stock'?0:1); });
+  return '<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
+      '<div><h1 class="page-title">Inventory</h1><p class="page-sub">'+state.inventory.length+' phones tracked · '+state.inventory.filter(function(p){return p.status==='In Stock';}).length+' in stock</p></div>' +
+      '<button class="btn btn-accent" data-open-modal="addPhone">'+ICONS.plus+' Add phone</button>' +
+    '</div>' +
+    '<div class="section"><div class="section-body" style="padding:0;overflow-x:auto;">' +
+      (items.length ? ('<table><thead><tr><th>Model</th><th>IMEI</th><th>Storage / Color</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
+        items.map(function(p){ return '<tr>' +
+          '<td class="strong">'+escapeHtml(p.model)+'</td>' +
+          '<td class="mono">'+(p.imei?escapeHtml(p.imei):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+          '<td>'+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</td>' +
+          '<td>'+escapeHtml(p.condition)+(p.condition==='Used'?(' · '+p.battery+'% batt'):'')+'</td>' +
+          '<td class="mono">'+naira(p.cost)+'</td>' +
+          '<td class="mono">'+naira(p.price)+'</td>' +
+          '<td class="mono" style="color:var(--success)">'+naira((Number(p.price)||0)-(Number(p.cost)||0))+'</td>' +
+          '<td>'+badge(p.status)+'</td>' +
+          '<td>'+escapeHtml(p.shelf)+'</td>' +
+          '<td><button class="btn btn-sm" data-open-modal="editPhone" data-id="'+p.id+'">Edit</button></td>' +
+        '</tr>'; }).join('') +
+      '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No phones yet. Add your first one.</div></div>')) +
+    '</div></div>';
+}
+
+function renderSales(){
+  const rows = state.sales.slice().sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
+  return '<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
+      '<div><h1 class="page-title">Sales log</h1><p class="page-sub">'+state.sales.length+' sales recorded</p></div>' +
+      '<button class="btn btn-accent" data-open-modal="logSale">'+ICONS.plus+' Log a sale</button>' +
+    '</div>' +
+    '<div class="section"><div class="section-body" style="padding:0;overflow-x:auto;">' +
+      (rows.length ? ('<table><thead><tr><th>Date</th><th>Phone</th><th>Customer</th><th>Sale price</th><th>Profit</th><th>Payment</th><th>Staff</th><th>Warranty</th></tr></thead><tbody>' +
+        rows.map(function(s){
+          const expiry = new Date(s.date); expiry.setDate(expiry.getDate()+Number(s.warranty_days||0));
+          const daysLeft = daysBetween(todayISO(), expiry.toISOString().slice(0,10));
+          const wStatus = !s.warranty_days ? '—' : daysLeft<0 ? badge('Expired') : daysLeft<=7 ? ('<span class="badge badge-danger">'+daysLeft+'d left</span>') : (daysLeft+'d left');
+          return '<tr>' +
+          '<td class="mono">'+escapeHtml(s.date)+'</td>' +
+          '<td class="strong">'+escapeHtml(s.model)+'</td>' +
+          '<td>'+escapeHtml(s.customer_name)+'<br><span class="mono" style="color:var(--text-faint);font-size:11px">'+escapeHtml(s.customer_phone)+'</span></td>' +
+          '<td class="mono">'+naira(s.sale_price)+'</td>' +
+          '<td class="mono" style="color:var(--success)">'+naira((Number(s.sale_price)||0)-(Number(s.cost)||0))+'</td>' +
+          '<td>'+escapeHtml(s.payment_method)+'</td>' +
+          '<td>'+escapeHtml(s.staff)+'</td>' +
+          '<td>'+wStatus+'</td>' +
+        '</tr>'; }).join('') +
+      '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No sales logged yet.</div></div>')) +
+    '</div></div>';
+}
+
+function renderCalc(){
+  const c = state.calcInputs;
+  const recommended = Number(c.cost)+Number(c.target);
+  const minimum = Number(c.cost)+Number(c.min);
+  const actualProfit = Number(c.offer)-Number(c.cost);
+  const accept = Number(c.offer) >= minimum;
+  return '<h1 class="page-title">Smart profit calculator</h1>' +
+    '<p class="page-sub">Price a phone you\'re sourcing from another dealer — before you quote the customer.</p>' +
+    '<div class="section" style="max-width:640px;"><div class="section-body">' +
+      '<div class="form-grid">' +
+        '<div class="field mono"><label>Dealer / cost price (₦)</label><input type="number" id="calc-cost" value="'+c.cost+'"/></div>' +
+        '<div class="field mono"><label>Your target profit (₦)</label><input type="number" id="calc-target" value="'+c.target+'"/></div>' +
+        '<div class="field mono"><label>Minimum acceptable profit (₦)</label><input type="number" id="calc-min" value="'+c.min+'"/></div>' +
+        '<div class="field mono"><label>Customer\'s negotiated offer (₦)</label><input type="number" id="calc-offer" value="'+c.offer+'"/></div>' +
+      '</div>' +
+      '<div class="calc-result">' +
+        '<div class="row"><span>Recommended selling price</span><span class="v">'+naira(recommended)+'</span></div>' +
+        '<div class="row"><span>Walk-away minimum price</span><span class="v">'+naira(minimum)+'</span></div>' +
+        '<div class="row"><span>Actual profit at their offer</span><span class="v" style="color:'+(actualProfit>=0?'var(--success)':'var(--danger)')+'">'+naira(actualProfit)+'</span></div>' +
+      '</div>' +
+      '<div class="verdict '+(accept?'ok':'no')+'">'+(accept ? '✅ Accept — still profitable' : '⚠️ Below your minimum — reject or renegotiate')+'</div>' +
+    '</div></div>';
+}
+
+function renderRequests(){
+  const rows = state.requests.slice().sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
+  return '<h1 class="page-title">Customer requests</h1>' +
+    '<p class="page-sub">Phones customers asked for that weren\'t in stock — submitted from your Customer App storefront.</p>' +
+    '<div class="section"><div class="section-body" style="padding:0;overflow-x:auto;">' +
+      (rows.length ? ('<table><thead><tr><th>Date</th><th>Customer</th><th>Phone wanted</th><th>Budget</th><th>Status</th><th></th></tr></thead><tbody>' +
+        rows.map(function(r){ return '<tr>' +
+          '<td class="mono">'+escapeHtml(r.date)+'</td>' +
+          '<td>'+escapeHtml(r.customer_name)+'<br><span class="mono" style="color:var(--text-faint);font-size:11px">'+escapeHtml(r.customer_phone)+'</span></td>' +
+          '<td class="strong">'+escapeHtml(r.model)+(r.storage?(' · '+escapeHtml(r.storage)):'')+(r.color?(' · '+escapeHtml(r.color)):'')+'</td>' +
+          '<td class="mono">'+(r.budget?naira(r.budget):'—')+'</td>' +
+          '<td>'+badge(r.status)+'</td>' +
+          '<td>'+(r.status==='Pending' ? ('<button class="btn btn-sm" data-fulfill-request="'+r.id+'">Mark fulfilled</button>') : '')+'</td>' +
+        '</tr>'; }).join('') +
+      '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No customer requests yet.</div></div>')) +
+    '</div></div>';
+}
+
+function renderNetwork(){
+  return '<h1 class="page-title">Dealer network</h1>' +
+    '<p class="page-sub">Search every registered dealer\'s in-stock phones, or broadcast an urgent need.</p>' +
+    '<div class="pill-tabs">' +
+      '<div class="pill-tab '+(state.networkView==='search'?'active':'')+'" data-network-view="search">Search stock</div>' +
+      '<div class="pill-tab '+(state.networkView==='broadcasts'?'active':'')+'" data-network-view="broadcasts">Broadcasts</div>' +
+      '<div class="pill-tab '+(state.networkView==='suppliers'?'active':'')+'" data-network-view="suppliers">My contacts</div>' +
+    '</div>' +
+    (state.networkView==='search' ? renderNetworkSearch() : '') +
+    (state.networkView==='broadcasts' ? renderBroadcasts() : '') +
+    (state.networkView==='suppliers' ? renderSuppliers() : '');
+}
+
+function renderNetworkSearch(){
+  const q = state.dealerSearchQuery.toLowerCase();
+  const results = q ? state.dealerNetwork.filter(function(d){ return String(d.model||'').toLowerCase().includes(q); }) : state.dealerNetwork;
+  const sorted = results.slice().sort(function(a,b){ return (Number(a.price)||0)-(Number(b.price)||0); });
+  return '<div class="section"><div class="section-body">' +
+      '<input id="dealerSearch" placeholder="e.g. S24 Ultra, iPhone 15…" value="'+escapeAttr(state.dealerSearchQuery)+'" ' +
+      'style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;color:var(--text);font-family:var(--font-mono);font-size:13px;outline:none;margin-bottom:14px;"/>' +
+      (sorted.length ? ('<table><thead><tr><th>Model</th><th>Dealer</th><th>Price</th><th>Updated</th><th></th></tr></thead><tbody>' +
+        sorted.map(function(d,i){ return '<tr>' +
+          '<td class="strong">'+escapeHtml(d.model)+(d.storage?(' · '+escapeHtml(d.storage)):'')+(d.color?(' · '+escapeHtml(d.color)):'')+(d.condition==='Used'?(' · '+d.battery+'% batt'):'')+'</td>' +
+          '<td>'+escapeHtml(d.dealer_name)+(d.dealer_id===state.profile.id?' <span style="font-size:10px;color:var(--text-faint)">(you)</span>':'')+'</td>' +
+          '<td class="mono" style="color:'+(i===0?'var(--success)':'var(--text)')+'">'+naira(d.price)+(i===0?' <span style="font-size:10px">· lowest</span>':'')+'</td>' +
+          '<td class="mono" style="font-size:11px;color:var(--text-faint)">'+new Date(d.updated_at).toLocaleDateString()+'</td>' +
+          '<td><a class="linklike" href="tel:'+escapeAttr(d.dealer_phone)+'">'+escapeHtml(d.dealer_phone||'—')+'</a></td>' +
+        '</tr>'; }).join('') +
+      '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No matches in the network yet. Try a broadcast instead.</div></div>')) +
+    '</div></div>';
+}
+
+function renderBroadcasts(){
+  const rows = state.broadcasts.slice().sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
+  const body = rows.map(function(b){
+    const responses = state.broadcastResponses.filter(function(r){ return r.broadcast_id===b.id; }).sort(function(a,b2){ return (Number(a.price)||0)-(Number(b2.price)||0); });
+    const isMine = b.dealer_id === state.profile.id;
+    return '<div class="section">' +
+      '<div class="section-head"><div><strong>'+escapeHtml(b.model)+'</strong> '+(b.storage?(' · '+escapeHtml(b.storage)):'')+' '+(b.color?(' · '+escapeHtml(b.color)):'')+(isMine?' <span style="font-size:10px;color:var(--text-faint)">(your request)</span>':'')+
+      '<div style="font-size:11.5px;color:var(--text-faint);margin-top:3px;">'+escapeHtml(b.date)+' · '+escapeHtml(b.urgency)+'</div></div>' +
+      '<div style="display:flex;align-items:center;gap:10px;">'+badge(b.status)+
+        (isMine && b.status==='Open'?('<button class="btn btn-sm" data-close-broadcast="'+b.id+'">Close</button>'):'') +
+        (!isMine && b.status==='Open'?('<button class="btn btn-sm btn-accent" data-open-modal="respondBroadcast" data-id="'+b.id+'">Respond</button>'):'') +
+      '</div></div>' +
+      '<div class="section-body" style="padding:0;">' +
+        (responses.length ? ('<table><thead><tr><th>Dealer</th><th>Price</th><th>Qty</th><th>Contact</th></tr></thead><tbody>' +
+          responses.map(function(r,i){ return '<tr><td class="strong">'+(r.dealer_id===state.profile.id?'You':'A dealer')+(i===0?' <span style="color:var(--success);font-size:10px">· best offer</span>':'')+'</td>' +
+          '<td class="mono">'+naira(r.price)+'</td><td class="mono">'+escapeHtml(r.quantity)+'</td>' +
+          '<td><a class="linklike" href="tel:'+escapeAttr(r.contact_phone)+'">'+escapeHtml(r.contact_phone)+'</a></td></tr>'; }).join('') +
+        '</tbody></table>') : '<div class="empty" style="padding:20px;">No responses yet.</div>') +
+      '</div></div>';
+  }).join('');
+  return '<div style="display:flex;justify-content:flex-end;margin-bottom:14px;"><button class="btn btn-accent" data-open-modal="newBroadcast">'+ICONS.plus+' New broadcast</button></div>' +
+    (body || ('<div class="empty">'+ICONS.empty+'<div>No broadcasts yet. Send one when you need a phone urgently.</div></div>'));
+}
+
+function renderSuppliers(){
+  const rows = state.suppliers;
+  return '<div style="display:flex;justify-content:flex-end;margin-bottom:14px;"><button class="btn btn-accent" data-open-modal="addSupplier">'+ICONS.plus+' Add contact</button></div>' +
+    '<div class="section"><div class="section-body" style="padding:0;overflow-x:auto;">' +
+      (rows.length ? ('<table><thead><tr><th>Name</th><th>Phone</th><th>Location</th><th>Supplies</th><th>Owed</th></tr></thead><tbody>' +
+        rows.map(function(s){ return '<tr>' +
+          '<td class="strong">'+escapeHtml(s.name)+'</td>' +
+          '<td class="mono">'+escapeHtml(s.phone)+'</td>' +
+          '<td>'+escapeHtml(s.location)+'</td>' +
+          '<td>'+escapeHtml(s.supplies)+'</td>' +
+          '<td class="mono" style="color:'+(Number(s.owed)>0?'var(--danger)':'var(--text-dim)')+'">'+naira(s.owed)+'</td>' +
+        '</tr>'; }).join('') +
+      '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No suppliers added yet.</div></div>')) +
+    '</div></div>';
+}
+
+function renderAdmin(){
+  const dealers = state.adminDealers;
+  const invByDealer = {}; state.adminInventory.forEach(function(p){ (invByDealer[p.dealer_id]=invByDealer[p.dealer_id]||[]).push(p); });
+  const salesByDealer = {}; state.adminSales.forEach(function(s){ (salesByDealer[s.dealer_id]=salesByDealer[s.dealer_id]||[]).push(s); });
+  const totalDealers = dealers.length;
+  const totalPhones = state.adminInventory.length;
+  const totalRevenue = state.adminSales.reduce(function(a,s){ return a+(Number(s.sale_price)||0); },0);
+  return '<h1 class="page-title">Platform overview</h1>' +
+    '<p class="page-sub">Visible only to admin accounts — every dealer\'s activity, across the whole network.</p>' +
+    '<div class="kpi-grid">' +
+      '<div class="kpi"><div class="kpi-label">Registered dealers</div><div class="kpi-value">'+totalDealers+'</div></div>' +
+      '<div class="kpi"><div class="kpi-label">Total phones tracked</div><div class="kpi-value">'+totalPhones+'</div></div>' +
+      '<div class="kpi"><div class="kpi-label">Total platform revenue</div><div class="kpi-value accent">'+naira(totalRevenue)+'</div></div>' +
+    '</div>' +
+    '<div class="section"><div class="section-head"><h3>Dealers</h3></div><div class="section-body" style="padding:0;overflow-x:auto;">' +
+      '<table><thead><tr><th>Shop</th><th>Location</th><th>Phone</th><th>Phones tracked</th><th>Sales</th><th>Revenue</th><th>Joined</th></tr></thead><tbody>' +
+      dealers.map(function(d){
+        const inv = invByDealer[d.id]||[]; const sal = salesByDealer[d.id]||[];
+        const rev = sal.reduce(function(a,s){ return a+(Number(s.sale_price)||0); },0);
+        return '<tr><td class="strong">'+escapeHtml(d.shop_name)+(d.is_admin?' <span class="badge badge-admin">admin</span>':'')+'</td>' +
+          '<td>'+escapeHtml(d.location)+'</td><td class="mono">'+escapeHtml(d.phone)+'</td>' +
+          '<td class="mono">'+inv.length+'</td><td class="mono">'+sal.length+'</td>' +
+          '<td class="mono">'+naira(rev)+'</td><td class="mono" style="font-size:11px;color:var(--text-faint)">'+new Date(d.created_at).toLocaleDateString()+'</td></tr>';
+      }).join('') +
+      '</tbody></table>' +
+    '</div></div>';
+}
+
+/* ---------- Modals ---------- */
+function renderModal(){
+  const m = state.modal;
+  if(m.name==='addPhone' || m.name==='editPhone') return renderPhoneModal(m);
+  if(m.name==='logSale') return renderSaleModal();
+  if(m.name==='addSupplier') return renderSupplierModal();
+  if(m.name==='newBroadcast') return renderBroadcastModal();
+  if(m.name==='respondBroadcast') return renderRespondModal(m);
+  return '';
+}
+
+function renderPhoneModal(m){
+  const editing = m.name==='editPhone';
+  const p = editing ? (state.inventory.find(function(x){ return x.id===m.payload.id; }) || {}) : {};
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
+    '<div class="modal-head"><h3>'+(editing?'Edit phone':'Add phone')+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body"><div class="form-grid">' +
+      '<div class="field mono"><label>IMEI 1 (optional)</label><input id="f-imei" value="'+escapeAttr(p.imei)+'"/></div>' +
+      '<div class="field mono"><label>IMEI 2 (optional)</label><input id="f-imei2" value="'+escapeAttr(p.imei2)+'"/></div>' +
+      '<div class="field"><label>Phone model</label><input id="f-model" value="'+escapeAttr(p.model)+'" placeholder="e.g. iPhone 14 Pro"/></div>' +
+      '<div class="field"><label>Storage</label><input id="f-storage" value="'+escapeAttr(p.storage)+'" placeholder="256GB"/></div>' +
+      '<div class="field"><label>Color</label><input id="f-color" value="'+escapeAttr(p.color)+'"/></div>' +
+      '<div class="field"><label>Condition</label><select id="f-condition"><option '+(p.condition==='New'?'selected':'')+'>New</option><option '+(p.condition==='Used'?'selected':'')+'>Used</option></select></div>' +
+      '<div class="field"><label>Battery health %</label><input type="number" id="f-battery" value="'+(p.battery!=null?p.battery:100)+'"/></div>' +
+      '<div class="field"><label>Supplier</label><input id="f-supplier" value="'+escapeAttr(p.supplier)+'"/></div>' +
+      '<div class="field mono"><label>Cost price (₦)</label><input type="number" id="f-cost" value="'+(p.cost||'')+'"/></div>' +
+      '<div class="field mono"><label>Selling price (₦)</label><input type="number" id="f-price" value="'+(p.price||'')+'"/></div>' +
+      '<div class="field"><label>Status</label><select id="f-status">'+['In Stock','Reserved','Sold','In Repair'].map(function(s){ return '<option '+(p.status===s?'selected':'')+'>'+s+'</option>'; }).join('')+'</select></div>' +
+      '<div class="field"><label>Shelf location</label><input id="f-shelf" value="'+escapeAttr(p.shelf)+'"/></div>' +
+      '<div class="field full"><label>Notes</label><textarea id="f-notes" rows="2">'+escapeHtml(p.notes)+'</textarea></div>' +
+    '</div></div>' +
+    '<div class="modal-foot">' +
+      (editing ? ('<button class="btn btn-danger" data-delete-phone="'+p.id+'">Delete</button>') : '') +
+      '<button class="btn" data-close-modal="1">Cancel</button>' +
+      '<button class="btn btn-accent" data-save-phone="'+(editing?p.id:'')+'">'+(editing?'Save changes':'Add to inventory')+'</button>' +
+    '</div></div></div>';
+}
+
+function renderSaleModal(){
+  const available = state.inventory.filter(function(p){ return p.status==='In Stock'; });
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
+    '<div class="modal-head"><h3>Log a sale</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body"><div class="form-grid">' +
+      '<div class="field full"><label>Phone (in stock only)</label><select id="s-inventory-id"><option value="">Select a phone…</option>' +
+        available.map(function(p){ return '<option value="'+p.id+'">'+escapeHtml(p.model)+' · '+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+' — '+naira(p.price)+(p.imei?(' (IMEI '+escapeHtml(p.imei)+')'):' (no IMEI on file)')+'</option>'; }).join('') +
+      '</select></div>' +
+      '<div class="field"><label>Sale date</label><input type="date" id="s-date" value="'+todayISO()+'"/></div>' +
+      '<div class="field mono"><label>Sale price (₦)</label><input type="number" id="s-price"/></div>' +
+      '<div class="field"><label>Customer name</label><input id="s-name"/></div>' +
+      '<div class="field"><label>Customer phone</label><input id="s-phone"/></div>' +
+      '<div class="field"><label>Payment method</label><select id="s-payment"><option>Cash</option><option>Transfer</option><option>POS</option></select></div>' +
+      '<div class="field"><label>Staff</label><input id="s-staff"/></div>' +
+      '<div class="field"><label>Warranty (days)</label><input type="number" id="s-warranty" value="30"/></div>' +
+      '<div class="field full"><label>Accessories sold</label><input id="s-accessories" placeholder="Case, screen protector…"/></div>' +
+    '</div></div>' +
+    '<div class="modal-foot"><button class="btn" data-close-modal="1">Cancel</button><button class="btn btn-accent" data-save-sale="1">Complete sale</button></div>' +
+  '</div></div>';
+}
+
+function renderSupplierModal(){
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
+    '<div class="modal-head"><h3>Add supplier / colleague</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body"><div class="form-grid">' +
+      '<div class="field"><label>Name</label><input id="sup-name"/></div>' +
+      '<div class="field"><label>Phone</label><input id="sup-phone"/></div>' +
+      '<div class="field"><label>Location</label><input id="sup-location"/></div>' +
+      '<div class="field"><label>Amount owed (₦)</label><input type="number" id="sup-owed" value="0"/></div>' +
+      '<div class="field full"><label>Phones they usually supply</label><input id="sup-supplies"/></div>' +
+    '</div></div>' +
+    '<div class="modal-foot"><button class="btn" data-close-modal="1">Cancel</button><button class="btn btn-accent" data-save-supplier="1">Save contact</button></div>' +
+  '</div></div>';
+}
+
+function renderBroadcastModal(){
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
+    '<div class="modal-head"><h3>Broadcast an urgent need</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">Every registered dealer will see this instantly.</p>' +
+      '<div class="form-grid">' +
+        '<div class="field"><label>Phone model</label><input id="b-model" placeholder="iPhone 15 Pro Max"/></div>' +
+        '<div class="field"><label>Storage / color</label><input id="b-variant" placeholder="256GB, Natural Titanium"/></div>' +
+        '<div class="field full"><label>Urgency / note</label><input id="b-urgency" placeholder="Need today — customer waiting in shop"/></div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="modal-foot"><button class="btn" data-close-modal="1">Cancel</button><button class="btn btn-accent" data-save-broadcast="1">Send broadcast</button></div>' +
+  '</div></div>';
+}
+
+function renderRespondModal(m){
+  const b = state.broadcasts.find(function(x){ return x.id===m.payload.id; });
+  if(!b) return '';
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
+    '<div class="modal-head"><h3>Respond: '+escapeHtml(b.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body"><div class="form-grid">' +
+      '<div class="field mono"><label>Your price (₦)</label><input type="number" id="rb-price"/></div>' +
+      '<div class="field"><label>Quantity available</label><input type="number" id="rb-qty" value="1"/></div>' +
+      '<div class="field full"><label>Contact phone</label><input id="rb-phone" value="'+escapeAttr(state.profile.phone)+'"/></div>' +
+    '</div></div>' +
+    '<div class="modal-foot"><button class="btn" data-close-modal="1">Cancel</button><button class="btn btn-accent" data-save-response="'+b.id+'">Send response</button></div>' +
+  '</div></div>';
+}
+
+/* ---------- event wiring ---------- */
+function attachHandlers(){
+  const app = document.getElementById('app');
+  app.querySelectorAll('[data-tab]').forEach(function(el){ el.addEventListener('click', function(){ setTab(el.getAttribute('data-tab')); }); });
+  const logoutBtn = document.getElementById('logoutBtn');
+  if(logoutBtn) logoutBtn.addEventListener('click', async function(){ await sb.auth.signOut(); state.stage='auth'; state.profile=null; render(); });
+
+  const gs = document.getElementById('globalSearch');
+  if(gs){
+    gs.addEventListener('input', function(e){
+      state.searchQuery = e.target.value; render();
+      const el = document.getElementById('globalSearch'); el.focus(); el.selectionStart = el.selectionEnd = state.searchQuery.length;
+    });
+  }
+  app.querySelectorAll('[data-open-phone]').forEach(function(el){ el.addEventListener('click', function(){ state.searchQuery=''; openModal('editPhone',{id:el.getAttribute('data-open-phone')}); }); });
+  app.querySelectorAll('[data-open-modal]').forEach(function(el){ el.addEventListener('click', function(){ openModal(el.getAttribute('data-open-modal'), {id:el.getAttribute('data-id')}); }); });
+  app.querySelectorAll('[data-close-modal]').forEach(function(el){ el.addEventListener('click', closeModal); });
+  app.querySelectorAll('[data-close-overlay]').forEach(function(el){ el.addEventListener('click', closeModal); });
+  app.querySelectorAll('[data-stop]').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); });
+  app.querySelectorAll('[data-network-view]').forEach(function(el){ el.addEventListener('click', function(){ state.networkView = el.getAttribute('data-network-view'); render(); }); });
+
+  const dealerSearch = document.getElementById('dealerSearch');
+  if(dealerSearch) dealerSearch.addEventListener('input', function(e){
+    state.dealerSearchQuery = e.target.value; render();
+    const el = document.getElementById('dealerSearch'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = state.dealerSearchQuery.length; }
+  });
+
+  app.querySelectorAll('[data-save-phone]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-save-phone');
+    const data = {
+      imei: val('f-imei')||null, imei2: val('f-imei2')||null, model: val('f-model'), storage: val('f-storage'),
+      color: val('f-color'), condition: val('f-condition'), battery: Number(val('f-battery')),
+      supplier: val('f-supplier'), purchase_date: todayISO(), cost: Number(val('f-cost')), price: Number(val('f-price')),
+      status: val('f-status'), shelf: val('f-shelf'), notes: val('f-notes')
+    };
+    if(!data.model){ showToast('Phone model is required', true); return; }
+    try{
+      if(id){ const { error } = await sb.from('inventory').update(data).eq('id', id); if(error) throw error; }
+      else{ data.dealer_id = state.profile.id; const { error } = await sb.from('inventory').insert(data); if(error) throw error; }
+      await refreshAll();
+      closeModal(); showToast(id?'Phone updated':'Phone added to inventory');
+    } catch(e){ showToast('Save failed: '+e.message, true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-delete-phone]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-delete-phone');
+    try{
+      const { error } = await sb.from('inventory').delete().eq('id', id);
+      if(error) throw error;
+      await refreshAll();
+      closeModal(); showToast('Phone removed');
+    } catch(e){ showToast('Delete failed: '+e.message, true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-save-sale]').forEach(function(el){ el.addEventListener('click', async function(){
+    const inventoryId = val('s-inventory-id');
+    if(!inventoryId){ showToast('Select a phone to sell', true); return; }
+    const price = Number(val('s-price'));
+    if(!price){ showToast('Enter a sale price', true); return; }
+    try{
+      const { error } = await sb.rpc('sell_phone', {
+        p_inventory_id: inventoryId, p_sale_price: price, p_customer_name: val('s-name'), p_customer_phone: val('s-phone'),
+        p_payment_method: val('s-payment'), p_staff: val('s-staff'), p_warranty_days: Number(val('s-warranty'))||0,
+        p_accessories: val('s-accessories'), p_notes: ''
+      });
+      if(error) throw error;
+      await refreshAll();
+      closeModal(); showToast('Sale logged — inventory updated');
+    } catch(e){ showToast('Sale failed: '+e.message, true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-save-supplier]').forEach(function(el){ el.addEventListener('click', async function(){
+    const name = val('sup-name');
+    if(!name){ showToast('Name is required', true); return; }
+    const data = { dealer_id: state.profile.id, name:name, phone:val('sup-phone'), whatsapp:val('sup-phone'), location:val('sup-location'), supplies:val('sup-supplies'), owed:Number(val('sup-owed'))||0 };
+    try{
+      const { error } = await sb.from('suppliers').insert(data);
+      if(error) throw error;
+      await refreshAll();
+      closeModal(); showToast('Supplier added');
+    } catch(e){ showToast('Save failed: '+e.message, true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-fulfill-request]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-fulfill-request');
+    try{
+      const { error } = await sb.from('requests').update({status:'Fulfilled'}).eq('id', id);
+      if(error) throw error;
+      await refreshAll();
+      showToast('Request marked fulfilled'); render();
+    } catch(e){ showToast('Update failed: '+e.message, true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-save-broadcast]').forEach(function(el){ el.addEventListener('click', async function(){
+    const model = val('b-model');
+    if(!model){ showToast('Enter a phone model', true); return; }
+    const data = { dealer_id: state.profile.id, model:model, storage:val('b-variant'), urgency: val('b-urgency')||'Normal', status:'Open' };
+    try{
+      const { error } = await sb.from('broadcasts').insert(data);
+      if(error) throw error;
+      await refreshAll();
+      closeModal(); showToast('Broadcast sent to the network');
+    } catch(e){ showToast('Broadcast failed: '+e.message, true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-close-broadcast]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-close-broadcast');
+    try{
+      const { error } = await sb.from('broadcasts').update({status:'Closed'}).eq('id', id);
+      if(error) throw error;
+      await refreshAll();
+      showToast('Broadcast closed'); render();
+    } catch(e){ showToast('Update failed: '+e.message, true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-save-response]').forEach(function(el){ el.addEventListener('click', async function(){
+    const broadcastId = el.getAttribute('data-save-response');
+    const price = Number(val('rb-price'));
+    if(!price){ showToast('Enter your price', true); return; }
+    const data = { broadcast_id: broadcastId, dealer_id: state.profile.id, price:price, quantity:Number(val('rb-qty'))||1, contact_phone: val('rb-phone') };
+    try{
+      const { error } = await sb.from('broadcast_responses').insert(data);
+      if(error) throw error;
+      await refreshAll();
+      closeModal(); showToast('Response sent');
+    } catch(e){ showToast('Failed: '+e.message, true); render(); }
+  }); });
+
+  ['calc-cost','calc-target','calc-min','calc-offer'].forEach(function(id){
+    const el = document.getElementById(id);
+    if(el) el.addEventListener('input', function(){
+      state.calcInputs = { cost: val('calc-cost')||0, target: val('calc-target')||0, min: val('calc-min')||0, offer: val('calc-offer')||0 };
+      render();
+    });
+  });
+}
+
+init();
+})();
+</script>
+
+======================================================================================================================================================
+
+SUPABASE_SETUP_GUIDE.md
+
+# PhoneHub Pro — Supabase Setup Guide
+### Real multi-tenant database, free tier, ready for your first 10–50 dealers
+
+---
+
+## Step 1 — Create your Supabase project
+
+1. Go to [supabase.com](https://supabase.com) → sign up (free) → **New project**.
+2. Pick a name (e.g. "phonehub-pro"), a database password (save it somewhere), and a region close to Nigeria (e.g. an EU region is usually the lowest latency option currently offered).
+3. Wait ~2 minutes for it to provision.
+
+## Step 2 — Run the schema
+
+1. In your project, open the **SQL Editor** (left sidebar).
+2. Click **New query**, paste in the entire contents of **schema.sql**, and click **Run**.
+3. You should see a series of "CREATE TABLE / CREATE POLICY / CREATE VIEW" success messages with no errors. This creates every table, security rule, and the two special database functions (`sell_phone`, `lookup_my_purchases`) that both apps depend on.
+
+## Step 3 — Turn off email confirmation (recommended for testing)
+
+By default, Supabase requires users to click an email confirmation link before they can log in. For fast testing with your first dealers, turn this off:
+
+1. **Authentication → Providers → Email**.
+2. Turn off **"Confirm email"**.
+3. Save.
+
+(You can turn this back on later once you want production-grade signups.)
+
+## Step 4 — Get your API keys
+
+1. **Settings → API**.
+2. Copy the **Project URL** (looks like `https://xxxxx.supabase.co`) and the **anon public** key (a long string starting with `eyJ...`). Do NOT use the `service_role` key in the apps — that key bypasses all security rules and must never go in client-facing code.
+
+## Step 5 — Connect both apps
+
+1. Open the **Seller App** — first launch asks for these two values. Paste them in and click Connect.
+2. You'll land on a Register/Log in screen. **Register your own shop first** — this is how you'll test as a dealer.
+3. Open the **Customer App** — it asks for the same two values once. After that, it shows a shop picker listing every registered dealer.
+
+## Step 6 — Make yourself admin
+
+1. After registering in the Seller App, go back to Supabase's **SQL Editor** and run:
+   ```sql
+   update dealers set is_admin = true where shop_slug = 'your-shop-slug-here';
+   ```
+   (Find your exact `shop_slug` by running `select shop_name, shop_slug from dealers;` first.)
+2. Refresh/re-log into the Seller App — you'll now see an **Admin** tab showing every dealer, their stock counts, and total platform revenue.
+
+## Everyday use
+
+- **Each dealer registers their own account** — their inventory, sales, and customer requests are automatically private to them (enforced by the database itself, not just app-level logic).
+- **Dealer Network tab → Search stock** shows every registered dealer's in-stock phones (price, model, condition) so any dealer can find who has what — without ever seeing each other's cost prices.
+- **Broadcasts** are visible to every dealer instantly — no WhatsApp groups, no ban risk.
+- **Customer App** — anyone who picks a shop sees only that shop's real-time catalog; submitting a request writes straight into that dealer's Seller App "Asks" tab. "My purchases" searches across *all* shops by phone number, so a customer only needs to remember their own number, not which shop they bought from.
+
+## Cost & limits at this stage
+
+Supabase's free tier includes 500MB database storage and 50,000 monthly active users — far beyond what 10–50 dealers and their customers will use. You will not need a paid plan until you're seeing real scale (many hundreds of dealers or heavy daily traffic), at which point upgrading is a plan change, not a rebuild.
+
+## What's next (Phase 4 ideas, once this is proven)
+
+- WhatsApp/SMS delivery for warranty reminders and broadcast alerts (needs a paid messaging API — Meta Cloud API or Twilio — this is the one piece that genuinely can't be free)
+- Invoice/receipt PDF generation
+- A dealer reputation/verification layer (fulfillment rate, response time) now that broadcasts have real responders
+- Paid plans / monetization once dealers are asking to pay
+
+
+Future plan
+
+The bucket refills roughly every hour. If you've only tested with 2 real signups but tried a few times each (typos, password-too-short errors, etc.), those failed attempts count too. Waiting ~30–60 minutes usually clears it.
+For the real fix once you're ready to onboard actual dealers: set up free custom SMTP so you're no longer using Supabase's shared/testing email service at all. This removes the 2/hour cap entirely (limits become whatever your SMTP provider allows).
+
+Resend (free tier: 3,000 emails/month, no credit card) or Brevo are both good, free, and take about 2 minutes.
+Configure it under Authentication → Settings → SMTP Settings in your Supabase dashboard.
+
