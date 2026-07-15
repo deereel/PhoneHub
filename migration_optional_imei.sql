@@ -1,6 +1,11 @@
 -- ============================================================
 -- PhoneHub Pro — Migration: make IMEI optional
 -- ============================================================
+-- ONLY needed if you already ran an OLDER version of schema.sql that had
+-- IMEI as NOT NULL. The schema.sql in this package already has IMEI as
+-- optional and sell_phone() matching by inventory id — skip this file
+-- entirely on a fresh project.
+--
 -- Run this once in Supabase: Dashboard > SQL Editor > New query > paste > Run.
 -- Safe to re-run.
 -- ============================================================

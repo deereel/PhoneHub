@@ -1,3 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PhoneHub Pro — Seller</title>
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#10141C">
+<link rel="icon" href="./icon-192.png">
+<link rel="apple-touch-icon" href="./icon-192.png">
+</head>
+<body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
@@ -42,6 +54,9 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-body
 .search-wrap input::placeholder{color:var(--text-faint);}
 .topbar-right{margin-left:auto;display:flex;align-items:center;gap:14px;color:var(--text-dim);font-size:12.5px;}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--success);box-shadow:0 0 0 3px var(--success-dim);}
+.bell{cursor:pointer;color:var(--text-faint);position:relative;}
+.bell:hover{color:var(--accent);}
+.bell.on{color:var(--success);}
 .gear{cursor:pointer;color:var(--text-faint);}
 .gear:hover{color:var(--text-dim);}
 .content{flex:1;overflow-y:auto;padding:24px 28px 60px;}
@@ -157,9 +172,35 @@ a.linklike{color:var(--info);cursor:pointer;text-decoration:underline;}
 .auth-tabs{display:flex;gap:4px;background:var(--bg);padding:4px;border-radius:var(--radius-sm);margin-bottom:18px;border:1px solid var(--border);}
 .auth-tab{flex:1;text-align:center;padding:8px;border-radius:5px;font-size:12.5px;font-weight:600;color:var(--text-dim);cursor:pointer;}
 .auth-tab.active{background:var(--panel-3);color:var(--accent);}
+.notif-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);}
+.notif-row:last-child{border-bottom:none;}
+.notif-row .n-label{font-weight:600;font-size:13px;}
+.notif-row .n-sub{color:var(--text-faint);font-size:11.5px;margin-top:2px;}
+
+.install-banner{position:fixed;left:0;right:0;bottom:0;z-index:500;
+  background:linear-gradient(90deg,#F2B950,var(--accent));color:#10141C;
+  padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  box-shadow:0 -8px 28px rgba(0,0,0,.45);animation:ib-slide-up .25s ease-out;}
+@keyframes ib-slide-up{from{transform:translateY(100%);}to{transform:translateY(0);}}
+.install-banner .ib-icon{width:34px;height:34px;border-radius:8px;background:#10141C;color:var(--accent);
+  display:flex;align-items:center;justify-content:center;font-family:var(--font-display);font-weight:700;
+  font-size:13px;flex-shrink:0;}
+.install-banner .ib-text{flex:1;min-width:200px;}
+.install-banner .ib-title{font-family:var(--font-display);font-weight:700;font-size:13.5px;line-height:1.3;}
+.install-banner .ib-sub{font-size:11.5px;opacity:.85;margin-top:2px;line-height:1.4;}
+.install-banner .btn-install{background:#10141C;color:var(--accent);border-color:#10141C;font-size:12.5px;
+  padding:9px 16px;white-space:nowrap;}
+.install-banner .btn-install:hover{background:#20242F;}
+.install-banner .ib-ios-hint{font-size:11.5px;font-weight:600;max-width:180px;line-height:1.4;}
+.install-banner .ib-dismiss{background:none;border:none;color:#10141C;opacity:.55;font-size:19px;
+  cursor:pointer;line-height:1;padding:0 2px;flex-shrink:0;}
+.install-banner .ib-dismiss:hover{opacity:.9;}
+body.ib-padding .content{padding-bottom:96px;}
+body.ib-padding .connect-wrap{margin-bottom:96px;}
 </style>
 
 <div id="app"><div class="loading-screen"><div class="spinner"></div>booting dealer console…</div></div>
+<div id="installBannerRoot"></div>
 
 <script>
 (function(){
@@ -173,7 +214,8 @@ const ICONS = {
   admin:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/></svg>',
   gear:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 005 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 005 8.6a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019 8.6a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>',
   plus:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>',
-  empty:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg>'
+  empty:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg>',
+  bell:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>'
 };
 
 const CONFIG_KEY = 'phonehub-supabase-config';
@@ -183,6 +225,11 @@ const CONFIG_KEY = 'phonehub-supabase-config';
 // them in this browser via localStorage.
 const HARDCODED_SUPABASE_URL = 'https://qqlykvrofoobowrsarxi.supabase.co';
 const HARDCODED_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFxbHlrdnJvZm9vYm93cnNhcnhpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQwMDc0MzcsImV4cCI6MjA5OTU4MzQzN30.3G0yVZbfkoBexdWj_YM9lqC-u4SSQxVgQOxgN-RruAc';
+
+// ---- Web Push: paste the VAPID PUBLIC key printed by SUPABASE_SETUP_GUIDE / your Edge Function deploy ----
+// This key is safe to be public (it is NOT the private key).
+const VAPID_PUBLIC_KEY = 'BBaI8oRyneg29btIHbptXiW5JA8oAXDk5V3MehmsvJXHvsQXn97QVCLTvwiKJI4QOIvp8S31krRlw0exiAJ-KWg';
+
 let sb = null;
 
 let state = {
@@ -193,8 +240,84 @@ let state = {
   tab:'dashboard', inventory:[], sales:[], requests:[], suppliers:[], dealerNetwork:[], broadcasts:[], broadcastResponses:[],
   adminDealers:[], adminInventory:[], adminSales:[],
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
-  networkView:'search', dealerSearchQuery:''
+  networkView:'search', dealerSearchQuery:'',
+  bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'',
+  pushStatus:'unsupported', // unsupported | off | prompting | on | denied
+  notifPromptShown:false // guards against re-opening the notif modal more than once per launch
 };
+
+/* ---------- PWA install detection & prompt ---------- */
+let deferredInstallPrompt = null;
+let isStandaloneCached = false;
+
+function checkStandalone(){
+  let standalone = false;
+  try{ standalone = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches; } catch(e){ /* ignore */ }
+  if(!standalone && window.navigator && window.navigator.standalone) standalone = true; // iOS "Add to Home Screen"
+  isStandaloneCached = standalone;
+  return standalone;
+}
+function isIOSDevice(){
+  return /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+}
+
+window.addEventListener('beforeinstallprompt', function(e){
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  updateInstallBanner();
+});
+window.addEventListener('appinstalled', function(){
+  deferredInstallPrompt = null;
+  checkStandalone();
+  updateInstallBanner();
+  showToast('PhoneHub installed — you\'ll now get dealer requests and broadcasts as alerts');
+});
+
+function renderInstallBanner(){
+  if(checkStandalone()) return ''; // the only condition that hides it: actually installed
+  const ios = isIOSDevice();
+  let actionHtml;
+  if(deferredInstallPrompt){
+    actionHtml = '<button class="btn btn-install" id="installNowBtn">Install App</button>';
+  } else if(ios){
+    actionHtml = '<div class="ib-ios-hint">Tap <strong>Share</strong> ⬆️, then <strong>Add to Home Screen</strong></div>';
+  } else {
+    actionHtml = '<button class="btn btn-install" id="installHowBtn">How to install</button>';
+  }
+  return '<div class="install-banner" id="installBanner">' +
+      '<div class="ib-icon">PH</div>' +
+      '<div class="ib-text"><div class="ib-title">Install PhoneHub to get dealer alerts</div>' +
+        '<div class="ib-sub">Customer requests and network broadcasts from other dealers only reach you when the app is installed on this device.</div></div>' +
+      actionHtml +
+    '</div>';
+}
+
+function updateInstallBanner(){
+  const root = document.getElementById('installBannerRoot');
+  if(!root) return;
+  const html = renderInstallBanner();
+  root.innerHTML = html;
+  document.body.classList.toggle('ib-padding', !!html);
+  if(html) attachInstallBannerHandlers();
+}
+
+function attachInstallBannerHandlers(){
+  const installBtn = document.getElementById('installNowBtn');
+  if(installBtn) installBtn.addEventListener('click', async function(){
+    if(!deferredInstallPrompt) return;
+    try{
+      deferredInstallPrompt.prompt();
+      const choice = await deferredInstallPrompt.userChoice;
+      deferredInstallPrompt = null;
+      if(choice && choice.outcome === 'accepted'){ showToast('Installing PhoneHub…'); }
+    } catch(e){ /* ignore */ }
+    updateInstallBanner();
+  });
+  const howBtn = document.getElementById('installHowBtn');
+  if(howBtn) howBtn.addEventListener('click', function(){
+    showToast('Open your browser menu (⋮ or Share icon) and choose "Add to Home Screen" / "Install app"');
+  });
+}
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function naira(n){ n = Number(n)||0; return '₦'+n.toLocaleString('en-NG',{maximumFractionDigits:0}); }
@@ -204,6 +327,282 @@ function escapeAttr(s){ return (s||'').toString().replace(/"/g,'&quot;'); }
 function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function val(id){ const el = document.getElementById(id); return el ? el.value : ''; }
 function slugify(s){ return (s||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,''); }
+
+/* ---------- push notifications ---------- */
+function urlBase64ToUint8Array(base64String){
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+async function initPush(){
+  if(!('serviceWorker' in navigator) || !('PushManager' in window)){
+    state.pushStatus = 'unsupported'; return;
+  }
+  try{
+    const reg = await navigator.serviceWorker.register('./sw.js');
+    const existing = await reg.pushManager.getSubscription();
+    if(existing && Notification.permission==='granted'){ state.pushStatus = 'on'; }
+    else if(Notification.permission==='denied'){ state.pushStatus = 'denied'; }
+    else { state.pushStatus = 'off'; }
+  } catch(e){
+    state.pushStatus = 'unsupported';
+    console.error('PhoneHub: push setup failed', e);
+  }
+}
+
+async function enablePush(){
+  if(!('serviceWorker' in navigator) || !('PushManager' in window)){
+    showToast('Push notifications are not supported in this browser', true); return;
+  }
+  state.pushStatus = 'prompting'; render();
+  try{
+    const perm = await Notification.requestPermission();
+    if(perm !== 'granted'){
+      state.pushStatus = perm==='denied' ? 'denied' : 'off';
+      showToast(perm==='denied' ? 'Notifications blocked — enable them in your browser/site settings' : 'Notifications not enabled', true);
+      render(); return;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if(!sub){
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+      });
+    }
+    const json = sub.toJSON();
+    const { error } = await sb.from('push_subscriptions').upsert({
+      dealer_id: state.profile.id,
+      endpoint: json.endpoint,
+      p256dh: json.keys.p256dh,
+      auth: json.keys.auth
+    }, { onConflict: 'endpoint' });
+    if(error) throw error;
+    state.pushStatus = 'on';
+    showToast('Notifications enabled — you\'ll get alerts even with the app closed');
+  } catch(e){
+    state.pushStatus = 'off';
+    showToast('Could not enable notifications: '+(e.message||e), true);
+  }
+  render();
+}
+
+async function disablePush(){
+  try{
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if(sub){
+      await sb.from('push_subscriptions').delete().eq('endpoint', sub.endpoint);
+      await sub.unsubscribe();
+    }
+    state.pushStatus = 'off';
+    showToast('Notifications turned off for this device');
+  } catch(e){ showToast('Could not disable: '+(e.message||e), true); }
+  render();
+}
+
+/* ---------- bulk import parser ---------- */
+function extractPrice(line){
+  var m, lastN=null, lastK=null, lastC=null;
+  var reN = /\bN\s?(\d[\d,]*)/gi;
+  while((m = reN.exec(line))){ lastN = m; }
+  if(lastN){
+    var digitsN = lastN[1].replace(/,/g,'');
+    if(digitsN.length) return { value: parseInt(digitsN,10), start: lastN.index, end: lastN.index + lastN[0].length };
+  }
+  var reK = /(\d+(?:[.,]\d{1,3})?)\s*k\b/gi;
+  while((m = reK.exec(line))){ lastK = m; }
+  if(lastK){
+    var raw = lastK[1];
+    var sepMatch = raw.match(/^(\d+)[.,](\d{1,3})$/);
+    var value;
+    if(sepMatch){
+      var padded = (sepMatch[2] + '000').slice(0,3);
+      value = parseInt(sepMatch[1]+padded, 10) * 1000;
+    } else { value = parseFloat(raw) * 1000; }
+    return { value: Math.round(value), start: lastK.index, end: lastK.index + lastK[0].length };
+  }
+  var reComma = /(\d{1,3}(?:,\d{3})+)/g;
+  while((m = reComma.exec(line))){ lastC = m; }
+  if(lastC){
+    return { value: parseInt(lastC[1].replace(/,/g,''),10), start: lastC.index, end: lastC.index+lastC[0].length };
+  }
+  var mb = line.match(/(\d{3,})\s*$/);
+  if(mb){ return { value: parseInt(mb[1],10), start: mb.index, end: mb.index+mb[0].length }; }
+  return null;
+}
+
+function stripConnectivity(text){
+  var tags = [['wifi','WiFi'],['sim','SIM']];
+  var found = null;
+  var out = text;
+  for(var i=0;i<tags.length;i++){
+    var re = new RegExp(tags[i][0], 'i');
+    if(re.test(out)){ found = tags[i][1]; out = out.replace(re, ''); break; }
+  }
+  return { text: out, tag: found };
+}
+
+function toTitleCase(s){
+  return s.replace(/\w\S*/g, function(t){
+    if(t.length<=4 && t===t.toUpperCase() && /[A-Z]/.test(t)) return t;
+    return t.charAt(0).toUpperCase()+t.substr(1).toLowerCase();
+  });
+}
+
+function cleanSeparators(s){
+  return s.replace(/^[\s\-\u2013\u2014_.:]+|[\s\-\u2013\u2014_.:]+$/g, '').trim();
+}
+
+function extractSlashStorage(text){
+  var m = text.match(/(\d+)\s*\/\s*(\d+)\s*(t|tb|g|gb)?/i);
+  if(!m) return null;
+  var unit = m[3] ? (/^t/i.test(m[3]) ? 'TB' : 'GB') : 'GB';
+  return { storage: m[2]+unit, start: m.index, end: m.index+m[0].length };
+}
+function extractUnitStorage(text){
+  var re = /(\d{2,4})\s*(gb|tb|g|t)\b/gi;
+  var m, last=null;
+  while((m = re.exec(text))){ last = m; }
+  if(!last) return null;
+  var unit = /^t/i.test(last[2]) ? 'TB' : 'GB';
+  return { storage: last[1]+unit, start: last.index, end: last.index+last[0].length };
+}
+
+const IPHONE_VARIANTS = [['promax','Pro Max'],['pro max','Pro Max'],['pro','Pro'],['plus','Plus'],['mini','Mini'],['air','Air']];
+const IPHONE_SPECIALS = [['xsmax','XS Max'],['xs max','XS Max'],['xs','XS'],['xr','XR'],['se','SE'],['x','X']];
+
+function tryIphone(compact){
+  var body = compact;
+  var strippedPrefix = false;
+  if(/^ip(?!ad)/.test(body)){ body = body.replace(/^ip(hone)?/,''); strippedPrefix = true; }
+  else if(/^iphone/.test(body)){ body = body.replace(/^iphone/,''); strippedPrefix = true; }
+  for(var i=0;i<IPHONE_SPECIALS.length;i++){
+    if(body.indexOf(IPHONE_SPECIALS[i][0])===0){
+      var rem = body.slice(IPHONE_SPECIALS[i][0].length);
+      return { model: 'iPhone '+IPHONE_SPECIALS[i][1], rest: rem };
+    }
+  }
+  var numMatch = body.match(/^(\d{1,2})/);
+  if(numMatch && (strippedPrefix || (parseInt(numMatch[1],10)>=6 && parseInt(numMatch[1],10)<=17))){
+    var rest = body.slice(numMatch[0].length);
+    var variant = '';
+    for(var j=0;j<IPHONE_VARIANTS.length;j++){
+      if(rest.indexOf(IPHONE_VARIANTS[j][0])===0){ variant = ' '+IPHONE_VARIANTS[j][1]; rest = rest.slice(IPHONE_VARIANTS[j][0].length); break; }
+    }
+    if(!strippedPrefix && !/^[0-9]*$/.test(rest)){ return null; }
+    return { model: 'iPhone '+numMatch[1]+variant, rest: rest };
+  }
+  return null;
+}
+
+function trySamsung(compact){
+  var m;
+  if((m = compact.match(/^s(\d{1,2})/))){
+    var rest = compact.slice(m[0].length);
+    if(rest.indexOf('ultra')===0) return { model:'Galaxy S'+m[1]+' Ultra', rest: rest.slice(5) };
+    if(rest.indexOf('plus')===0) return { model:'Galaxy S'+m[1]+' Plus', rest: rest.slice(4) };
+    if(rest.indexOf('fe')===0) return { model:'Galaxy S'+m[1]+' FE', rest: rest.slice(2) };
+    if(rest.indexOf('e')===0) return { model:'Galaxy S'+m[1]+'e', rest: rest.slice(1) };
+    if(rest.indexOf('+')===0) return { model:'Galaxy S'+m[1]+'+', rest: rest.slice(1) };
+    return { model:'Galaxy S'+m[1], rest: rest };
+  }
+  if((m = compact.match(/^note(\d{1,2})/))){
+    var rest2 = compact.slice(m[0].length);
+    if(rest2.indexOf('ultra')===0) return { model:'Galaxy Note'+m[1]+' Ultra', rest: rest2.slice(5) };
+    if(rest2.indexOf('+')===0) return { model:'Galaxy Note'+m[1]+'+', rest: rest2.slice(1) };
+    return { model:'Galaxy Note'+m[1], rest: rest2 };
+  }
+  if((m = compact.match(/^fold(\d)/))) return { model:'Galaxy Z Fold'+m[1], rest: compact.slice(m[0].length) };
+  if((m = compact.match(/^flip(\d)/))) return { model:'Galaxy Z Flip'+m[1], rest: compact.slice(m[0].length) };
+  if((m = compact.match(/^a(\d{1,3})/))) return { model:'Galaxy A'+m[1], rest: compact.slice(m[0].length) };
+  return null;
+}
+
+function tryIpad(compact){
+  var m = compact.match(/ipad(.*?)(\d{1,2})gen(.*)/);
+  if(m) return { model: 'iPad ('+m[2]+'th Gen)', rest: m[3] };
+  return null;
+}
+
+function parseBulkStockLine(raw){
+  var flagged = /[\u274c\u2716\u2717]/.test(raw);
+  var line = raw.replace(/[\u274c\u2716\u2717]/g, '');
+
+  var connFirst = stripConnectivity(line);
+  line = connFirst.text;
+  var connTag = connFirst.tag;
+
+  var priceInfo = extractPrice(line);
+  if(!priceInfo){ return null; }
+
+  var leadingText = cleanSeparators(line.slice(0, priceInfo.start));
+  var trailingText = line.slice(priceInfo.end);
+
+  var unavailable = flagged || /\bna\b/i.test(trailingText.replace(/[^a-zA-Z]/g,' '));
+
+  var storage = '';
+  var slash = extractSlashStorage(leadingText);
+  if(slash){
+    storage = slash.storage;
+    leadingText = leadingText.slice(0,slash.start) + leadingText.slice(slash.end);
+  } else {
+    var unitStock = extractUnitStorage(leadingText);
+    if(unitStock){
+      storage = unitStock.storage;
+      leadingText = leadingText.slice(0,unitStock.start) + leadingText.slice(unitStock.end);
+    }
+  }
+  leadingText = cleanSeparators(leadingText);
+
+  var connFromLead = stripConnectivity(leadingText);
+  leadingText = cleanSeparators(connFromLead.text);
+  if(connFromLead.tag) connTag = connFromLead.tag;
+
+  var compact = leadingText.toLowerCase().replace(/[\s\-\u2013\u2014_.:]+/g,'');
+
+  var result = tryIphone(compact) || trySamsung(compact) || tryIpad(compact);
+  var model;
+  if(result){
+    model = result.model;
+    var leftover = result.rest.replace(/[^0-9]/g,'');
+    if(!storage && leftover){ storage = leftover+'GB'; }
+  } else {
+    var generic = leadingText;
+    if(generic === generic.toUpperCase() || generic === generic.toLowerCase()){ generic = toTitleCase(generic); }
+    model = generic || '(unrecognized)';
+  }
+  if(connTag) model = model + ' ('+connTag+')';
+
+  return {
+    raw: raw, model: model, storage: storage, price: priceInfo.value,
+    include: !unavailable, flagged: unavailable, quantity: 1, recognized: !!result
+  };
+}
+
+function parseBulkStock(text){
+  const lines = text.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+  const rows = [], skipped = [];
+  let sectionLabel = '';
+
+  lines.forEach(function(raw){
+    const parsed = parseBulkStockLine(raw);
+    if(!parsed){
+      if(raw.replace(/[^a-zA-Z]/g,'').length >= 3) sectionLabel = raw.trim();
+      return;
+    }
+    if(!parsed.recognized) skipped.push({raw:raw});
+    rows.push({
+      raw: parsed.raw, model: parsed.model, storage: parsed.storage, price: parsed.price,
+      include: parsed.include, flagged: parsed.flagged, quantity: parsed.quantity, sectionLabel: sectionLabel
+    });
+  });
+  return { rows: rows, skipped: skipped };
+}
 
 function loadConfig(){
   if(HARDCODED_SUPABASE_URL && HARDCODED_SUPABASE_ANON_KEY){
@@ -246,6 +645,16 @@ async function loadAfterAuth(){
     state.profile = profile; state.isAdmin = !!profile.is_admin;
     await refreshAll();
     state.stage = 'app';
+    render();
+    await initPush();
+    // When the app is opened installed (standalone), a dealer may never scroll to the
+    // dashboard banner or notice the bell icon — so surface the notification prompt
+    // directly, once per app launch, instead of waiting for them to find it.
+    if(checkStandalone() && state.pushStatus==='off' && !state.notifPromptShown){
+      state.notifPromptShown = true;
+      openModal('notifSettings');
+    }
+    return;
   } catch(e){
     state.stage = 'auth'; state.authError = 'Could not load your shop profile: ' + (e.message||e);
   }
@@ -349,6 +758,7 @@ function searchAll(q){
 /* ---------- render root ---------- */
 function render(){
   const app = document.getElementById('app');
+  updateInstallBanner();
   if(state.stage==='loading'){ app.innerHTML = '<div class="loading-screen"><div class="spinner"></div>booting dealer console…</div>'; return; }
   if(state.stage==='configure'){ app.innerHTML = renderConfigureScreen(); attachConfigureHandlers(); return; }
   if(state.stage==='auth'){ app.innerHTML = renderAuthScreen(); attachAuthHandlers(); return; }
@@ -368,6 +778,7 @@ function render(){
         (state.searchQuery ? renderSearchDropdown() : '') +
         '<div class="topbar-right">' +
           '<span class="dot"></span> '+escapeHtml(state.profile.shop_name)+(state.isAdmin?' <span class="badge badge-admin">admin</span>':'') +
+          '<span class="bell '+(state.pushStatus==='on'?'on':'')+'" id="notifBellBtn" title="Notification settings">'+ICONS.bell+'</span>' +
           '<span class="gear" id="logoutBtn" title="Log out">'+ICONS.gear+'</span>' +
         '</div>' +
       '</div>' +
@@ -510,6 +921,10 @@ function renderDashboard(){
   const board = staffLeaderboard();
   return '<h1 class="page-title">Today on the floor</h1>' +
     '<p class="page-sub">'+new Date().toLocaleDateString('en-NG',{weekday:'long', year:'numeric', month:'long', day:'numeric'})+'</p>' +
+    (state.pushStatus==='off' ? ('<div class="section"><div class="section-body" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;">' +
+      '<div>'+ICONS.bell.replace('<svg ', '<svg style="width:16px;height:16px;vertical-align:-3px;margin-right:6px;color:var(--accent)" ')+'<strong>Turn on phone alerts</strong> — get notified the moment a customer asks for a phone, a dealer broadcasts a need, or a warranty is about to expire, even with the app closed.</div>' +
+      '<button class="btn btn-accent" id="enablePushInline">Enable notifications</button>' +
+    '</div></div>') : '') +
     '<div class="kpi-grid">' +
       '<div class="kpi"><div class="kpi-label">Units sold today</div><div class="kpi-value">'+k.unitsToday+'</div></div>' +
       '<div class="kpi"><div class="kpi-label">Revenue today</div><div class="kpi-value accent">'+naira(k.revenueToday)+'</div></div>' +
@@ -540,9 +955,12 @@ function renderDashboard(){
 
 function renderInventory(){
   const items = state.inventory.slice().sort(function(a,b){ return (a.status==='In Stock'?0:1)-(b.status==='In Stock'?0:1); });
-  return '<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
+  return '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">' +
       '<div><h1 class="page-title">Inventory</h1><p class="page-sub">'+state.inventory.length+' phones tracked · '+state.inventory.filter(function(p){return p.status==='In Stock';}).length+' in stock</p></div>' +
-      '<button class="btn btn-accent" data-open-modal="addPhone">'+ICONS.plus+' Add phone</button>' +
+      '<div style="display:flex;gap:8px;">' +
+        '<button class="btn" data-open-modal="bulkImport">📋 Paste stock list</button>' +
+        '<button class="btn btn-accent" data-open-modal="addPhone">'+ICONS.plus+' Add phone</button>' +
+      '</div>' +
     '</div>' +
     '<div class="section"><div class="section-body" style="padding:0;overflow-x:auto;">' +
       (items.length ? ('<table><thead><tr><th>Model</th><th>IMEI</th><th>Qty</th><th>Storage / Color</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
@@ -552,9 +970,9 @@ function renderInventory(){
           '<td class="mono">'+(p.quantity!=null?p.quantity:1)+'</td>' +
           '<td>'+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</td>' +
           '<td>'+escapeHtml(p.condition)+(p.condition==='Used'?(' · '+p.battery+'% batt'):'')+'</td>' +
-          '<td class="mono">'+naira(p.cost)+'</td>' +
-          '<td class="mono">'+naira(p.price)+'</td>' +
-          '<td class="mono" style="color:var(--success)">'+naira((Number(p.price)||0)-(Number(p.cost)||0))+'</td>' +
+          '<td class="mono">'+(p.cost?naira(p.cost):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+          '<td class="mono">'+(p.price?naira(p.price):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+          '<td class="mono" style="color:var(--success)">'+(p.price?naira((Number(p.price)||0)-(Number(p.cost)||0)):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
           '<td>'+badge(p.status)+'</td>' +
           '<td>'+escapeHtml(p.shelf)+'</td>' +
           '<td><button class="btn btn-sm" data-open-modal="editPhone" data-id="'+p.id+'">Edit</button></td>' +
@@ -739,7 +1157,27 @@ function renderModal(){
   if(m.name==='addSupplier') return renderSupplierModal();
   if(m.name==='newBroadcast') return renderBroadcastModal();
   if(m.name==='respondBroadcast') return renderRespondModal(m);
+  if(m.name==='bulkImport') return renderBulkImportModal();
+  if(m.name==='notifSettings') return renderNotifModal();
   return '';
+}
+
+function renderNotifModal(){
+  const status = state.pushStatus;
+  const statusLabel = {unsupported:'Not supported in this browser', off:'Off', prompting:'Waiting for permission…', on:'On for this device', denied:'Blocked in browser settings'}[status] || status;
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:460px;">' +
+    '<div class="modal-head"><h3>Notifications</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      '<div class="notif-row"><div><div class="n-label">Push notifications on this device</div>' +
+        '<div class="n-sub">Status: '+escapeHtml(statusLabel)+'</div></div>' +
+        (status==='on' ? '<button class="btn btn-danger btn-sm" id="disablePushBtn">Turn off</button>' :
+          status==='denied' ? '' :
+          '<button class="btn btn-accent btn-sm" id="enablePushBtn" '+(status==='prompting'?'disabled':'')+'>Enable</button>') +
+      '</div>' +
+      '<div class="notif-row"><div class="n-sub">You\'ll be alerted for: new customer requests, dealer network broadcasts and responses, warranty phones expiring within 2 days, and phones down to their last unit. Alerts arrive even if this app isn\'t open, as long as your phone has data/wifi.</div></div>' +
+      (status==='denied' ? '<div class="n-sub" style="margin-top:8px;color:var(--danger)">Notifications are blocked for this site in your browser. Open your browser\'s site settings for this page and allow notifications, then reopen this dialog.</div>' : '') +
+    '</div>' +
+  '</div></div>';
 }
 
 function renderPhoneModal(m){
@@ -769,13 +1207,53 @@ function renderPhoneModal(m){
     '</div></div></div>';
 }
 
+function renderBulkImportModal(){
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:760px;">' +
+    '<div class="modal-head"><h3>Paste stock list</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      (!state.bulkImportRows.length ? (
+        '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">Paste your list exactly as you have it — any format, any separator (works with iPhone-style short-hand like "12promax256gb_490k"). We\'ll match model, storage, and cost price automatically. Selling price is left blank since these lists show what you paid, not what you\'re charging — set your selling price per phone after import (or use the profit calculator to decide it first).</p>' +
+        '<div class="form-grid">' +
+          '<div class="field"><label>Condition (applies to this whole batch)</label><select id="bi-condition"><option value="Used" '+(state.bulkImportCondition==='Used'?'selected':'')+'>Used</option><option value="New" '+(state.bulkImportCondition==='New'?'selected':'')+'>New</option></select></div>' +
+          '<div class="field"><label>Supplier / source (optional)</label><input id="bi-supplier" placeholder="e.g. UK import batch" value="'+escapeAttr(state.bulkImportSupplier)+'"/></div>' +
+        '</div>' +
+        '<div class="field full" style="margin-top:14px;"><label>Paste here</label><textarea id="bi-text" rows="14" style="font-family:var(--font-mono);font-size:12.5px;" placeholder="Ip16 128–850k&#10;Ip14 pro 128–635k&#10;...">'+escapeHtml(state.bulkImportText)+'</textarea></div>'
+      ) : renderBulkImportPreview()) +
+    '</div>' +
+    '<div class="modal-foot">' +
+      (!state.bulkImportRows.length ?
+        ('<button class="btn" data-close-modal="1">Cancel</button><button class="btn btn-accent" id="bi-parse-btn">Parse list</button>') :
+        ('<button class="btn" id="bi-back-btn">← Back to edit paste</button><button class="btn btn-accent" id="bi-import-btn">Import '+state.bulkImportRows.filter(function(r){return r.include;}).length+' phones</button>')
+      ) +
+    '</div></div></div>';
+}
+
+function renderBulkImportPreview(){
+  const rows = state.bulkImportRows;
+  const unparsed = state.bulkImportSkipped;
+  return '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">Review before importing — uncheck any row you don\'t want, or fix a value directly. The "Cost" column is what you\'ll set your selling price against later.</p>' +
+    '<table><thead><tr><th></th><th>Model</th><th>Storage</th><th>Cost</th><th>Qty</th><th>Original line</th></tr></thead><tbody>' +
+    rows.map(function(r,i){ return '<tr style="'+(r.flagged?'opacity:.55;':'')+'">' +
+      '<td><input type="checkbox" data-bi-include="'+i+'" '+(r.include?'checked':'')+'/></td>' +
+      '<td><input data-bi-field="model" data-bi-row="'+i+'" value="'+escapeAttr(r.model)+'" style="width:150px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input data-bi-field="storage" data-bi-row="'+i+'" value="'+escapeAttr(r.storage)+'" style="width:70px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input type="number" data-bi-field="price" data-bi-row="'+i+'" value="'+r.price+'" style="width:100px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input type="number" min="1" data-bi-field="quantity" data-bi-row="'+i+'" value="'+(r.quantity||1)+'" style="width:55px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td class="mono" style="font-size:11px;color:var(--text-faint);">'+escapeHtml(r.raw)+(r.flagged?' <span class="badge badge-danger">❌ flagged</span>':'')+'</td>' +
+    '</tr>'; }).join('') +
+    '</tbody></table>' +
+    (unparsed.length ? ('<div style="margin-top:14px;padding:10px 12px;background:var(--panel-2);border-radius:var(--radius-sm);font-size:12px;color:var(--text-faint);">' +
+      'Couldn\'t confidently recognize the model on '+unparsed.length+' line'+(unparsed.length===1?'':'s')+' (added as-is from the original text — rename or uncheck after review): ' +
+      unparsed.map(function(u){ return escapeHtml(u.raw); }).join(', ') + '</div>') : '');
+}
+
 function renderSaleModal(){
   const available = state.inventory.filter(function(p){ return p.status==='In Stock'; });
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>Log a sale</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body"><div class="form-grid">' +
       '<div class="field full"><label>Phone (in stock only)</label><select id="s-inventory-id"><option value="">Select a phone…</option>' +
-        available.map(function(p){ return '<option value="'+p.id+'">'+escapeHtml(p.model)+' · '+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+' — '+naira(p.price)+(p.quantity>1?(' ('+p.quantity+' in stock)'):'')+'</option>'; }).join('') +
+        available.map(function(p){ return '<option value="'+p.id+'">'+escapeHtml(p.model)+' · '+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+' — '+(p.price?naira(p.price):'no price set yet')+(p.quantity>1?(' ('+p.quantity+' in stock)'):'')+'</option>'; }).join('') +
       '</select></div>' +
       '<div class="field"><label>Sale date</label><input type="date" id="s-date" value="'+todayISO()+'"/></div>' +
       '<div class="field mono"><label>Sale price (₦)</label><input type="number" id="s-price"/></div>' +
@@ -841,6 +1319,15 @@ function attachHandlers(){
   app.querySelectorAll('[data-tab]').forEach(function(el){ el.addEventListener('click', function(){ setTab(el.getAttribute('data-tab')); }); });
   const logoutBtn = document.getElementById('logoutBtn');
   if(logoutBtn) logoutBtn.addEventListener('click', async function(){ await sb.auth.signOut(); state.stage='auth'; state.profile=null; render(); });
+
+  const notifBellBtn = document.getElementById('notifBellBtn');
+  if(notifBellBtn) notifBellBtn.addEventListener('click', function(){ openModal('notifSettings'); });
+  const enablePushInline = document.getElementById('enablePushInline');
+  if(enablePushInline) enablePushInline.addEventListener('click', enablePush);
+  const enablePushBtn = document.getElementById('enablePushBtn');
+  if(enablePushBtn) enablePushBtn.addEventListener('click', enablePush);
+  const disablePushBtn = document.getElementById('disablePushBtn');
+  if(disablePushBtn) disablePushBtn.addEventListener('click', disablePush);
 
   const gs = document.getElementById('globalSearch');
   if(gs){
@@ -964,6 +1451,50 @@ function attachHandlers(){
     } catch(e){ showToast('Failed: '+e.message, true); render(); }
   }); });
 
+  const biParseBtn = document.getElementById('bi-parse-btn');
+  if(biParseBtn) biParseBtn.addEventListener('click', function(){
+    const text = val('bi-text');
+    state.bulkImportText = text;
+    state.bulkImportCondition = val('bi-condition');
+    state.bulkImportSupplier = val('bi-supplier');
+    const parsed = parseBulkStock(text);
+    state.bulkImportRows = parsed.rows; state.bulkImportSkipped = parsed.skipped;
+    if(!state.bulkImportRows.length){ showToast('No recognizable stock lines found in that paste', true); return; }
+    render();
+  });
+  const biBackBtn = document.getElementById('bi-back-btn');
+  if(biBackBtn) biBackBtn.addEventListener('click', function(){ state.bulkImportRows = []; render(); });
+
+  document.querySelectorAll('[data-bi-include]').forEach(function(el){
+    el.addEventListener('change', function(){ state.bulkImportRows[Number(el.getAttribute('data-bi-include'))].include = el.checked; });
+  });
+  document.querySelectorAll('[data-bi-field]').forEach(function(el){
+    el.addEventListener('input', function(){
+      const i = Number(el.getAttribute('data-bi-row')), f = el.getAttribute('data-bi-field');
+      state.bulkImportRows[i][f] = el.value;
+    });
+  });
+
+  const biImportBtn = document.getElementById('bi-import-btn');
+  if(biImportBtn) biImportBtn.addEventListener('click', async function(){
+    const toInsert = state.bulkImportRows.filter(function(r){ return r.include; }).map(function(r){
+      return {
+        dealer_id: state.profile.id, model: r.model, storage: r.storage, color: '',
+        condition: state.bulkImportCondition, battery: state.bulkImportCondition==='Used' ? 100 : null,
+        quantity: Number(r.quantity)||1, supplier: state.bulkImportSupplier || (r.sectionLabel||''), purchase_date: todayISO(),
+        cost: Number(r.price)||0, price: null, status: 'In Stock', shelf: '', notes: 'Bulk imported: '+r.raw
+      };
+    });
+    if(!toInsert.length){ showToast('No rows selected to import', true); return; }
+    try{
+      const { error } = await sb.from('inventory').insert(toInsert);
+      if(error) throw error;
+      await refreshAll();
+      state.bulkImportRows = []; state.bulkImportText='';
+      closeModal(); showToast(toInsert.length+' phones imported');
+    } catch(e){ showToast('Import failed: '+e.message, true); render(); }
+  });
+
   ['calc-cost','calc-target','calc-min','calc-offer'].forEach(function(id){
     const el = document.getElementById(id);
     if(el) el.addEventListener('input', function(){
@@ -976,3 +1507,5 @@ function attachHandlers(){
 init();
 })();
 </script>
+</body>
+</html>

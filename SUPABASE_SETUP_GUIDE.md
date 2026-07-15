@@ -15,6 +15,8 @@
 2. Click **New query**, paste in the entire contents of **schema.sql**, and click **Run**.
 3. You should see a series of "CREATE TABLE / CREATE POLICY / CREATE VIEW" success messages with no errors. This creates every table, security rule, and the two special database functions (`sell_phone`, `lookup_my_purchases`) that both apps depend on.
 
+> Note: `schema.sql` in this package already has IMEI as optional and `sell_phone` matching by inventory ID. You do **not** need to separately run `migration_optional_imei.sql` on a fresh project — that file exists only to upgrade an older deployment that used an earlier version of the schema.
+
 ## Step 3 — Turn off email confirmation (recommended for testing)
 
 By default, Supabase requires users to click an email confirmation link before they can log in. For fast testing with your first dealers, turn this off:
@@ -36,6 +38,8 @@ By default, Supabase requires users to click an email confirmation link before t
 2. You'll land on a Register/Log in screen. **Register your own shop first** — this is how you'll test as a dealer.
 3. Open the **Customer App** — it asks for the same two values once. After that, it shows a shop picker listing every registered dealer.
 
+> If you've deployed this for real and don't want every visitor to see the "Connect" screen, paste your project URL and anon key directly into the `HARDCODED_SUPABASE_URL` / `HARDCODED_SUPABASE_ANON_KEY` constants near the top of each app's `<script>` — both files already have a placeholder for this.
+
 ## Step 6 — Make yourself admin
 
 1. After registering in the Seller App, go back to Supabase's **SQL Editor** and run:
@@ -45,9 +49,16 @@ By default, Supabase requires users to click an email confirmation link before t
    (Find your exact `shop_slug` by running `select shop_name, shop_slug from dealers;` first.)
 2. Refresh/re-log into the Seller App — you'll now see an **Admin** tab showing every dealer, their stock counts, and total platform revenue.
 
+## Deploying with GitHub Pages
+
+1. Create a new GitHub repo and push the contents of this folder (keep the `seller/` and `customer/` subfolders intact).
+2. Repo → **Settings → Pages** → set source to the `main` branch, root folder.
+3. Wait a minute or two — your site will be live at `https://<your-username>.github.io/<repo-name>/`.
+
 ## Everyday use
 
 - **Each dealer registers their own account** — their inventory, sales, and customer requests are automatically private to them (enforced by the database itself, not just app-level logic).
+- **Inventory → "📋 Paste stock list"** lets a dealer paste their existing WhatsApp/notes-style stock list in bulk instead of typing each phone in one at a time.
 - **Dealer Network tab → Search stock** shows every registered dealer's in-stock phones (price, model, condition) so any dealer can find who has what — without ever seeing each other's cost prices.
 - **Broadcasts** are visible to every dealer instantly — no WhatsApp groups, no ban risk.
 - **Customer App** — anyone who picks a shop sees only that shop's real-time catalog; submitting a request writes straight into that dealer's Seller App "Asks" tab. "My purchases" searches across *all* shops by phone number, so a customer only needs to remember their own number, not which shop they bought from.
@@ -56,18 +67,11 @@ By default, Supabase requires users to click an email confirmation link before t
 
 Supabase's free tier includes 500MB database storage and 50,000 monthly active users — far beyond what 10–50 dealers and their customers will use. You will not need a paid plan until you're seeing real scale (many hundreds of dealers or heavy daily traffic), at which point upgrading is a plan change, not a rebuild.
 
+If you hit Supabase's auth email rate limit (2/hour on the shared testing SMTP) while testing signups, either wait ~30–60 minutes for it to clear, or set up free custom SMTP (Resend's free tier gives 3,000 emails/month, no card needed; Brevo is another good option) under **Authentication → Settings → SMTP Settings** — this removes the cap entirely once you're onboarding real dealers.
+
 ## What's next (Phase 4 ideas, once this is proven)
 
 - WhatsApp/SMS delivery for warranty reminders and broadcast alerts (needs a paid messaging API — Meta Cloud API or Twilio — this is the one piece that genuinely can't be free)
 - Invoice/receipt PDF generation
 - A dealer reputation/verification layer (fulfillment rate, response time) now that broadcasts have real responders
 - Paid plans / monetization once dealers are asking to pay
-
-
-Future plan
-
-The bucket refills roughly every hour. If you've only tested with 2 real signups but tried a few times each (typos, password-too-short errors, etc.), those failed attempts count too. Waiting ~30–60 minutes usually clears it.
-For the real fix once you're ready to onboard actual dealers: set up free custom SMTP so you're no longer using Supabase's shared/testing email service at all. This removes the 2/hour cap entirely (limits become whatever your SMTP provider allows).
-
-Resend (free tier: 3,000 emails/month, no credit card) or Brevo are both good, free, and take about 2 minutes.
-Configure it under Authentication → Settings → SMTP Settings in your Supabase dashboard.

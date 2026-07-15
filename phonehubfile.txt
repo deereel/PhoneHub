@@ -1,422 +1,19 @@
-customer_index.html
+supabase\functions\send-push\deno.json
 
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap');
-
-:root{
-  --bg:#FAF6F0; --panel:#FFFFFF; --panel-2:#FFFDFA; --border:#E8DFD2;
-  --text:#262038; --text-dim:#6B6580; --text-faint:#A79FB8;
-  --primary:#2B3155; --primary-2:#3B4270; --accent:#FF6B4A; --accent-dim:#FFE3DA;
-  --gold:#F0B429; --gold-dim:#FDF1D0; --success:#2F9E64; --success-dim:#E1F3E9; --danger:#D6483C; --danger-dim:#FBE6E3;
-  --radius:14px; --radius-sm:9px;
-  --font-display:'Fraunces',serif; --font-body:'Inter',sans-serif;
-}
-*{box-sizing:border-box;}
-body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-body);}
-#app{min-height:600px;background:var(--bg);}
-::selection{background:var(--accent);color:#fff;}
-
-.topbar{position:sticky;top:0;z-index:40;background:var(--bg);border-bottom:1px solid var(--border);
-  padding:16px 22px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;}
-.brand{font-family:var(--font-display);font-weight:700;font-size:20px;color:var(--primary);display:flex;align-items:center;gap:8px;}
-.brand .mark{width:30px;height:30px;border-radius:8px;background:var(--primary);color:#fff;display:flex;align-items:center;
-  justify-content:center;font-size:13px;font-weight:700;font-family:var(--font-body);}
-.shop-pill{font-size:12px;color:var(--text-dim);background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:6px 12px;cursor:pointer;}
-.shop-pill:hover{border-color:var(--primary);}
-.nav-tabs{margin-left:auto;display:flex;gap:4px;background:var(--panel);padding:4px;border-radius:30px;border:1px solid var(--border);}
-.nav-tab{padding:8px 16px;border-radius:20px;font-size:13px;font-weight:600;color:var(--text-dim);cursor:pointer;}
-.nav-tab.active{background:var(--primary);color:#fff;}
-
-.wrap{max-width:960px;margin:0 auto;padding:28px 22px 70px;}
-.hero{margin-bottom:24px;}
-.hero h1{font-family:var(--font-display);font-size:32px;font-weight:700;margin:0 0 6px;color:var(--primary);letter-spacing:-.01em;}
-.hero p{color:var(--text-dim);margin:0;font-size:14.5px;}
-
-.filter-row{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0 22px;}
-.filter-row input, .filter-row select{
-  background:var(--panel);border:1px solid var(--border);border-radius:30px;padding:10px 16px;
-  font-family:var(--font-body);font-size:13px;color:var(--text);outline:none;}
-.filter-row input:focus, .filter-row select:focus{border-color:var(--primary);}
-.filter-row input{flex:1;min-width:180px;}
-
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:18px;}
-
-.tag-card{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
-  padding:18px 16px 16px;border-left:2px dashed var(--border);cursor:pointer;transition:.15s;}
-.tag-card:hover{border-color:var(--accent);transform:translateY(-2px);box-shadow:0 8px 20px rgba(43,49,85,.08);}
-.tag-card::before{content:'';position:absolute;left:-7px;top:20px;width:14px;height:14px;border-radius:50%;
-  background:var(--bg);border:1px solid var(--border);}
-.tag-condition{display:inline-block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
-  padding:3px 9px;border-radius:20px;margin-bottom:10px;}
-.tag-condition.new{background:var(--success-dim);color:var(--success);}
-.tag-condition.used{background:var(--gold-dim);color:#9A7412;}
-.tag-model{font-family:var(--font-display);font-weight:600;font-size:17px;line-height:1.25;margin-bottom:4px;color:var(--primary);}
-.tag-spec{font-size:12.5px;color:var(--text-dim);margin-bottom:12px;}
-.tag-price{font-family:var(--font-display);font-weight:700;font-size:20px;color:var(--accent);}
-.tag-battery{font-size:11px;color:var(--text-faint);margin-top:6px;}
-
-.empty{text-align:center;padding:60px 20px;color:var(--text-faint);}
-.empty .big{font-family:var(--font-display);font-size:19px;color:var(--text-dim);margin-bottom:8px;}
-
-.btn{font-family:var(--font-body);font-weight:600;font-size:13.5px;border-radius:30px;border:none;
-  padding:11px 22px;cursor:pointer;transition:.15s;}
-.btn-primary{background:var(--accent);color:#fff;}
-.btn-primary:hover{background:#F0563A;}
-.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text);}
-.btn-outline:hover{border-color:var(--primary);}
-.btn-block{width:100%;}
-.btn:disabled{opacity:.5;cursor:not-allowed;}
-
-.overlay{position:fixed;inset:0;background:rgba(38,32,56,.5);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px;}
-.sheet{background:var(--panel);border-radius:20px;width:100%;max-width:480px;max-height:88vh;overflow-y:auto;padding:26px;position:relative;}
-.sheet .close-x{position:absolute;top:16px;right:18px;background:none;border:none;font-size:22px;color:var(--text-faint);cursor:pointer;}
-.sheet h2{font-family:var(--font-display);font-size:24px;color:var(--primary);margin:6px 0 4px;}
-.detail-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:14px;}
-.detail-row:last-of-type{border-bottom:none;}
-.detail-row .k{color:var(--text-dim);}
-.detail-row .v{font-weight:600;}
-.price-big{font-family:var(--font-display);font-weight:700;font-size:28px;color:var(--accent);margin:14px 0;}
-
-.form-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:22px;max-width:520px;}
-.field{margin-bottom:14px;display:flex;flex-direction:column;gap:6px;}
-.field label{font-size:12.5px;font-weight:600;color:var(--text-dim);}
-.field input, .field select, .field textarea{
-  background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:11px 13px;
-  font-family:var(--font-body);font-size:14px;color:var(--text);outline:none;}
-.field input:focus, .field select:focus, .field textarea:focus{border-color:var(--primary);}
-.two-col{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
-
-.lookup-result{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-top:16px;}
-.lookup-item{padding:12px 0;border-bottom:1px solid var(--border);}
-.lookup-item:last-child{border-bottom:none;}
-.lookup-item .m{font-family:var(--font-display);font-weight:600;font-size:16px;color:var(--primary);}
-.warranty-pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;margin-top:6px;}
-.warranty-pill.active{background:var(--success-dim);color:var(--success);}
-.warranty-pill.soon{background:#FDEBD0;color:#9A5A12;}
-.warranty-pill.expired{background:var(--danger-dim);color:var(--danger);}
-
-.loading-screen{display:flex;flex-direction:column;gap:14px;align-items:center;justify-content:center;height:600px;color:var(--text-faint);font-family:var(--font-display);font-size:16px;}
-.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--primary);color:#fff;
-  padding:12px 22px;border-radius:30px;font-size:13.5px;font-weight:600;z-index:200;box-shadow:0 8px 24px rgba(43,49,85,.3);max-width:80%;text-align:center;}
-.toast.err{background:var(--danger);}
-
-.connect-wrap{max-width:480px;margin:50px auto;padding:0 20px;}
-.connect-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:28px;}
-.connect-card h2{font-family:var(--font-display);margin:0 0 6px;font-size:22px;color:var(--primary);}
-.connect-card p{color:var(--text-dim);font-size:13.5px;line-height:1.5;margin:0 0 18px;}
-.connect-card input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);
-  padding:11px 13px;color:var(--text);font-family:var(--font-body);font-size:13px;outline:none;margin-bottom:12px;}
-.connect-card input:focus{border-color:var(--primary);}
-.connect-status{font-size:12.5px;padding:10px 12px;border-radius:var(--radius-sm);margin-bottom:12px;}
-.connect-status.err{background:var(--danger-dim);color:var(--danger);}
-.spinner{width:26px;height:26px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;}
-@keyframes spin{to{transform:rotate(360deg);}}
-
-.shop-list{display:flex;flex-direction:column;gap:10px;}
-.shop-item{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px 16px;cursor:pointer;
-  display:flex;justify-content:space-between;align-items:center;}
-.shop-item:hover{border-color:var(--primary);}
-.shop-item .name{font-family:var(--font-display);font-weight:600;color:var(--primary);}
-.shop-item .loc{font-size:12px;color:var(--text-faint);}
-</style>
-
-<div id="app"><div class="loading-screen"><div class="spinner"></div>Setting up the shop…</div></div>
-
-<script>
-(function(){
-const CONFIG_KEY = 'phonehub-supabase-config';
-const MY_SHOP_KEY = 'phonehub-my-shop';
-// If you've deployed this app for real, paste your Supabase project URL and anon key here.
-// Doing so skips the "Connect" screen entirely for every customer who opens this app.
-const HARDCODED_SUPABASE_URL = 'https://qqlykvrofoobowrsarxi.supabase.co';
-const HARDCODED_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFxbHlrdnJvZm9vYm93cnNhcnhpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQwMDc0MzcsImV4cCI6MjA5OTU4MzQzN30.3G0yVZbfkoBexdWj_YM9lqC-u4SSQxVgQOxgN-RruAc';
-let sb = null;
-
-let state = {
-  stage:'loading', // loading -> configure -> pickShop -> shop
-  configError:null, configuring:false, urlInput:'', keyInput:'',
-  shops:[], selectedShop:null,
-  tab:'shop', inventory:[], q:'', condFilter:'All', maxPrice:'', modal:null, toast:null, toastErr:false,
-  lookupPhone:'', lookupDone:false, lookupResults:[]
-};
-
-function naira(n){ n = Number(n)||0; return '₦'+n.toLocaleString('en-NG',{maximumFractionDigits:0}); }
-function todayISO(){ return new Date().toISOString().slice(0,10); }
-function daysBetween(a,b){ return Math.round((new Date(b)-new Date(a))/86400000); }
-function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function escapeAttr(s){ return (s||'').toString().replace(/"/g,'&quot;'); }
-function val(id){ const el=document.getElementById(id); return el?el.value:''; }
-
-function loadConfig(){
-  if(HARDCODED_SUPABASE_URL && HARDCODED_SUPABASE_ANON_KEY){
-    return { url: HARDCODED_SUPABASE_URL, key: HARDCODED_SUPABASE_ANON_KEY };
-  }
-  try{ const raw = localStorage.getItem(CONFIG_KEY); return raw ? JSON.parse(raw) : null; }
-  catch(e){ return null; }
-}
-function saveConfig(url,key){
-  try{ localStorage.setItem(CONFIG_KEY, JSON.stringify({url:url,key:key})); } catch(e){ /* ignore */ }
-}
-function loadMyShop(){
-  try{ const raw = localStorage.getItem(MY_SHOP_KEY); return raw ? JSON.parse(raw) : null; }
-  catch(e){ return null; }
-}
-function saveMyShop(shop){
-  try{ localStorage.setItem(MY_SHOP_KEY, JSON.stringify(shop)); } catch(e){ /* ignore */ }
-}
-
-async function init(){
-  const cfg = await loadConfig();
-  if(!cfg){ state.stage='configure'; render(); return; }
-  await connectSupabase(cfg.url, cfg.key, false);
-}
-
-async function connectSupabase(url, key, persist){
-  try{
-    sb = window.supabase.createClient(url, key);
-    const { error: pingErr } = await sb.from('public_shops').select('id').limit(1);
-    if(pingErr) throw pingErr;
-    if(persist) await saveConfig(url, key);
-    const myShop = await loadMyShop();
-    if(myShop){ state.selectedShop = myShop; await loadShopCatalog(); }
-    else { await loadShopPicker(); }
-  } catch(e){
-    state.stage = 'configure'; state.configError = e.message || String(e); render();
+{
+  "imports": {
+    "@supabase/functions-js": "jsr:@supabase/functions-js@^2",
+    "@supabase/server": "npm:@supabase/server@^1"
   }
 }
 
-async function loadShopPicker(){
-  try{
-    const { data, error } = await sb.from('public_shops').select('*').order('shop_name');
-    if(error) throw error;
-    state.shops = data || [];
-    state.stage = 'pickShop';
-  } catch(e){
-    state.stage = 'configure'; state.configError = e.message || String(e);
-  }
-  render();
+======================================================================================================================================================
+
+.vscode\extensions.json
+
+{
+  "recommendations": ["denoland.vscode-deno"]
 }
-
-async function loadShopCatalog(){
-  state.stage = 'loading'; render();
-  try{
-    const { data, error } = await sb.from('public_catalog').select('*').eq('dealer_id', state.selectedShop.id);
-    if(error) throw error;
-    state.inventory = data || [];
-    state.stage = 'shop';
-  } catch(e){
-    state.stage = 'configure'; state.configError = e.message || String(e);
-  }
-  render();
-}
-
-function showToast(msg, err){ state.toast = msg; state.toastErr = !!err; render(); setTimeout(function(){ state.toast=null; render(); }, 3000); }
-function setTab(t){ state.tab = t; state.modal=null; render(); }
-function openModal(name, payload){ state.modal={name:name, payload:payload||{}}; render(); }
-function closeModal(){ state.modal=null; render(); }
-
-function catalog(){
-  return state.inventory.filter(function(p){ return p.status==='In Stock'; }).filter(function(p){
-    if(state.q && !((String(p.model||'').toLowerCase().includes(state.q.toLowerCase())) || (String(p.color||'').toLowerCase().includes(state.q.toLowerCase())))) return false;
-    if(state.condFilter!=='All' && p.condition!==state.condFilter) return false;
-    if(state.maxPrice && Number(p.price) > Number(state.maxPrice)) return false;
-    return true;
-  }).sort(function(a,b){ return (a.price||0)-(b.price||0); });
-}
-
-function render(){
-  const app = document.getElementById('app');
-  if(state.stage==='loading'){ app.innerHTML='<div class="loading-screen"><div class="spinner"></div>Setting up the shop…</div>'; return; }
-  if(state.stage==='configure'){ app.innerHTML = renderConfigureScreen(); attachConfigureHandlers(); return; }
-  if(state.stage==='pickShop'){ app.innerHTML = renderShopPicker(); attachShopPickerHandlers(); return; }
-
-  app.innerHTML =
-    '<div class="topbar"><div class="brand"><div class="mark">PH</div>PhoneHub</div>' +
-      '<div class="shop-pill" id="switchShopBtn">'+escapeHtml(state.selectedShop.shop_name)+' · switch shop</div>' +
-      '<div class="nav-tabs">' + navTab('shop','Shop') + navTab('request','Request a phone') + navTab('lookup','My purchases') + '</div>' +
-    '</div>' +
-    '<div class="wrap">'+renderTab()+'</div>' +
-    (state.modal ? renderModal() : '') +
-    (state.toast ? ('<div class="toast '+(state.toastErr?'err':'')+'">'+escapeHtml(state.toast)+'</div>') : '');
-  attachHandlers();
-}
-
-function renderConfigureScreen(){
-  return '<div class="connect-wrap"><div class="connect-card">' +
-    '<h2>Connect this app to Supabase</h2>' +
-    '<p>Paste the same Supabase project URL and anon key used in the Seller App.</p>' +
-    (state.configError ? ('<div class="connect-status err">'+escapeHtml(state.configError)+'</div>') : '') +
-    '<input id="cfgUrl" placeholder="https://xxxxx.supabase.co" value="'+escapeAttr(state.urlInput)+'"/>' +
-    '<input id="cfgKey" placeholder="anon public key (eyJ...)" value="'+escapeAttr(state.keyInput)+'"/>' +
-    '<button class="btn btn-primary btn-block" id="cfgConnectBtn" '+(state.configuring?'disabled':'')+'>'+(state.configuring?'Connecting…':'Connect')+'</button>' +
-  '</div></div>';
-}
-function attachConfigureHandlers(){
-  const u = document.getElementById('cfgUrl'), k = document.getElementById('cfgKey');
-  if(u) u.addEventListener('input', function(e){ state.urlInput = e.target.value; });
-  if(k) k.addEventListener('input', function(e){ state.keyInput = e.target.value; });
-  const btn = document.getElementById('cfgConnectBtn');
-  if(btn) btn.addEventListener('click', async function(){
-    const url = (document.getElementById('cfgUrl').value||'').trim();
-    const key = (document.getElementById('cfgKey').value||'').trim();
-    if(!url || !key){ state.configError='Please fill in both fields.'; render(); return; }
-    state.configuring = true; state.configError=null; render();
-    await connectSupabase(url, key, true);
-    state.configuring = false;
-  });
-}
-
-function renderShopPicker(){
-  return '<div class="wrap"><div class="hero"><h1>Choose a shop</h1><p>Pick the phone shop you want to browse.</p></div>' +
-    '<div class="shop-list">' +
-      state.shops.map(function(s){ return '<div class="shop-item" data-pick-shop="'+s.id+'">' +
-        '<div><div class="name">'+escapeHtml(s.shop_name)+'</div><div class="loc">'+escapeHtml(s.location||'')+'</div></div>' +
-        '<div style="color:var(--accent);font-size:18px;">→</div></div>'; }).join('') +
-    '</div>' +
-    (!state.shops.length ? '<div class="empty"><div class="big">No shops registered yet</div>Check back soon.</div>' : '') +
-  '</div>';
-}
-function attachShopPickerHandlers(){
-  document.querySelectorAll('[data-pick-shop]').forEach(function(el){
-    el.addEventListener('click', async function(){
-      const id = el.getAttribute('data-pick-shop');
-      const shop = state.shops.find(function(s){ return s.id===id; });
-      state.selectedShop = shop;
-      await saveMyShop(shop);
-      await loadShopCatalog();
-    });
-  });
-}
-
-function navTab(key,label){ return '<div class="nav-tab '+(state.tab===key?'active':'')+'" data-tab="'+key+'">'+label+'</div>'; }
-
-function renderTab(){
-  if(state.tab==='shop') return renderShop();
-  if(state.tab==='request') return renderRequestForm();
-  if(state.tab==='lookup') return renderLookup();
-  return '';
-}
-
-function renderShop(){
-  const items = catalog();
-  return '<div class="hero"><h1>Find your next phone</h1><p>Everything below is verified and in stock at '+escapeHtml(state.selectedShop.shop_name)+' right now.</p></div>' +
-    '<div class="filter-row">' +
-      '<input id="q" placeholder="Search model or color…" value="'+escapeHtml(state.q)+'"/>' +
-      '<select id="cond"><option '+(state.condFilter==='All'?'selected':'')+'>All</option><option '+(state.condFilter==='New'?'selected':'')+'>New</option><option '+(state.condFilter==='Used'?'selected':'')+'>Used</option></select>' +
-      '<input id="maxPrice" type="number" placeholder="Max budget (₦)" value="'+escapeHtml(state.maxPrice)+'"/>' +
-    '</div>' +
-    '<div class="grid">' + items.map(function(p){
-      return '<div class="tag-card" data-view-phone="'+p.id+'">' +
-        '<span class="tag-condition '+(p.condition==='New'?'new':'used')+'">'+escapeHtml(p.condition)+'</span>' +
-        '<div class="tag-model">'+escapeHtml(p.model)+'</div>' +
-        '<div class="tag-spec">'+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</div>' +
-        '<div class="tag-price">'+naira(p.price)+'</div>' +
-        (p.condition==='Used' ? ('<div class="tag-battery">Battery health '+p.battery+'%</div>') : '') +
-      '</div>';
-    }).join('') + '</div>' +
-    (!items.length ? ('<div class="empty"><div class="big">Nothing matches right now</div>Try a wider budget, or tell us what you\'re looking for.<br/><br/>' +
-      '<button class="btn btn-primary" data-tab="request">Request a phone</button></div>') : '');
-}
-
-function renderModal(){
-  const p = state.inventory.find(function(x){ return x.id===state.modal.payload.id; });
-  if(!p) return '';
-  return '<div class="overlay" data-close-overlay="1"><div class="sheet" data-stop="1">' +
-    '<button class="close-x" data-close-modal="1">×</button>' +
-    '<span class="tag-condition '+(p.condition==='New'?'new':'used')+'">'+escapeHtml(p.condition)+'</span>' +
-    '<h2>'+escapeHtml(p.model)+'</h2>' +
-    '<div class="price-big">'+naira(p.price)+'</div>' +
-    '<div class="detail-row"><span class="k">Storage</span><span class="v">'+escapeHtml(p.storage)+'</span></div>' +
-    '<div class="detail-row"><span class="k">Color</span><span class="v">'+escapeHtml(p.color)+'</span></div>' +
-    (p.condition==='Used' ? ('<div class="detail-row"><span class="k">Battery health</span><span class="v">'+p.battery+'%</span></div>') : '') +
-    '<div class="detail-row"><span class="k">Warranty</span><span class="v">Included on purchase</span></div>' +
-    '<div class="detail-row"><span class="k">Availability</span><span class="v" style="color:var(--success)">In stock now</span></div>' +
-    '<button class="btn btn-primary btn-block" style="margin-top:18px;" data-tab="request" data-close-modal="1">Ask about this phone</button>' +
-  '</div></div>';
-}
-
-function renderRequestForm(){
-  return '<div class="hero"><h1>Can\'t find it?</h1><p>Tell '+escapeHtml(state.selectedShop.shop_name)+' what you want — they\'ll reach out the moment it\'s available, sometimes from their trusted dealer network.</p></div>' +
-    '<div class="form-card">' +
-      '<div class="two-col"><div class="field"><label>Your name</label><input id="r-name"/></div><div class="field"><label>Phone number</label><input id="r-phone"/></div></div>' +
-      '<div class="two-col"><div class="field"><label>Phone model</label><input id="r-model" placeholder="e.g. Google Pixel 9"/></div><div class="field"><label>Storage / color (optional)</label><input id="r-variant" placeholder="256GB, Black"/></div></div>' +
-      '<div class="field"><label>Your budget (₦, optional)</label><input type="number" id="r-budget"/></div>' +
-      '<div class="field"><label>Anything else?</label><textarea id="r-notes" rows="2"></textarea></div>' +
-      '<button class="btn btn-primary btn-block" id="submitRequestBtn">Send request</button>' +
-    '</div>';
-}
-
-function renderLookup(){
-  return '<div class="hero"><h1>My purchases</h1><p>Enter the phone number you bought with to see your purchase history and warranty status — across any shop on PhoneHub.</p></div>' +
-    '<div class="form-card">' +
-      '<div class="field"><label>Phone number</label><input id="lk-phone" placeholder="0803 123 4567" value="'+escapeHtml(state.lookupPhone)+'"/></div>' +
-      '<button class="btn btn-primary btn-block" id="lookupBtn">Check my purchases</button>' +
-    '</div>' +
-    (state.lookupDone ? ('<div class="lookup-result">' +
-      (state.lookupResults.length ? state.lookupResults.map(function(s){
-        const expiry = new Date(s.date); expiry.setDate(expiry.getDate()+Number(s.warranty_days||0));
-        const daysLeft = daysBetween(todayISO(), expiry.toISOString().slice(0,10));
-        const cls = !s.warranty_days ? '' : daysLeft<0 ? 'expired' : daysLeft<=7 ? 'soon' : 'active';
-        const label = !s.warranty_days ? 'No warranty on file' : daysLeft<0 ? 'Warranty expired' : daysLeft<=7 ? ('Warranty ends in '+daysLeft+' day'+(daysLeft===1?'':'s')) : ('Warranty active — '+daysLeft+' days left');
-        return '<div class="lookup-item"><div class="m">'+escapeHtml(s.model)+'</div>' +
-          '<div style="color:var(--text-dim);font-size:13px;">Bought at '+escapeHtml(s.shop_name)+' · '+escapeHtml(s.date)+' · '+naira(s.sale_price)+'</div>' +
-          '<span class="warranty-pill '+cls+'">'+label+'</span></div>';
-      }).join('') : '<div class="empty"><div class="big">No purchases found</div>Double-check the phone number used at checkout.</div>') +
-    '</div>') : '');
-}
-
-function attachHandlers(){
-  const app = document.getElementById('app');
-  app.querySelectorAll('[data-tab]').forEach(function(el){ el.addEventListener('click', function(){ setTab(el.getAttribute('data-tab')); }); });
-  const switchBtn = document.getElementById('switchShopBtn');
-  if(switchBtn) switchBtn.addEventListener('click', async function(){
-    try{ localStorage.removeItem(MY_SHOP_KEY); } catch(e){ /* ignore */ }
-    state.selectedShop = null; await loadShopPicker();
-  });
-  app.querySelectorAll('[data-view-phone]').forEach(function(el){ el.addEventListener('click', function(){ openModal('view',{id:el.getAttribute('data-view-phone')}); }); });
-  app.querySelectorAll('[data-close-modal]').forEach(function(el){ el.addEventListener('click', closeModal); });
-  app.querySelectorAll('[data-close-overlay]').forEach(function(el){ el.addEventListener('click', closeModal); });
-  app.querySelectorAll('[data-stop]').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); });
-
-  const q = document.getElementById('q');
-  if(q) q.addEventListener('input', function(e){ state.q=e.target.value; render(); focusEnd('q'); });
-  const cond = document.getElementById('cond');
-  if(cond) cond.addEventListener('change', function(e){ state.condFilter=e.target.value; render(); });
-  const maxPrice = document.getElementById('maxPrice');
-  if(maxPrice) maxPrice.addEventListener('input', function(e){ state.maxPrice=e.target.value; render(); focusEnd('maxPrice'); });
-
-  const lkBtn = document.getElementById('lookupBtn');
-  if(lkBtn) lkBtn.addEventListener('click', async function(){
-    const phone = val('lk-phone');
-    state.lookupPhone = phone;
-    try{
-      const { data, error } = await sb.rpc('lookup_my_purchases', { p_phone: phone });
-      if(error) throw error;
-      state.lookupResults = data || [];
-    } catch(e){ state.lookupResults = []; showToast('Could not look up purchases: '+e.message, true); }
-    state.lookupDone = true; render();
-  });
-
-  const reqBtn = document.getElementById('submitRequestBtn');
-  if(reqBtn) reqBtn.addEventListener('click', async function(){
-    const name = val('r-name'), phone = val('r-phone'), model = val('r-model');
-    if(!name || !phone || !model){ showToast('Please fill in your name, phone, and the model you want', true); return; }
-    const data = { dealer_id: state.selectedShop.id, customer_name:name, customer_phone:phone, model:model, storage:val('r-variant'), budget:val('r-budget')||null, status:'Pending', notes:val('r-notes') };
-    try{
-      const { error } = await sb.from('requests').insert(data);
-      if(error) throw error;
-      showToast('Request sent — we will reach out as soon as it is available');
-      state.tab = 'request'; render();
-    } catch(e){ showToast('Could not send request: '+e.message, true); render(); }
-  });
-}
-function focusEnd(id){ const el=document.getElementById(id); if(el){ el.focus(); const v=el.value; el.value=''; el.value=v; } }
-
-init();
-})();
-</script>
-
 
 ======================================================================================================================================================
 
@@ -1506,418 +1103,453 @@ index.html
 </body>
 </html>
 
+======================================================================================================================================================
+
+customer\index.html
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PhoneHub Pro — Customer</title>
+</head>
+<body>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap');
+
+:root{
+  --bg:#FAF6F0; --panel:#FFFFFF; --panel-2:#FFFDFA; --border:#E8DFD2;
+  --text:#262038; --text-dim:#6B6580; --text-faint:#A79FB8;
+  --primary:#2B3155; --primary-2:#3B4270; --accent:#FF6B4A; --accent-dim:#FFE3DA;
+  --gold:#F0B429; --gold-dim:#FDF1D0; --success:#2F9E64; --success-dim:#E1F3E9; --danger:#D6483C; --danger-dim:#FBE6E3;
+  --radius:14px; --radius-sm:9px;
+  --font-display:'Fraunces',serif; --font-body:'Inter',sans-serif;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-body);}
+#app{min-height:600px;background:var(--bg);}
+::selection{background:var(--accent);color:#fff;}
+
+.topbar{position:sticky;top:0;z-index:40;background:var(--bg);border-bottom:1px solid var(--border);
+  padding:16px 22px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;}
+.brand{font-family:var(--font-display);font-weight:700;font-size:20px;color:var(--primary);display:flex;align-items:center;gap:8px;}
+.brand .mark{width:30px;height:30px;border-radius:8px;background:var(--primary);color:#fff;display:flex;align-items:center;
+  justify-content:center;font-size:13px;font-weight:700;font-family:var(--font-body);}
+.shop-pill{font-size:12px;color:var(--text-dim);background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:6px 12px;cursor:pointer;}
+.shop-pill:hover{border-color:var(--primary);}
+.nav-tabs{margin-left:auto;display:flex;gap:4px;background:var(--panel);padding:4px;border-radius:30px;border:1px solid var(--border);}
+.nav-tab{padding:8px 16px;border-radius:20px;font-size:13px;font-weight:600;color:var(--text-dim);cursor:pointer;}
+.nav-tab.active{background:var(--primary);color:#fff;}
+
+.wrap{max-width:960px;margin:0 auto;padding:28px 22px 70px;}
+.hero{margin-bottom:24px;}
+.hero h1{font-family:var(--font-display);font-size:32px;font-weight:700;margin:0 0 6px;color:var(--primary);letter-spacing:-.01em;}
+.hero p{color:var(--text-dim);margin:0;font-size:14.5px;}
+
+.filter-row{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0 22px;}
+.filter-row input, .filter-row select{
+  background:var(--panel);border:1px solid var(--border);border-radius:30px;padding:10px 16px;
+  font-family:var(--font-body);font-size:13px;color:var(--text);outline:none;}
+.filter-row input:focus, .filter-row select:focus{border-color:var(--primary);}
+.filter-row input{flex:1;min-width:180px;}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:18px;}
+
+.tag-card{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  padding:18px 16px 16px;border-left:2px dashed var(--border);cursor:pointer;transition:.15s;}
+.tag-card:hover{border-color:var(--accent);transform:translateY(-2px);box-shadow:0 8px 20px rgba(43,49,85,.08);}
+.tag-card::before{content:'';position:absolute;left:-7px;top:20px;width:14px;height:14px;border-radius:50%;
+  background:var(--bg);border:1px solid var(--border);}
+.tag-condition{display:inline-block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  padding:3px 9px;border-radius:20px;margin-bottom:10px;}
+.tag-condition.new{background:var(--success-dim);color:var(--success);}
+.tag-condition.used{background:var(--gold-dim);color:#9A7412;}
+.tag-model{font-family:var(--font-display);font-weight:600;font-size:17px;line-height:1.25;margin-bottom:4px;color:var(--primary);}
+.tag-spec{font-size:12.5px;color:var(--text-dim);margin-bottom:12px;}
+.tag-price{font-family:var(--font-display);font-weight:700;font-size:20px;color:var(--accent);}
+.tag-battery{font-size:11px;color:var(--text-faint);margin-top:6px;}
+
+.empty{text-align:center;padding:60px 20px;color:var(--text-faint);}
+.empty .big{font-family:var(--font-display);font-size:19px;color:var(--text-dim);margin-bottom:8px;}
+
+.btn{font-family:var(--font-body);font-weight:600;font-size:13.5px;border-radius:30px;border:none;
+  padding:11px 22px;cursor:pointer;transition:.15s;}
+.btn-primary{background:var(--accent);color:#fff;}
+.btn-primary:hover{background:#F0563A;}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text);}
+.btn-outline:hover{border-color:var(--primary);}
+.btn-block{width:100%;}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+
+.overlay{position:fixed;inset:0;background:rgba(38,32,56,.5);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px;}
+.sheet{background:var(--panel);border-radius:20px;width:100%;max-width:480px;max-height:88vh;overflow-y:auto;padding:26px;position:relative;}
+.sheet .close-x{position:absolute;top:16px;right:18px;background:none;border:none;font-size:22px;color:var(--text-faint);cursor:pointer;}
+.sheet h2{font-family:var(--font-display);font-size:24px;color:var(--primary);margin:6px 0 4px;}
+.detail-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:14px;}
+.detail-row:last-of-type{border-bottom:none;}
+.detail-row .k{color:var(--text-dim);}
+.detail-row .v{font-weight:600;}
+.price-big{font-family:var(--font-display);font-weight:700;font-size:28px;color:var(--accent);margin:14px 0;}
+
+.form-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:22px;max-width:520px;}
+.field{margin-bottom:14px;display:flex;flex-direction:column;gap:6px;}
+.field label{font-size:12.5px;font-weight:600;color:var(--text-dim);}
+.field input, .field select, .field textarea{
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:11px 13px;
+  font-family:var(--font-body);font-size:14px;color:var(--text);outline:none;}
+.field input:focus, .field select:focus, .field textarea:focus{border-color:var(--primary);}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+
+.lookup-result{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-top:16px;}
+.lookup-item{padding:12px 0;border-bottom:1px solid var(--border);}
+.lookup-item:last-child{border-bottom:none;}
+.lookup-item .m{font-family:var(--font-display);font-weight:600;font-size:16px;color:var(--primary);}
+.warranty-pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;margin-top:6px;}
+.warranty-pill.active{background:var(--success-dim);color:var(--success);}
+.warranty-pill.soon{background:#FDEBD0;color:#9A5A12;}
+.warranty-pill.expired{background:var(--danger-dim);color:var(--danger);}
+
+.loading-screen{display:flex;flex-direction:column;gap:14px;align-items:center;justify-content:center;height:600px;color:var(--text-faint);font-family:var(--font-display);font-size:16px;}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--primary);color:#fff;
+  padding:12px 22px;border-radius:30px;font-size:13.5px;font-weight:600;z-index:200;box-shadow:0 8px 24px rgba(43,49,85,.3);max-width:80%;text-align:center;}
+.toast.err{background:var(--danger);}
+
+.connect-wrap{max-width:480px;margin:50px auto;padding:0 20px;}
+.connect-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:28px;}
+.connect-card h2{font-family:var(--font-display);margin:0 0 6px;font-size:22px;color:var(--primary);}
+.connect-card p{color:var(--text-dim);font-size:13.5px;line-height:1.5;margin:0 0 18px;}
+.connect-card input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);
+  padding:11px 13px;color:var(--text);font-family:var(--font-body);font-size:13px;outline:none;margin-bottom:12px;}
+.connect-card input:focus{border-color:var(--primary);}
+.connect-status{font-size:12.5px;padding:10px 12px;border-radius:var(--radius-sm);margin-bottom:12px;}
+.connect-status.err{background:var(--danger-dim);color:var(--danger);}
+.spinner{width:26px;height:26px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+.shop-list{display:flex;flex-direction:column;gap:10px;}
+.shop-item{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px 16px;cursor:pointer;
+  display:flex;justify-content:space-between;align-items:center;}
+.shop-item:hover{border-color:var(--primary);}
+.shop-item .name{font-family:var(--font-display);font-weight:600;color:var(--primary);}
+.shop-item .loc{font-size:12px;color:var(--text-faint);}
+</style>
+
+<div id="app"><div class="loading-screen"><div class="spinner"></div>Setting up the shop…</div></div>
+
+<script>
+(function(){
+const CONFIG_KEY = 'phonehub-supabase-config';
+const MY_SHOP_KEY = 'phonehub-my-shop';
+// If you've deployed this app for real, paste your Supabase project URL and anon key here.
+// Doing so skips the "Connect" screen entirely for every customer who opens this app.
+const HARDCODED_SUPABASE_URL = 'https://qqlykvrofoobowrsarxi.supabase.co';
+const HARDCODED_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFxbHlrdnJvZm9vYm93cnNhcnhpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQwMDc0MzcsImV4cCI6MjA5OTU4MzQzN30.3G0yVZbfkoBexdWj_YM9lqC-u4SSQxVgQOxgN-RruAc';
+let sb = null;
+
+let state = {
+  stage:'loading', // loading -> configure -> pickShop -> shop
+  configError:null, configuring:false, urlInput:'', keyInput:'',
+  shops:[], selectedShop:null,
+  tab:'shop', inventory:[], q:'', condFilter:'All', maxPrice:'', modal:null, toast:null, toastErr:false,
+  lookupPhone:'', lookupDone:false, lookupResults:[]
+};
+
+function naira(n){ n = Number(n)||0; return '₦'+n.toLocaleString('en-NG',{maximumFractionDigits:0}); }
+function todayISO(){ return new Date().toISOString().slice(0,10); }
+function daysBetween(a,b){ return Math.round((new Date(b)-new Date(a))/86400000); }
+function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escapeAttr(s){ return (s||'').toString().replace(/"/g,'&quot;'); }
+function val(id){ const el=document.getElementById(id); return el?el.value:''; }
+
+function loadConfig(){
+  if(HARDCODED_SUPABASE_URL && HARDCODED_SUPABASE_ANON_KEY){
+    return { url: HARDCODED_SUPABASE_URL, key: HARDCODED_SUPABASE_ANON_KEY };
+  }
+  try{ const raw = localStorage.getItem(CONFIG_KEY); return raw ? JSON.parse(raw) : null; }
+  catch(e){ return null; }
+}
+function saveConfig(url,key){
+  try{ localStorage.setItem(CONFIG_KEY, JSON.stringify({url:url,key:key})); } catch(e){ /* ignore */ }
+}
+function loadMyShop(){
+  try{ const raw = localStorage.getItem(MY_SHOP_KEY); return raw ? JSON.parse(raw) : null; }
+  catch(e){ return null; }
+}
+function saveMyShop(shop){
+  try{ localStorage.setItem(MY_SHOP_KEY, JSON.stringify(shop)); } catch(e){ /* ignore */ }
+}
+
+async function init(){
+  const cfg = await loadConfig();
+  if(!cfg){ state.stage='configure'; render(); return; }
+  await connectSupabase(cfg.url, cfg.key, false);
+}
+
+async function connectSupabase(url, key, persist){
+  try{
+    sb = window.supabase.createClient(url, key);
+    const { error: pingErr } = await sb.from('public_shops').select('id').limit(1);
+    if(pingErr) throw pingErr;
+    if(persist) await saveConfig(url, key);
+    const myShop = await loadMyShop();
+    if(myShop){ state.selectedShop = myShop; await loadShopCatalog(); }
+    else { await loadShopPicker(); }
+  } catch(e){
+    state.stage = 'configure'; state.configError = e.message || String(e); render();
+  }
+}
+
+async function loadShopPicker(){
+  try{
+    const { data, error } = await sb.from('public_shops').select('*').order('shop_name');
+    if(error) throw error;
+    state.shops = data || [];
+    state.stage = 'pickShop';
+  } catch(e){
+    state.stage = 'configure'; state.configError = e.message || String(e);
+  }
+  render();
+}
+
+async function loadShopCatalog(){
+  state.stage = 'loading'; render();
+  try{
+    const { data, error } = await sb.from('public_catalog').select('*').eq('dealer_id', state.selectedShop.id);
+    if(error) throw error;
+    state.inventory = data || [];
+    state.stage = 'shop';
+  } catch(e){
+    state.stage = 'configure'; state.configError = e.message || String(e);
+  }
+  render();
+}
+
+function showToast(msg, err){ state.toast = msg; state.toastErr = !!err; render(); setTimeout(function(){ state.toast=null; render(); }, 3000); }
+function setTab(t){ state.tab = t; state.modal=null; render(); }
+function openModal(name, payload){ state.modal={name:name, payload:payload||{}}; render(); }
+function closeModal(){ state.modal=null; render(); }
+
+function catalog(){
+  return state.inventory.filter(function(p){ return p.status==='In Stock'; }).filter(function(p){
+    if(state.q && !((String(p.model||'').toLowerCase().includes(state.q.toLowerCase())) || (String(p.color||'').toLowerCase().includes(state.q.toLowerCase())))) return false;
+    if(state.condFilter!=='All' && p.condition!==state.condFilter) return false;
+    if(state.maxPrice && Number(p.price) > Number(state.maxPrice)) return false;
+    return true;
+  }).sort(function(a,b){ return (a.price||0)-(b.price||0); });
+}
+
+function render(){
+  const app = document.getElementById('app');
+  if(state.stage==='loading'){ app.innerHTML='<div class="loading-screen"><div class="spinner"></div>Setting up the shop…</div>'; return; }
+  if(state.stage==='configure'){ app.innerHTML = renderConfigureScreen(); attachConfigureHandlers(); return; }
+  if(state.stage==='pickShop'){ app.innerHTML = renderShopPicker(); attachShopPickerHandlers(); return; }
+
+  app.innerHTML =
+    '<div class="topbar"><div class="brand"><div class="mark">PH</div>PhoneHub</div>' +
+      '<div class="shop-pill" id="switchShopBtn">'+escapeHtml(state.selectedShop.shop_name)+' · switch shop</div>' +
+      '<div class="nav-tabs">' + navTab('shop','Shop') + navTab('request','Request a phone') + navTab('lookup','My purchases') + '</div>' +
+    '</div>' +
+    '<div class="wrap">'+renderTab()+'</div>' +
+    (state.modal ? renderModal() : '') +
+    (state.toast ? ('<div class="toast '+(state.toastErr?'err':'')+'">'+escapeHtml(state.toast)+'</div>') : '');
+  attachHandlers();
+}
+
+function renderConfigureScreen(){
+  return '<div class="connect-wrap"><div class="connect-card">' +
+    '<h2>Connect this app to Supabase</h2>' +
+    '<p>Paste the same Supabase project URL and anon key used in the Seller App.</p>' +
+    (state.configError ? ('<div class="connect-status err">'+escapeHtml(state.configError)+'</div>') : '') +
+    '<input id="cfgUrl" placeholder="https://xxxxx.supabase.co" value="'+escapeAttr(state.urlInput)+'"/>' +
+    '<input id="cfgKey" placeholder="anon public key (eyJ...)" value="'+escapeAttr(state.keyInput)+'"/>' +
+    '<button class="btn btn-primary btn-block" id="cfgConnectBtn" '+(state.configuring?'disabled':'')+'>'+(state.configuring?'Connecting…':'Connect')+'</button>' +
+  '</div></div>';
+}
+function attachConfigureHandlers(){
+  const u = document.getElementById('cfgUrl'), k = document.getElementById('cfgKey');
+  if(u) u.addEventListener('input', function(e){ state.urlInput = e.target.value; });
+  if(k) k.addEventListener('input', function(e){ state.keyInput = e.target.value; });
+  const btn = document.getElementById('cfgConnectBtn');
+  if(btn) btn.addEventListener('click', async function(){
+    const url = (document.getElementById('cfgUrl').value||'').trim();
+    const key = (document.getElementById('cfgKey').value||'').trim();
+    if(!url || !key){ state.configError='Please fill in both fields.'; render(); return; }
+    state.configuring = true; state.configError=null; render();
+    await connectSupabase(url, key, true);
+    state.configuring = false;
+  });
+}
+
+function renderShopPicker(){
+  return '<div class="wrap"><div class="hero"><h1>Choose a shop</h1><p>Pick the phone shop you want to browse.</p></div>' +
+    '<div class="shop-list">' +
+      state.shops.map(function(s){ return '<div class="shop-item" data-pick-shop="'+s.id+'">' +
+        '<div><div class="name">'+escapeHtml(s.shop_name)+'</div><div class="loc">'+escapeHtml(s.location||'')+'</div></div>' +
+        '<div style="color:var(--accent);font-size:18px;">→</div></div>'; }).join('') +
+    '</div>' +
+    (!state.shops.length ? '<div class="empty"><div class="big">No shops registered yet</div>Check back soon.</div>' : '') +
+  '</div>';
+}
+function attachShopPickerHandlers(){
+  document.querySelectorAll('[data-pick-shop]').forEach(function(el){
+    el.addEventListener('click', async function(){
+      const id = el.getAttribute('data-pick-shop');
+      const shop = state.shops.find(function(s){ return s.id===id; });
+      state.selectedShop = shop;
+      await saveMyShop(shop);
+      await loadShopCatalog();
+    });
+  });
+}
+
+function navTab(key,label){ return '<div class="nav-tab '+(state.tab===key?'active':'')+'" data-tab="'+key+'">'+label+'</div>'; }
+
+function renderTab(){
+  if(state.tab==='shop') return renderShop();
+  if(state.tab==='request') return renderRequestForm();
+  if(state.tab==='lookup') return renderLookup();
+  return '';
+}
+
+function renderShop(){
+  const items = catalog();
+  return '<div class="hero"><h1>Find your next phone</h1><p>Everything below is verified and in stock at '+escapeHtml(state.selectedShop.shop_name)+' right now.</p></div>' +
+    '<div class="filter-row">' +
+      '<input id="q" placeholder="Search model or color…" value="'+escapeHtml(state.q)+'"/>' +
+      '<select id="cond"><option '+(state.condFilter==='All'?'selected':'')+'>All</option><option '+(state.condFilter==='New'?'selected':'')+'>New</option><option '+(state.condFilter==='Used'?'selected':'')+'>Used</option></select>' +
+      '<input id="maxPrice" type="number" placeholder="Max budget (₦)" value="'+escapeHtml(state.maxPrice)+'"/>' +
+    '</div>' +
+    '<div class="grid">' + items.map(function(p){
+      return '<div class="tag-card" data-view-phone="'+p.id+'">' +
+        '<span class="tag-condition '+(p.condition==='New'?'new':'used')+'">'+escapeHtml(p.condition)+'</span>' +
+        '<div class="tag-model">'+escapeHtml(p.model)+'</div>' +
+        '<div class="tag-spec">'+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</div>' +
+        '<div class="tag-price">'+naira(p.price)+'</div>' +
+        (p.condition==='Used' ? ('<div class="tag-battery">Battery health '+p.battery+'%</div>') : '') +
+      '</div>';
+    }).join('') + '</div>' +
+    (!items.length ? ('<div class="empty"><div class="big">Nothing matches right now</div>Try a wider budget, or tell us what you\'re looking for.<br/><br/>' +
+      '<button class="btn btn-primary" data-tab="request">Request a phone</button></div>') : '');
+}
+
+function renderModal(){
+  const p = state.inventory.find(function(x){ return x.id===state.modal.payload.id; });
+  if(!p) return '';
+  return '<div class="overlay" data-close-overlay="1"><div class="sheet" data-stop="1">' +
+    '<button class="close-x" data-close-modal="1">×</button>' +
+    '<span class="tag-condition '+(p.condition==='New'?'new':'used')+'">'+escapeHtml(p.condition)+'</span>' +
+    '<h2>'+escapeHtml(p.model)+'</h2>' +
+    '<div class="price-big">'+naira(p.price)+'</div>' +
+    '<div class="detail-row"><span class="k">Storage</span><span class="v">'+escapeHtml(p.storage)+'</span></div>' +
+    '<div class="detail-row"><span class="k">Color</span><span class="v">'+escapeHtml(p.color)+'</span></div>' +
+    (p.condition==='Used' ? ('<div class="detail-row"><span class="k">Battery health</span><span class="v">'+p.battery+'%</span></div>') : '') +
+    '<div class="detail-row"><span class="k">Warranty</span><span class="v">Included on purchase</span></div>' +
+    '<div class="detail-row"><span class="k">Availability</span><span class="v" style="color:var(--success)">In stock now</span></div>' +
+    '<button class="btn btn-primary btn-block" style="margin-top:18px;" data-tab="request" data-close-modal="1">Ask about this phone</button>' +
+  '</div></div>';
+}
+
+function renderRequestForm(){
+  return '<div class="hero"><h1>Can\'t find it?</h1><p>Tell '+escapeHtml(state.selectedShop.shop_name)+' what you want — they\'ll reach out the moment it\'s available, sometimes from their trusted dealer network.</p></div>' +
+    '<div class="form-card">' +
+      '<div class="two-col"><div class="field"><label>Your name</label><input id="r-name"/></div><div class="field"><label>Phone number</label><input id="r-phone"/></div></div>' +
+      '<div class="two-col"><div class="field"><label>Phone model</label><input id="r-model" placeholder="e.g. Google Pixel 9"/></div><div class="field"><label>Storage / color (optional)</label><input id="r-variant" placeholder="256GB, Black"/></div></div>' +
+      '<div class="field"><label>Your budget (₦, optional)</label><input type="number" id="r-budget"/></div>' +
+      '<div class="field"><label>Anything else?</label><textarea id="r-notes" rows="2"></textarea></div>' +
+      '<button class="btn btn-primary btn-block" id="submitRequestBtn">Send request</button>' +
+    '</div>';
+}
+
+function renderLookup(){
+  return '<div class="hero"><h1>My purchases</h1><p>Enter the phone number you bought with to see your purchase history and warranty status — across any shop on PhoneHub.</p></div>' +
+    '<div class="form-card">' +
+      '<div class="field"><label>Phone number</label><input id="lk-phone" placeholder="0803 123 4567" value="'+escapeHtml(state.lookupPhone)+'"/></div>' +
+      '<button class="btn btn-primary btn-block" id="lookupBtn">Check my purchases</button>' +
+    '</div>' +
+    (state.lookupDone ? ('<div class="lookup-result">' +
+      (state.lookupResults.length ? state.lookupResults.map(function(s){
+        const expiry = new Date(s.date); expiry.setDate(expiry.getDate()+Number(s.warranty_days||0));
+        const daysLeft = daysBetween(todayISO(), expiry.toISOString().slice(0,10));
+        const cls = !s.warranty_days ? '' : daysLeft<0 ? 'expired' : daysLeft<=7 ? 'soon' : 'active';
+        const label = !s.warranty_days ? 'No warranty on file' : daysLeft<0 ? 'Warranty expired' : daysLeft<=7 ? ('Warranty ends in '+daysLeft+' day'+(daysLeft===1?'':'s')) : ('Warranty active — '+daysLeft+' days left');
+        return '<div class="lookup-item"><div class="m">'+escapeHtml(s.model)+'</div>' +
+          '<div style="color:var(--text-dim);font-size:13px;">Bought at '+escapeHtml(s.shop_name)+' · '+escapeHtml(s.date)+' · '+naira(s.sale_price)+'</div>' +
+          '<span class="warranty-pill '+cls+'">'+label+'</span></div>';
+      }).join('') : '<div class="empty"><div class="big">No purchases found</div>Double-check the phone number used at checkout.</div>') +
+    '</div>') : '');
+}
+
+function attachHandlers(){
+  const app = document.getElementById('app');
+  app.querySelectorAll('[data-tab]').forEach(function(el){ el.addEventListener('click', function(){ setTab(el.getAttribute('data-tab')); }); });
+  const switchBtn = document.getElementById('switchShopBtn');
+  if(switchBtn) switchBtn.addEventListener('click', async function(){
+    try{ localStorage.removeItem(MY_SHOP_KEY); } catch(e){ /* ignore */ }
+    state.selectedShop = null; await loadShopPicker();
+  });
+  app.querySelectorAll('[data-view-phone]').forEach(function(el){ el.addEventListener('click', function(){ openModal('view',{id:el.getAttribute('data-view-phone')}); }); });
+  app.querySelectorAll('[data-close-modal]').forEach(function(el){ el.addEventListener('click', closeModal); });
+  app.querySelectorAll('[data-close-overlay]').forEach(function(el){ el.addEventListener('click', closeModal); });
+  app.querySelectorAll('[data-stop]').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); });
+
+  const q = document.getElementById('q');
+  if(q) q.addEventListener('input', function(e){ state.q=e.target.value; render(); focusEnd('q'); });
+  const cond = document.getElementById('cond');
+  if(cond) cond.addEventListener('change', function(e){ state.condFilter=e.target.value; render(); });
+  const maxPrice = document.getElementById('maxPrice');
+  if(maxPrice) maxPrice.addEventListener('input', function(e){ state.maxPrice=e.target.value; render(); focusEnd('maxPrice'); });
+
+  const lkBtn = document.getElementById('lookupBtn');
+  if(lkBtn) lkBtn.addEventListener('click', async function(){
+    const phone = val('lk-phone');
+    state.lookupPhone = phone;
+    try{
+      const { data, error } = await sb.rpc('lookup_my_purchases', { p_phone: phone });
+      if(error) throw error;
+      state.lookupResults = data || [];
+    } catch(e){ state.lookupResults = []; showToast('Could not look up purchases: '+e.message, true); }
+    state.lookupDone = true; render();
+  });
+
+  const reqBtn = document.getElementById('submitRequestBtn');
+  if(reqBtn) reqBtn.addEventListener('click', async function(){
+    const name = val('r-name'), phone = val('r-phone'), model = val('r-model');
+    if(!name || !phone || !model){ showToast('Please fill in your name, phone, and the model you want', true); return; }
+    const data = { dealer_id: state.selectedShop.id, customer_name:name, customer_phone:phone, model:model, storage:val('r-variant'), budget:val('r-budget')||null, status:'Pending', notes:val('r-notes') };
+    try{
+      const { error } = await sb.from('requests').insert(data);
+      if(error) throw error;
+      showToast('Request sent — we will reach out as soon as it is available');
+      state.tab = 'request'; render();
+    } catch(e){ showToast('Could not send request: '+e.message, true); render(); }
+  });
+}
+function focusEnd(id){ const el=document.getElementById(id); if(el){ el.focus(); const v=el.value; el.value=''; el.value=v; } }
+
+init();
+})();
+</script>
+</body>
+</html>
 
 ======================================================================================================================================================
 
-migration_optional_imei.sql
+seller\index.html
 
--- ============================================================
--- PhoneHub Pro — Migration: make IMEI optional
--- ============================================================
--- Run this once in Supabase: Dashboard > SQL Editor > New query > paste > Run.
--- Safe to re-run.
--- ============================================================
-
--- 1. Allow phones/sales to be saved without an IMEI (e.g. accessories,
---    or stock not yet logged with its IMEI).
-alter table inventory alter column imei drop not null;
-alter table sales alter column imei drop not null;
-
--- 2. Replace sell_phone() to match by the phone's internal id instead of
---    its IMEI. This avoids ambiguity now that IMEI can be blank (multiple
---    IMEI-less phones would otherwise be indistinguishable when selling).
-drop function if exists sell_phone(text,numeric,text,text,text,text,int,text,text);
-
-create or replace function sell_phone(
-  p_inventory_id uuid, p_sale_price numeric, p_customer_name text, p_customer_phone text,
-  p_payment_method text, p_staff text, p_warranty_days int, p_accessories text, p_notes text
-)
-returns sales
-language plpgsql
-as $$
-declare
-  v_phone inventory%rowtype;
-  v_sale sales%rowtype;
-begin
-  select * into v_phone from inventory
-    where id = p_inventory_id and dealer_id = auth.uid() and status = 'In Stock'
-    limit 1;
-
-  if v_phone.id is null then
-    raise exception 'No in-stock phone found for that selection';
-  end if;
-
-  insert into sales (dealer_id, imei, model, cost, sale_price, customer_name, customer_phone,
-                      payment_method, staff, warranty_days, accessories, notes)
-  values (auth.uid(), v_phone.imei, v_phone.model, v_phone.cost, p_sale_price, p_customer_name, p_customer_phone,
-          p_payment_method, p_staff, p_warranty_days, p_accessories, p_notes)
-  returning * into v_sale;
-
-  update inventory set status = 'Sold', updated_at = now() where id = v_phone.id;
-
-  return v_sale;
-end;
-$$;
-grant execute on function sell_phone(uuid,numeric,text,text,text,text,int,text,text) to authenticated;
-
-
-======================================================================================================================================================
-
-README.md
-
-# PhoneHub Pro
-
-Business management platform for Computer Village phone dealers — inventory, sales, profit calculator, and a shared dealer network, backed by Supabase.
-
-## Structure
-
-- `/seller/` — Seller App (dealer registration, inventory, sales, dealer network, admin oversight)
-- `/customer/` — Customer App (shop browsing, phone requests, warranty lookup)
-- `schema.sql` — Supabase/Postgres schema. Run this once in your Supabase project's SQL Editor before using the apps.
-- `SUPABASE_SETUP_GUIDE.md` — step-by-step setup instructions.
-
-## Live URLs (once GitHub Pages is enabled)
-
-- Seller App: `https://<your-username>.github.io/<repo-name>/seller/`
-- Customer App: `https://<your-username>.github.io/<repo-name>/customer/`
-
-## Updating the apps
-
-Both apps are single static HTML files. To ship a change: edit the file, commit, push — GitHub Pages redeploys automatically within a minute or two.
-
-
-======================================================================================================================================================
-
-schema.sql
-
--- ============================================================
--- PhoneHub Pro — Supabase Schema (Phase 2, multi-tenant)
--- ============================================================
--- Run this whole file once in Supabase: Dashboard > SQL Editor > New query > paste > Run.
--- Safe to re-run top-to-bottom on a fresh project.
--- ============================================================
-
--- Needed for gen_random_uuid()
-create extension if not exists "pgcrypto";
-
--- ------------------------------------------------------------
--- 1. DEALERS  (one row per registered seller, linked to their auth account)
--- ------------------------------------------------------------
-create table if not exists dealers (
-  id uuid primary key references auth.users(id) on delete cascade,
-  shop_name text not null,
-  shop_slug text unique not null,        -- used in the customer app's shareable link, e.g. /shop/musa-electronics
-  phone text,
-  whatsapp text,
-  location text,
-  is_admin boolean not null default false,
-  created_at timestamptz not null default now()
-);
-
-alter table dealers enable row level security;
-
--- Security-definer helper: checks admin status while bypassing dealers' own RLS,
--- so policies that need to check "is this caller an admin?" don't recursively
--- re-trigger the dealers table's RLS (which would otherwise infinite-loop).
-create or replace function is_admin()
-returns boolean
-language sql
-security definer
-set search_path = public
-stable
-as $$
-  select coalesce((select d.is_admin from dealers d where d.id = auth.uid()), false);
-$$;
-
--- Dealers can see & edit their own profile row.
-create policy "dealers_select_own" on dealers for select
-  using (id = auth.uid());
-create policy "dealers_update_own" on dealers for update
-  using (id = auth.uid());
-
--- Admins (you) can see every dealer's profile.
-create policy "dealers_select_admin" on dealers for select
-  using (is_admin());
-
--- Auto-create a dealer profile row whenever someone signs up.
--- Expects shop_name / phone / shop_slug passed in as auth signup metadata.
-create or replace function handle_new_dealer()
-returns trigger
-language plpgsql
-security definer set search_path = public
-as $$
-begin
-  insert into dealers (id, shop_name, shop_slug, phone, location)
-  values (
-    new.id,
-    coalesce(new.raw_user_meta_data->>'shop_name', 'New Shop'),
-    coalesce(new.raw_user_meta_data->>'shop_slug', 'shop-' || substr(new.id::text, 1, 8)),
-    new.raw_user_meta_data->>'phone',
-    new.raw_user_meta_data->>'location'
-  );
-  return new;
-end;
-$$;
-
-drop trigger if exists on_auth_user_created on auth.users;
-create trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute function handle_new_dealer();
-
--- Public, read-only directory so the Customer App can resolve a shop_slug to a dealer
--- without exposing anything private. Runs as the (trusted) view owner, so it works
--- even though the requester (a customer) isn't logged in.
-create or replace view public_shops
-  with (security_invoker = false) as
-  select id, shop_name, shop_slug, location from dealers;
-grant select on public_shops to anon, authenticated;
-
--- ------------------------------------------------------------
--- 2. INVENTORY
--- ------------------------------------------------------------
-create table if not exists inventory (
-  id uuid primary key default gen_random_uuid(),
-  dealer_id uuid not null references dealers(id) on delete cascade,
-  imei text,
-  imei2 text,
-  model text not null,
-  storage text,
-  color text,
-  condition text check (condition in ('New','Used')),
-  battery int,
-  supplier text,
-  purchase_date date,
-  cost numeric,
-  price numeric,
-  status text not null default 'In Stock' check (status in ('In Stock','Reserved','Sold','In Repair')),
-  shelf text,
-  notes text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-create index if not exists idx_inventory_dealer on inventory(dealer_id);
-create index if not exists idx_inventory_model on inventory using gin (to_tsvector('simple', model));
-
-alter table inventory enable row level security;
-
-create policy "inventory_all_own" on inventory for all
-  using (dealer_id = auth.uid())
-  with check (dealer_id = auth.uid());
-
-create policy "inventory_select_admin" on inventory for select
-  using (is_admin());
-
--- Cross-dealer search, for logged-in dealers only. Deliberately excludes cost/supplier
--- so no dealer can see another dealer's margins — only what a buyer needs to know.
-create or replace view dealer_network_view
-  with (security_invoker = false) as
-  select
-    i.id, i.dealer_id, d.shop_name as dealer_name, d.phone as dealer_phone,
-    i.model, i.storage, i.color, i.condition, i.battery, i.price, i.updated_at
-  from inventory i
-  join dealers d on d.id = i.dealer_id
-  where i.status = 'In Stock';
-grant select on dealer_network_view to authenticated;
-
--- Public storefront catalog for the Customer App (one dealer's in-stock phones only,
--- no cost/supplier/IMEI exposed).
-create or replace view public_catalog
-  with (security_invoker = false) as
-  select id, dealer_id, model, storage, color, condition, battery, price, status
-  from inventory
-  where status = 'In Stock';
-grant select on public_catalog to anon, authenticated;
-
--- ------------------------------------------------------------
--- 3. SALES
--- ------------------------------------------------------------
-create table if not exists sales (
-  id uuid primary key default gen_random_uuid(),
-  dealer_id uuid not null references dealers(id) on delete cascade,
-  date date not null default current_date,
-  imei text,
-  model text,
-  cost numeric,
-  sale_price numeric,
-  customer_name text,
-  customer_phone text,
-  payment_method text,
-  staff text,
-  warranty_days int default 0,
-  accessories text,
-  notes text,
-  created_at timestamptz not null default now()
-);
-create index if not exists idx_sales_dealer on sales(dealer_id);
-create index if not exists idx_sales_customer_phone on sales(customer_phone);
-
-alter table sales enable row level security;
-
-create policy "sales_all_own" on sales for all
-  using (dealer_id = auth.uid())
-  with check (dealer_id = auth.uid());
-
-create policy "sales_select_admin" on sales for select
-  using (is_admin());
-
--- Lets a customer look up THEIR OWN purchase/warranty history by phone number,
--- without exposing anyone else's sales. Only the fields they need, nothing private.
-create or replace function lookup_my_purchases(p_phone text)
-returns table (model text, date date, sale_price numeric, warranty_days int, shop_name text)
-language sql
-security definer set search_path = public
-as $$
-  select s.model, s.date, s.sale_price, s.warranty_days, d.shop_name
-  from sales s join dealers d on d.id = s.dealer_id
-  where regexp_replace(s.customer_phone, '\s', '', 'g') = regexp_replace(p_phone, '\s', '', 'g');
-$$;
-grant execute on function lookup_my_purchases(text) to anon, authenticated;
-
--- Records a sale and marks the phone Sold, atomically, for the CURRENT dealer only.
--- Runs with the caller's own privileges (not security definer), so normal RLS
--- still applies — a dealer can only ever sell their own in-stock phones.
--- Matches by inventory id (not IMEI) since IMEI is optional and multiple
--- IMEI-less phones would otherwise be indistinguishable.
-create or replace function sell_phone(
-  p_inventory_id uuid, p_sale_price numeric, p_customer_name text, p_customer_phone text,
-  p_payment_method text, p_staff text, p_warranty_days int, p_accessories text, p_notes text
-)
-returns sales
-language plpgsql
-as $$
-declare
-  v_phone inventory%rowtype;
-  v_sale sales%rowtype;
-begin
-  select * into v_phone from inventory
-    where id = p_inventory_id and dealer_id = auth.uid() and status = 'In Stock'
-    limit 1;
-
-  if v_phone.id is null then
-    raise exception 'No in-stock phone found for that selection';
-  end if;
-
-  insert into sales (dealer_id, imei, model, cost, sale_price, customer_name, customer_phone,
-                      payment_method, staff, warranty_days, accessories, notes)
-  values (auth.uid(), v_phone.imei, v_phone.model, v_phone.cost, p_sale_price, p_customer_name, p_customer_phone,
-          p_payment_method, p_staff, p_warranty_days, p_accessories, p_notes)
-  returning * into v_sale;
-
-  update inventory set status = 'Sold', updated_at = now() where id = v_phone.id;
-
-  return v_sale;
-end;
-$$;
-grant execute on function sell_phone(uuid,numeric,text,text,text,text,int,text,text) to authenticated;
-
--- ------------------------------------------------------------
--- 4. REQUESTS  (customer waiting-list asks, submitted from the Customer App)
--- ------------------------------------------------------------
-create table if not exists requests (
-  id uuid primary key default gen_random_uuid(),
-  dealer_id uuid not null references dealers(id) on delete cascade,
-  date date not null default current_date,
-  customer_name text,
-  customer_phone text,
-  model text not null,
-  storage text,
-  color text,
-  budget numeric,
-  status text not null default 'Pending' check (status in ('Pending','Fulfilled','Cancelled')),
-  notes text,
-  created_at timestamptz not null default now()
-);
-create index if not exists idx_requests_dealer on requests(dealer_id);
-
-alter table requests enable row level security;
-
--- Anyone (a customer, not logged in) can submit a request to a specific shop.
-create policy "requests_insert_anyone" on requests for insert
-  with check (true);
-
--- Only the shop it was sent to (or an admin) can read/manage it.
-create policy "requests_select_own" on requests for select
-  using (dealer_id = auth.uid());
-create policy "requests_update_own" on requests for update
-  using (dealer_id = auth.uid());
-create policy "requests_select_admin" on requests for select
-  using (is_admin());
-
--- ------------------------------------------------------------
--- 5. SUPPLIERS  (each dealer's own private colleague/supplier contacts)
--- ------------------------------------------------------------
-create table if not exists suppliers (
-  id uuid primary key default gen_random_uuid(),
-  dealer_id uuid not null references dealers(id) on delete cascade,
-  name text not null,
-  phone text,
-  whatsapp text,
-  location text,
-  supplies text,
-  notes text,
-  owed numeric default 0,
-  due date,
-  created_at timestamptz not null default now()
-);
-alter table suppliers enable row level security;
-create policy "suppliers_all_own" on suppliers for all
-  using (dealer_id = auth.uid())
-  with check (dealer_id = auth.uid());
-create policy "suppliers_select_admin" on suppliers for select
-  using (is_admin());
-
--- ------------------------------------------------------------
--- 6. BROADCASTS + RESPONSES  (network-wide "need this phone urgently")
--- ------------------------------------------------------------
-create table if not exists broadcasts (
-  id uuid primary key default gen_random_uuid(),
-  dealer_id uuid not null references dealers(id) on delete cascade,   -- who's asking
-  date date not null default current_date,
-  model text not null,
-  storage text,
-  color text,
-  urgency text,
-  status text not null default 'Open' check (status in ('Open','Closed')),
-  created_at timestamptz not null default now()
-);
-alter table broadcasts enable row level security;
-
--- Every registered dealer can see every open broadcast — that's the point of the network.
-create policy "broadcasts_select_all" on broadcasts for select
-  using (auth.uid() is not null);
-create policy "broadcasts_insert_own" on broadcasts for insert
-  with check (dealer_id = auth.uid());
-create policy "broadcasts_update_own" on broadcasts for update
-  using (dealer_id = auth.uid());
-
-create table if not exists broadcast_responses (
-  id uuid primary key default gen_random_uuid(),
-  broadcast_id uuid not null references broadcasts(id) on delete cascade,
-  dealer_id uuid not null references dealers(id) on delete cascade,   -- who's responding
-  price numeric,
-  quantity int default 1,
-  contact_phone text,
-  created_at timestamptz not null default now()
-);
-alter table broadcast_responses enable row level security;
-
-create policy "broadcast_responses_select_all" on broadcast_responses for select
-  using (auth.uid() is not null);
-create policy "broadcast_responses_insert_own" on broadcast_responses for insert
-  with check (dealer_id = auth.uid());
-
--- ============================================================
--- After running this file:
--- 1. Sign up your own account through the Seller App (this creates your dealer row).
--- 2. Run:  update dealers set is_admin = true where shop_slug = 'your-shop-slug';
---    (or `where id = 'your-auth-user-id'` — find it in Authentication > Users)
--- ============================================================
-
-
-======================================================================================================================================================
-
-seller_index.html
-
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PhoneHub Pro — Seller</title>
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#10141C">
+<link rel="icon" href="./icon-192.png">
+<link rel="apple-touch-icon" href="./icon-192.png">
+</head>
+<body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
@@ -1962,6 +1594,9 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-body
 .search-wrap input::placeholder{color:var(--text-faint);}
 .topbar-right{margin-left:auto;display:flex;align-items:center;gap:14px;color:var(--text-dim);font-size:12.5px;}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--success);box-shadow:0 0 0 3px var(--success-dim);}
+.bell{cursor:pointer;color:var(--text-faint);position:relative;}
+.bell:hover{color:var(--accent);}
+.bell.on{color:var(--success);}
 .gear{cursor:pointer;color:var(--text-faint);}
 .gear:hover{color:var(--text-dim);}
 .content{flex:1;overflow-y:auto;padding:24px 28px 60px;}
@@ -2077,6 +1712,10 @@ a.linklike{color:var(--info);cursor:pointer;text-decoration:underline;}
 .auth-tabs{display:flex;gap:4px;background:var(--bg);padding:4px;border-radius:var(--radius-sm);margin-bottom:18px;border:1px solid var(--border);}
 .auth-tab{flex:1;text-align:center;padding:8px;border-radius:5px;font-size:12.5px;font-weight:600;color:var(--text-dim);cursor:pointer;}
 .auth-tab.active{background:var(--panel-3);color:var(--accent);}
+.notif-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);}
+.notif-row:last-child{border-bottom:none;}
+.notif-row .n-label{font-weight:600;font-size:13px;}
+.notif-row .n-sub{color:var(--text-faint);font-size:11.5px;margin-top:2px;}
 </style>
 
 <div id="app"><div class="loading-screen"><div class="spinner"></div>booting dealer console…</div></div>
@@ -2093,7 +1732,8 @@ const ICONS = {
   admin:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/></svg>',
   gear:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 005 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 005 8.6a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019 8.6a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>',
   plus:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>',
-  empty:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg>'
+  empty:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg>',
+  bell:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>'
 };
 
 const CONFIG_KEY = 'phonehub-supabase-config';
@@ -2103,6 +1743,11 @@ const CONFIG_KEY = 'phonehub-supabase-config';
 // them in this browser via localStorage.
 const HARDCODED_SUPABASE_URL = 'https://qqlykvrofoobowrsarxi.supabase.co';
 const HARDCODED_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFxbHlrdnJvZm9vYm93cnNhcnhpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQwMDc0MzcsImV4cCI6MjA5OTU4MzQzN30.3G0yVZbfkoBexdWj_YM9lqC-u4SSQxVgQOxgN-RruAc';
+
+// ---- Web Push: paste the VAPID PUBLIC key printed by SUPABASE_SETUP_GUIDE / your Edge Function deploy ----
+// This key is safe to be public (it is NOT the private key).
+const VAPID_PUBLIC_KEY = 'BBaI8oRyneg29btIHbptXiW5JA8oAXDk5V3MehmsvJXHvsQXn97QVCLTvwiKJI4QOIvp8S31krRlw0exiAJ-KWg';
+
 let sb = null;
 
 let state = {
@@ -2113,7 +1758,9 @@ let state = {
   tab:'dashboard', inventory:[], sales:[], requests:[], suppliers:[], dealerNetwork:[], broadcasts:[], broadcastResponses:[],
   adminDealers:[], adminInventory:[], adminSales:[],
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
-  networkView:'search', dealerSearchQuery:''
+  networkView:'search', dealerSearchQuery:'',
+  bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'',
+  pushStatus:'unsupported' // unsupported | off | prompting | on | denied
 };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -2124,6 +1771,279 @@ function escapeAttr(s){ return (s||'').toString().replace(/"/g,'&quot;'); }
 function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function val(id){ const el = document.getElementById(id); return el ? el.value : ''; }
 function slugify(s){ return (s||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,''); }
+
+/* ---------- push notifications ---------- */
+function urlBase64ToUint8Array(base64String){
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+async function initPush(){
+  if(!('serviceWorker' in navigator) || !('PushManager' in window)){
+    state.pushStatus = 'unsupported'; return;
+  }
+  try{
+    const reg = await navigator.serviceWorker.register('./sw.js');
+    const existing = await reg.pushManager.getSubscription();
+    if(existing && Notification.permission==='granted'){ state.pushStatus = 'on'; }
+    else if(Notification.permission==='denied'){ state.pushStatus = 'denied'; }
+    else { state.pushStatus = 'off'; }
+  } catch(e){ state.pushStatus = 'unsupported'; }
+}
+
+async function enablePush(){
+  if(!('serviceWorker' in navigator) || !('PushManager' in window)){
+    showToast('Push notifications are not supported in this browser', true); return;
+  }
+  state.pushStatus = 'prompting'; render();
+  try{
+    const perm = await Notification.requestPermission();
+    if(perm !== 'granted'){
+      state.pushStatus = perm==='denied' ? 'denied' : 'off';
+      showToast(perm==='denied' ? 'Notifications blocked — enable them in your browser/site settings' : 'Notifications not enabled', true);
+      render(); return;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if(!sub){
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+      });
+    }
+    const json = sub.toJSON();
+    const { error } = await sb.from('push_subscriptions').upsert({
+      dealer_id: state.profile.id,
+      endpoint: json.endpoint,
+      p256dh: json.keys.p256dh,
+      auth: json.keys.auth
+    }, { onConflict: 'endpoint' });
+    if(error) throw error;
+    state.pushStatus = 'on';
+    showToast('Notifications enabled — you\'ll get alerts even with the app closed');
+  } catch(e){
+    state.pushStatus = 'off';
+    showToast('Could not enable notifications: '+(e.message||e), true);
+  }
+  render();
+}
+
+async function disablePush(){
+  try{
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if(sub){
+      await sb.from('push_subscriptions').delete().eq('endpoint', sub.endpoint);
+      await sub.unsubscribe();
+    }
+    state.pushStatus = 'off';
+    showToast('Notifications turned off for this device');
+  } catch(e){ showToast('Could not disable: '+(e.message||e), true); }
+  render();
+}
+
+/* ---------- bulk import parser ---------- */
+function extractPrice(line){
+  var m, lastN=null, lastK=null, lastC=null;
+  var reN = /\bN\s?(\d[\d,]*)/gi;
+  while((m = reN.exec(line))){ lastN = m; }
+  if(lastN){
+    var digitsN = lastN[1].replace(/,/g,'');
+    if(digitsN.length) return { value: parseInt(digitsN,10), start: lastN.index, end: lastN.index + lastN[0].length };
+  }
+  var reK = /(\d+(?:[.,]\d{1,3})?)\s*k\b/gi;
+  while((m = reK.exec(line))){ lastK = m; }
+  if(lastK){
+    var raw = lastK[1];
+    var sepMatch = raw.match(/^(\d+)[.,](\d{1,3})$/);
+    var value;
+    if(sepMatch){
+      var padded = (sepMatch[2] + '000').slice(0,3);
+      value = parseInt(sepMatch[1]+padded, 10) * 1000;
+    } else { value = parseFloat(raw) * 1000; }
+    return { value: Math.round(value), start: lastK.index, end: lastK.index + lastK[0].length };
+  }
+  var reComma = /(\d{1,3}(?:,\d{3})+)/g;
+  while((m = reComma.exec(line))){ lastC = m; }
+  if(lastC){
+    return { value: parseInt(lastC[1].replace(/,/g,''),10), start: lastC.index, end: lastC.index+lastC[0].length };
+  }
+  var mb = line.match(/(\d{3,})\s*$/);
+  if(mb){ return { value: parseInt(mb[1],10), start: mb.index, end: mb.index+mb[0].length }; }
+  return null;
+}
+
+function stripConnectivity(text){
+  var tags = [['wifi','WiFi'],['sim','SIM']];
+  var found = null;
+  var out = text;
+  for(var i=0;i<tags.length;i++){
+    var re = new RegExp(tags[i][0], 'i');
+    if(re.test(out)){ found = tags[i][1]; out = out.replace(re, ''); break; }
+  }
+  return { text: out, tag: found };
+}
+
+function toTitleCase(s){
+  return s.replace(/\w\S*/g, function(t){
+    if(t.length<=4 && t===t.toUpperCase() && /[A-Z]/.test(t)) return t;
+    return t.charAt(0).toUpperCase()+t.substr(1).toLowerCase();
+  });
+}
+
+function cleanSeparators(s){
+  return s.replace(/^[\s\-\u2013\u2014_.:]+|[\s\-\u2013\u2014_.:]+$/g, '').trim();
+}
+
+function extractSlashStorage(text){
+  var m = text.match(/(\d+)\s*\/\s*(\d+)\s*(t|tb|g|gb)?/i);
+  if(!m) return null;
+  var unit = m[3] ? (/^t/i.test(m[3]) ? 'TB' : 'GB') : 'GB';
+  return { storage: m[2]+unit, start: m.index, end: m.index+m[0].length };
+}
+function extractUnitStorage(text){
+  var re = /(\d{2,4})\s*(gb|tb|g|t)\b/gi;
+  var m, last=null;
+  while((m = re.exec(text))){ last = m; }
+  if(!last) return null;
+  var unit = /^t/i.test(last[2]) ? 'TB' : 'GB';
+  return { storage: last[1]+unit, start: last.index, end: last.index+last[0].length };
+}
+
+const IPHONE_VARIANTS = [['promax','Pro Max'],['pro max','Pro Max'],['pro','Pro'],['plus','Plus'],['mini','Mini'],['air','Air']];
+const IPHONE_SPECIALS = [['xsmax','XS Max'],['xs max','XS Max'],['xs','XS'],['xr','XR'],['se','SE'],['x','X']];
+
+function tryIphone(compact){
+  var body = compact;
+  var strippedPrefix = false;
+  if(/^ip(?!ad)/.test(body)){ body = body.replace(/^ip(hone)?/,''); strippedPrefix = true; }
+  else if(/^iphone/.test(body)){ body = body.replace(/^iphone/,''); strippedPrefix = true; }
+  for(var i=0;i<IPHONE_SPECIALS.length;i++){
+    if(body.indexOf(IPHONE_SPECIALS[i][0])===0){
+      var rem = body.slice(IPHONE_SPECIALS[i][0].length);
+      return { model: 'iPhone '+IPHONE_SPECIALS[i][1], rest: rem };
+    }
+  }
+  var numMatch = body.match(/^(\d{1,2})/);
+  if(numMatch && (strippedPrefix || (parseInt(numMatch[1],10)>=6 && parseInt(numMatch[1],10)<=17))){
+    var rest = body.slice(numMatch[0].length);
+    var variant = '';
+    for(var j=0;j<IPHONE_VARIANTS.length;j++){
+      if(rest.indexOf(IPHONE_VARIANTS[j][0])===0){ variant = ' '+IPHONE_VARIANTS[j][1]; rest = rest.slice(IPHONE_VARIANTS[j][0].length); break; }
+    }
+    if(!strippedPrefix && !/^[0-9]*$/.test(rest)){ return null; }
+    return { model: 'iPhone '+numMatch[1]+variant, rest: rest };
+  }
+  return null;
+}
+
+function trySamsung(compact){
+  var m;
+  if((m = compact.match(/^s(\d{1,2})/))){
+    var rest = compact.slice(m[0].length);
+    if(rest.indexOf('ultra')===0) return { model:'Galaxy S'+m[1]+' Ultra', rest: rest.slice(5) };
+    if(rest.indexOf('plus')===0) return { model:'Galaxy S'+m[1]+' Plus', rest: rest.slice(4) };
+    if(rest.indexOf('fe')===0) return { model:'Galaxy S'+m[1]+' FE', rest: rest.slice(2) };
+    if(rest.indexOf('e')===0) return { model:'Galaxy S'+m[1]+'e', rest: rest.slice(1) };
+    if(rest.indexOf('+')===0) return { model:'Galaxy S'+m[1]+'+', rest: rest.slice(1) };
+    return { model:'Galaxy S'+m[1], rest: rest };
+  }
+  if((m = compact.match(/^note(\d{1,2})/))){
+    var rest2 = compact.slice(m[0].length);
+    if(rest2.indexOf('ultra')===0) return { model:'Galaxy Note'+m[1]+' Ultra', rest: rest2.slice(5) };
+    if(rest2.indexOf('+')===0) return { model:'Galaxy Note'+m[1]+'+', rest: rest2.slice(1) };
+    return { model:'Galaxy Note'+m[1], rest: rest2 };
+  }
+  if((m = compact.match(/^fold(\d)/))) return { model:'Galaxy Z Fold'+m[1], rest: compact.slice(m[0].length) };
+  if((m = compact.match(/^flip(\d)/))) return { model:'Galaxy Z Flip'+m[1], rest: compact.slice(m[0].length) };
+  if((m = compact.match(/^a(\d{1,3})/))) return { model:'Galaxy A'+m[1], rest: compact.slice(m[0].length) };
+  return null;
+}
+
+function tryIpad(compact){
+  var m = compact.match(/ipad(.*?)(\d{1,2})gen(.*)/);
+  if(m) return { model: 'iPad ('+m[2]+'th Gen)', rest: m[3] };
+  return null;
+}
+
+function parseBulkStockLine(raw){
+  var flagged = /[\u274c\u2716\u2717]/.test(raw);
+  var line = raw.replace(/[\u274c\u2716\u2717]/g, '');
+
+  var connFirst = stripConnectivity(line);
+  line = connFirst.text;
+  var connTag = connFirst.tag;
+
+  var priceInfo = extractPrice(line);
+  if(!priceInfo){ return null; }
+
+  var leadingText = cleanSeparators(line.slice(0, priceInfo.start));
+  var trailingText = line.slice(priceInfo.end);
+
+  var unavailable = flagged || /\bna\b/i.test(trailingText.replace(/[^a-zA-Z]/g,' '));
+
+  var storage = '';
+  var slash = extractSlashStorage(leadingText);
+  if(slash){
+    storage = slash.storage;
+    leadingText = leadingText.slice(0,slash.start) + leadingText.slice(slash.end);
+  } else {
+    var unitStock = extractUnitStorage(leadingText);
+    if(unitStock){
+      storage = unitStock.storage;
+      leadingText = leadingText.slice(0,unitStock.start) + leadingText.slice(unitStock.end);
+    }
+  }
+  leadingText = cleanSeparators(leadingText);
+
+  var connFromLead = stripConnectivity(leadingText);
+  leadingText = cleanSeparators(connFromLead.text);
+  if(connFromLead.tag) connTag = connFromLead.tag;
+
+  var compact = leadingText.toLowerCase().replace(/[\s\-\u2013\u2014_.:]+/g,'');
+
+  var result = tryIphone(compact) || trySamsung(compact) || tryIpad(compact);
+  var model;
+  if(result){
+    model = result.model;
+    var leftover = result.rest.replace(/[^0-9]/g,'');
+    if(!storage && leftover){ storage = leftover+'GB'; }
+  } else {
+    var generic = leadingText;
+    if(generic === generic.toUpperCase() || generic === generic.toLowerCase()){ generic = toTitleCase(generic); }
+    model = generic || '(unrecognized)';
+  }
+  if(connTag) model = model + ' ('+connTag+')';
+
+  return {
+    raw: raw, model: model, storage: storage, price: priceInfo.value,
+    include: !unavailable, flagged: unavailable, quantity: 1, recognized: !!result
+  };
+}
+
+function parseBulkStock(text){
+  const lines = text.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+  const rows = [], skipped = [];
+  let sectionLabel = '';
+
+  lines.forEach(function(raw){
+    const parsed = parseBulkStockLine(raw);
+    if(!parsed){
+      if(raw.replace(/[^a-zA-Z]/g,'').length >= 3) sectionLabel = raw.trim();
+      return;
+    }
+    if(!parsed.recognized) skipped.push({raw:raw});
+    rows.push({
+      raw: parsed.raw, model: parsed.model, storage: parsed.storage, price: parsed.price,
+      include: parsed.include, flagged: parsed.flagged, quantity: parsed.quantity, sectionLabel: sectionLabel
+    });
+  });
+  return { rows: rows, skipped: skipped };
+}
 
 function loadConfig(){
   if(HARDCODED_SUPABASE_URL && HARDCODED_SUPABASE_ANON_KEY){
@@ -2166,6 +2086,7 @@ async function loadAfterAuth(){
     state.profile = profile; state.isAdmin = !!profile.is_admin;
     await refreshAll();
     state.stage = 'app';
+    initPush();
   } catch(e){
     state.stage = 'auth'; state.authError = 'Could not load your shop profile: ' + (e.message||e);
   }
@@ -2219,7 +2140,7 @@ function computeKPIs(){
   const profit = function(s){ return (Number(s.sale_price)||0) - (Number(s.cost)||0); };
   const inStock = state.inventory.filter(function(p){ return p.status==='In Stock'; });
   const reserved = state.inventory.filter(function(p){ return p.status==='Reserved'; });
-  const stockValue = inStock.reduce(function(a,p){ return a+(Number(p.cost)||0); },0);
+  const stockValue = inStock.reduce(function(a,p){ return a+((Number(p.cost)||0)*(Number(p.quantity)||1)); },0);
   const warrantyList = state.sales.map(function(s){
     if(!s.date || !s.warranty_days) return null;
     const expiry = new Date(s.date); expiry.setDate(expiry.getDate()+Number(s.warranty_days));
@@ -2288,6 +2209,7 @@ function render(){
         (state.searchQuery ? renderSearchDropdown() : '') +
         '<div class="topbar-right">' +
           '<span class="dot"></span> '+escapeHtml(state.profile.shop_name)+(state.isAdmin?' <span class="badge badge-admin">admin</span>':'') +
+          '<span class="bell '+(state.pushStatus==='on'?'on':'')+'" id="notifBellBtn" title="Notification settings">'+ICONS.bell+'</span>' +
           '<span class="gear" id="logoutBtn" title="Log out">'+ICONS.gear+'</span>' +
         '</div>' +
       '</div>' +
@@ -2430,6 +2352,10 @@ function renderDashboard(){
   const board = staffLeaderboard();
   return '<h1 class="page-title">Today on the floor</h1>' +
     '<p class="page-sub">'+new Date().toLocaleDateString('en-NG',{weekday:'long', year:'numeric', month:'long', day:'numeric'})+'</p>' +
+    (state.pushStatus==='off' ? ('<div class="section"><div class="section-body" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;">' +
+      '<div>'+ICONS.bell.replace('<svg ', '<svg style="width:16px;height:16px;vertical-align:-3px;margin-right:6px;color:var(--accent)" ')+'<strong>Turn on phone alerts</strong> — get notified the moment a customer asks for a phone, a dealer broadcasts a need, or a warranty is about to expire, even with the app closed.</div>' +
+      '<button class="btn btn-accent" id="enablePushInline">Enable notifications</button>' +
+    '</div></div>') : '') +
     '<div class="kpi-grid">' +
       '<div class="kpi"><div class="kpi-label">Units sold today</div><div class="kpi-value">'+k.unitsToday+'</div></div>' +
       '<div class="kpi"><div class="kpi-label">Revenue today</div><div class="kpi-value accent">'+naira(k.revenueToday)+'</div></div>' +
@@ -2460,20 +2386,24 @@ function renderDashboard(){
 
 function renderInventory(){
   const items = state.inventory.slice().sort(function(a,b){ return (a.status==='In Stock'?0:1)-(b.status==='In Stock'?0:1); });
-  return '<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
+  return '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">' +
       '<div><h1 class="page-title">Inventory</h1><p class="page-sub">'+state.inventory.length+' phones tracked · '+state.inventory.filter(function(p){return p.status==='In Stock';}).length+' in stock</p></div>' +
-      '<button class="btn btn-accent" data-open-modal="addPhone">'+ICONS.plus+' Add phone</button>' +
+      '<div style="display:flex;gap:8px;">' +
+        '<button class="btn" data-open-modal="bulkImport">📋 Paste stock list</button>' +
+        '<button class="btn btn-accent" data-open-modal="addPhone">'+ICONS.plus+' Add phone</button>' +
+      '</div>' +
     '</div>' +
     '<div class="section"><div class="section-body" style="padding:0;overflow-x:auto;">' +
-      (items.length ? ('<table><thead><tr><th>Model</th><th>IMEI</th><th>Storage / Color</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
+      (items.length ? ('<table><thead><tr><th>Model</th><th>IMEI</th><th>Qty</th><th>Storage / Color</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
         items.map(function(p){ return '<tr>' +
           '<td class="strong">'+escapeHtml(p.model)+'</td>' +
           '<td class="mono">'+(p.imei?escapeHtml(p.imei):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+          '<td class="mono">'+(p.quantity!=null?p.quantity:1)+'</td>' +
           '<td>'+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</td>' +
           '<td>'+escapeHtml(p.condition)+(p.condition==='Used'?(' · '+p.battery+'% batt'):'')+'</td>' +
-          '<td class="mono">'+naira(p.cost)+'</td>' +
-          '<td class="mono">'+naira(p.price)+'</td>' +
-          '<td class="mono" style="color:var(--success)">'+naira((Number(p.price)||0)-(Number(p.cost)||0))+'</td>' +
+          '<td class="mono">'+(p.cost?naira(p.cost):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+          '<td class="mono">'+(p.price?naira(p.price):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+          '<td class="mono" style="color:var(--success)">'+(p.price?naira((Number(p.price)||0)-(Number(p.cost)||0)):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
           '<td>'+badge(p.status)+'</td>' +
           '<td>'+escapeHtml(p.shelf)+'</td>' +
           '<td><button class="btn btn-sm" data-open-modal="editPhone" data-id="'+p.id+'">Edit</button></td>' +
@@ -2658,7 +2588,27 @@ function renderModal(){
   if(m.name==='addSupplier') return renderSupplierModal();
   if(m.name==='newBroadcast') return renderBroadcastModal();
   if(m.name==='respondBroadcast') return renderRespondModal(m);
+  if(m.name==='bulkImport') return renderBulkImportModal();
+  if(m.name==='notifSettings') return renderNotifModal();
   return '';
+}
+
+function renderNotifModal(){
+  const status = state.pushStatus;
+  const statusLabel = {unsupported:'Not supported in this browser', off:'Off', prompting:'Waiting for permission…', on:'On for this device', denied:'Blocked in browser settings'}[status] || status;
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:460px;">' +
+    '<div class="modal-head"><h3>Notifications</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      '<div class="notif-row"><div><div class="n-label">Push notifications on this device</div>' +
+        '<div class="n-sub">Status: '+escapeHtml(statusLabel)+'</div></div>' +
+        (status==='on' ? '<button class="btn btn-danger btn-sm" id="disablePushBtn">Turn off</button>' :
+          status==='denied' ? '' :
+          '<button class="btn btn-accent btn-sm" id="enablePushBtn" '+(status==='prompting'?'disabled':'')+'>Enable</button>') +
+      '</div>' +
+      '<div class="notif-row"><div class="n-sub">You\'ll be alerted for: new customer requests, dealer network broadcasts and responses, warranty phones expiring within 2 days, and phones down to their last unit. Alerts arrive even if this app isn\'t open, as long as your phone has data/wifi.</div></div>' +
+      (status==='denied' ? '<div class="n-sub" style="margin-top:8px;color:var(--danger)">Notifications are blocked for this site in your browser. Open your browser\'s site settings for this page and allow notifications, then reopen this dialog.</div>' : '') +
+    '</div>' +
+  '</div></div>';
 }
 
 function renderPhoneModal(m){
@@ -2688,16 +2638,58 @@ function renderPhoneModal(m){
     '</div></div></div>';
 }
 
+function renderBulkImportModal(){
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:760px;">' +
+    '<div class="modal-head"><h3>Paste stock list</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      (!state.bulkImportRows.length ? (
+        '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">Paste your list exactly as you have it — any format, any separator (works with iPhone-style short-hand like "12promax256gb_490k"). We\'ll match model, storage, and cost price automatically. Selling price is left blank since these lists show what you paid, not what you\'re charging — set your selling price per phone after import (or use the profit calculator to decide it first).</p>' +
+        '<div class="form-grid">' +
+          '<div class="field"><label>Condition (applies to this whole batch)</label><select id="bi-condition"><option value="Used" '+(state.bulkImportCondition==='Used'?'selected':'')+'>Used</option><option value="New" '+(state.bulkImportCondition==='New'?'selected':'')+'>New</option></select></div>' +
+          '<div class="field"><label>Supplier / source (optional)</label><input id="bi-supplier" placeholder="e.g. UK import batch" value="'+escapeAttr(state.bulkImportSupplier)+'"/></div>' +
+        '</div>' +
+        '<div class="field full" style="margin-top:14px;"><label>Paste here</label><textarea id="bi-text" rows="14" style="font-family:var(--font-mono);font-size:12.5px;" placeholder="Ip16 128–850k&#10;Ip14 pro 128–635k&#10;...">'+escapeHtml(state.bulkImportText)+'</textarea></div>'
+      ) : renderBulkImportPreview()) +
+    '</div>' +
+    '<div class="modal-foot">' +
+      (!state.bulkImportRows.length ?
+        ('<button class="btn" data-close-modal="1">Cancel</button><button class="btn btn-accent" id="bi-parse-btn">Parse list</button>') :
+        ('<button class="btn" id="bi-back-btn">← Back to edit paste</button><button class="btn btn-accent" id="bi-import-btn">Import '+state.bulkImportRows.filter(function(r){return r.include;}).length+' phones</button>')
+      ) +
+    '</div></div></div>';
+}
+
+function renderBulkImportPreview(){
+  const rows = state.bulkImportRows;
+  const unparsed = state.bulkImportSkipped;
+  return '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">Review before importing — uncheck any row you don\'t want, or fix a value directly. The "Cost" column is what you\'ll set your selling price against later.</p>' +
+    '<table><thead><tr><th></th><th>Model</th><th>Storage</th><th>Cost</th><th>Qty</th><th>Original line</th></tr></thead><tbody>' +
+    rows.map(function(r,i){ return '<tr style="'+(r.flagged?'opacity:.55;':'')+'">' +
+      '<td><input type="checkbox" data-bi-include="'+i+'" '+(r.include?'checked':'')+'/></td>' +
+      '<td><input data-bi-field="model" data-bi-row="'+i+'" value="'+escapeAttr(r.model)+'" style="width:150px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input data-bi-field="storage" data-bi-row="'+i+'" value="'+escapeAttr(r.storage)+'" style="width:70px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input type="number" data-bi-field="price" data-bi-row="'+i+'" value="'+r.price+'" style="width:100px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input type="number" min="1" data-bi-field="quantity" data-bi-row="'+i+'" value="'+(r.quantity||1)+'" style="width:55px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td class="mono" style="font-size:11px;color:var(--text-faint);">'+escapeHtml(r.raw)+(r.flagged?' <span class="badge badge-danger">❌ flagged</span>':'')+'</td>' +
+    '</tr>'; }).join('') +
+    '</tbody></table>' +
+    (unparsed.length ? ('<div style="margin-top:14px;padding:10px 12px;background:var(--panel-2);border-radius:var(--radius-sm);font-size:12px;color:var(--text-faint);">' +
+      'Couldn\'t confidently recognize the model on '+unparsed.length+' line'+(unparsed.length===1?'':'s')+' (added as-is from the original text — rename or uncheck after review): ' +
+      unparsed.map(function(u){ return escapeHtml(u.raw); }).join(', ') + '</div>') : '');
+}
+
 function renderSaleModal(){
   const available = state.inventory.filter(function(p){ return p.status==='In Stock'; });
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>Log a sale</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body"><div class="form-grid">' +
       '<div class="field full"><label>Phone (in stock only)</label><select id="s-inventory-id"><option value="">Select a phone…</option>' +
-        available.map(function(p){ return '<option value="'+p.id+'">'+escapeHtml(p.model)+' · '+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+' — '+naira(p.price)+(p.imei?(' (IMEI '+escapeHtml(p.imei)+')'):' (no IMEI on file)')+'</option>'; }).join('') +
+        available.map(function(p){ return '<option value="'+p.id+'">'+escapeHtml(p.model)+' · '+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+' — '+(p.price?naira(p.price):'no price set yet')+(p.quantity>1?(' ('+p.quantity+' in stock)'):'')+'</option>'; }).join('') +
       '</select></div>' +
       '<div class="field"><label>Sale date</label><input type="date" id="s-date" value="'+todayISO()+'"/></div>' +
       '<div class="field mono"><label>Sale price (₦)</label><input type="number" id="s-price"/></div>' +
+      '<div class="field mono"><label>IMEI (optional — record it now, at sale)</label><input id="s-imei" placeholder="Scan or type IMEI"/></div>' +
+      '<div class="field"><label>Quantity sold</label><input type="number" min="1" id="s-quantity" value="1"/></div>' +
       '<div class="field"><label>Customer name</label><input id="s-name"/></div>' +
       '<div class="field"><label>Customer phone</label><input id="s-phone"/></div>' +
       '<div class="field"><label>Payment method</label><select id="s-payment"><option>Cash</option><option>Transfer</option><option>POS</option></select></div>' +
@@ -2759,6 +2751,15 @@ function attachHandlers(){
   const logoutBtn = document.getElementById('logoutBtn');
   if(logoutBtn) logoutBtn.addEventListener('click', async function(){ await sb.auth.signOut(); state.stage='auth'; state.profile=null; render(); });
 
+  const notifBellBtn = document.getElementById('notifBellBtn');
+  if(notifBellBtn) notifBellBtn.addEventListener('click', function(){ openModal('notifSettings'); });
+  const enablePushInline = document.getElementById('enablePushInline');
+  if(enablePushInline) enablePushInline.addEventListener('click', enablePush);
+  const enablePushBtn = document.getElementById('enablePushBtn');
+  if(enablePushBtn) enablePushBtn.addEventListener('click', enablePush);
+  const disablePushBtn = document.getElementById('disablePushBtn');
+  if(disablePushBtn) disablePushBtn.addEventListener('click', disablePush);
+
   const gs = document.getElementById('globalSearch');
   if(gs){
     gs.addEventListener('input', function(e){
@@ -2815,7 +2816,8 @@ function attachHandlers(){
       const { error } = await sb.rpc('sell_phone', {
         p_inventory_id: inventoryId, p_sale_price: price, p_customer_name: val('s-name'), p_customer_phone: val('s-phone'),
         p_payment_method: val('s-payment'), p_staff: val('s-staff'), p_warranty_days: Number(val('s-warranty'))||0,
-        p_accessories: val('s-accessories'), p_notes: ''
+        p_accessories: val('s-accessories'), p_notes: '',
+        p_imei: val('s-imei')||null, p_quantity: Number(val('s-quantity'))||1
       });
       if(error) throw error;
       await refreshAll();
@@ -2880,6 +2882,50 @@ function attachHandlers(){
     } catch(e){ showToast('Failed: '+e.message, true); render(); }
   }); });
 
+  const biParseBtn = document.getElementById('bi-parse-btn');
+  if(biParseBtn) biParseBtn.addEventListener('click', function(){
+    const text = val('bi-text');
+    state.bulkImportText = text;
+    state.bulkImportCondition = val('bi-condition');
+    state.bulkImportSupplier = val('bi-supplier');
+    const parsed = parseBulkStock(text);
+    state.bulkImportRows = parsed.rows; state.bulkImportSkipped = parsed.skipped;
+    if(!state.bulkImportRows.length){ showToast('No recognizable stock lines found in that paste', true); return; }
+    render();
+  });
+  const biBackBtn = document.getElementById('bi-back-btn');
+  if(biBackBtn) biBackBtn.addEventListener('click', function(){ state.bulkImportRows = []; render(); });
+
+  document.querySelectorAll('[data-bi-include]').forEach(function(el){
+    el.addEventListener('change', function(){ state.bulkImportRows[Number(el.getAttribute('data-bi-include'))].include = el.checked; });
+  });
+  document.querySelectorAll('[data-bi-field]').forEach(function(el){
+    el.addEventListener('input', function(){
+      const i = Number(el.getAttribute('data-bi-row')), f = el.getAttribute('data-bi-field');
+      state.bulkImportRows[i][f] = el.value;
+    });
+  });
+
+  const biImportBtn = document.getElementById('bi-import-btn');
+  if(biImportBtn) biImportBtn.addEventListener('click', async function(){
+    const toInsert = state.bulkImportRows.filter(function(r){ return r.include; }).map(function(r){
+      return {
+        dealer_id: state.profile.id, model: r.model, storage: r.storage, color: '',
+        condition: state.bulkImportCondition, battery: state.bulkImportCondition==='Used' ? 100 : null,
+        quantity: Number(r.quantity)||1, supplier: state.bulkImportSupplier || (r.sectionLabel||''), purchase_date: todayISO(),
+        cost: Number(r.price)||0, price: null, status: 'In Stock', shelf: '', notes: 'Bulk imported: '+r.raw
+      };
+    });
+    if(!toInsert.length){ showToast('No rows selected to import', true); return; }
+    try{
+      const { error } = await sb.from('inventory').insert(toInsert);
+      if(error) throw error;
+      await refreshAll();
+      state.bulkImportRows = []; state.bulkImportText='';
+      closeModal(); showToast(toInsert.length+' phones imported');
+    } catch(e){ showToast('Import failed: '+e.message, true); render(); }
+  });
+
   ['calc-cost','calc-target','calc-min','calc-offer'].forEach(function(id){
     const el = document.getElementById(id);
     if(el) el.addEventListener('input', function(){
@@ -2892,6 +2938,496 @@ function attachHandlers(){
 init();
 })();
 </script>
+</body>
+</html>
+
+======================================================================================================================================================
+
+supabase\.temp\linked-project.json
+
+{"ref":"qqlykvrofoobowrsarxi","name":"PhoneHub Pro","organization_id":"nrdvzteoafbqtcxqgoqz","organization_slug":"nrdvzteoafbqtcxqgoqz"}
+
+======================================================================================================================================================
+
+seller\manifest.json
+
+{
+  "name": "PhoneHub Pro — Seller",
+  "short_name": "PhoneHub",
+  "description": "Business management console for Computer Village phone dealers.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#10141C",
+  "theme_color": "#10141C",
+  "icons": [
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
+
+======================================================================================================================================================
+
+migration_optional_imei.sql
+
+-- ============================================================
+-- PhoneHub Pro — Migration: make IMEI optional
+-- ============================================================
+-- ONLY needed if you already ran an OLDER version of schema.sql that had
+-- IMEI as NOT NULL. The schema.sql in this package already has IMEI as
+-- optional and sell_phone() matching by inventory id — skip this file
+-- entirely on a fresh project.
+--
+-- Run this once in Supabase: Dashboard > SQL Editor > New query > paste > Run.
+-- Safe to re-run.
+-- ============================================================
+
+-- 1. Allow phones/sales to be saved without an IMEI (e.g. accessories,
+--    or stock not yet logged with its IMEI).
+alter table inventory alter column imei drop not null;
+alter table sales alter column imei drop not null;
+
+-- 2. Replace sell_phone() to match by the phone's internal id instead of
+--    its IMEI. This avoids ambiguity now that IMEI can be blank (multiple
+--    IMEI-less phones would otherwise be indistinguishable when selling).
+drop function if exists sell_phone(text,numeric,text,text,text,text,int,text,text);
+
+create or replace function sell_phone(
+  p_inventory_id uuid, p_sale_price numeric, p_customer_name text, p_customer_phone text,
+  p_payment_method text, p_staff text, p_warranty_days int, p_accessories text, p_notes text
+)
+returns sales
+language plpgsql
+as $$
+declare
+  v_phone inventory%rowtype;
+  v_sale sales%rowtype;
+begin
+  select * into v_phone from inventory
+    where id = p_inventory_id and dealer_id = auth.uid() and status = 'In Stock'
+    limit 1;
+
+  if v_phone.id is null then
+    raise exception 'No in-stock phone found for that selection';
+  end if;
+
+  insert into sales (dealer_id, imei, model, cost, sale_price, customer_name, customer_phone,
+                      payment_method, staff, warranty_days, accessories, notes)
+  values (auth.uid(), v_phone.imei, v_phone.model, v_phone.cost, p_sale_price, p_customer_name, p_customer_phone,
+          p_payment_method, p_staff, p_warranty_days, p_accessories, p_notes)
+  returning * into v_sale;
+
+  update inventory set status = 'Sold', updated_at = now() where id = v_phone.id;
+
+  return v_sale;
+end;
+$$;
+grant execute on function sell_phone(uuid,numeric,text,text,text,text,int,text,text) to authenticated;
+
+======================================================================================================================================================
+
+README.md
+
+# PhoneHub Pro
+
+Business management platform for Computer Village phone dealers — inventory, sales, profit calculator, and a shared dealer network, backed by Supabase.
+
+## Structure
+
+- `/seller/` — Seller App (dealer registration, inventory, bulk stock import, sales, dealer network, admin oversight)
+- `/customer/` — Customer App (shop browsing, phone requests, warranty lookup)
+- `schema.sql` — Supabase/Postgres schema. Run this once in your Supabase project's SQL Editor before using the apps. (Already includes optional-IMEI support — you do NOT need `migration_optional_imei.sql` on a fresh project; that file is only for upgrading an older deployment.)
+- `SUPABASE_SETUP_GUIDE.md` — step-by-step setup instructions.
+
+## Live URLs (once GitHub Pages is enabled)
+
+- Landing page: `https://<your-username>.github.io/<repo-name>/`
+- Seller App: `https://<your-username>.github.io/<repo-name>/seller/`
+- Customer App: `https://<your-username>.github.io/<repo-name>/customer/`
+
+## Updating the apps
+
+Both apps are single static HTML files. To ship a change: edit the file, commit, push — GitHub Pages redeploys automatically within a minute or two.
+
+## What's new in this package
+
+- **Bulk stock import** ("📋 Paste stock list" button on the Inventory tab of the Seller App) — dealers can paste their existing WhatsApp/notes-style stock lists (e.g. `Ip14 pro 128–635k`) and the app parses model, storage, and price automatically, with a review step before importing. Cost price is left blank on import since these lists only show selling price — remind dealers to fill that in per phone afterward so profit numbers are accurate.
+
+======================================================================================================================================================
+
+schema.sql
+
+-- ============================================================
+-- PhoneHub Pro — Supabase Schema (Phase 2, multi-tenant)
+-- ============================================================
+-- Run this whole file once in Supabase: Dashboard > SQL Editor > New query > paste > Run.
+-- Safe to re-run top-to-bottom on a fresh project.
+-- ============================================================
+
+-- Needed for gen_random_uuid()
+create extension if not exists "pgcrypto";
+
+-- ------------------------------------------------------------
+-- 1. DEALERS  (one row per registered seller, linked to their auth account)
+-- ------------------------------------------------------------
+create table if not exists dealers (
+  id uuid primary key references auth.users(id) on delete cascade,
+  shop_name text not null,
+  shop_slug text unique not null,        -- used in the customer app's shareable link, e.g. /shop/musa-electronics
+  phone text,
+  whatsapp text,
+  location text,
+  is_admin boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+alter table dealers enable row level security;
+
+-- Security-definer helper: checks admin status while bypassing dealers' own RLS,
+-- so policies that need to check "is this caller an admin?" don't recursively
+-- re-trigger the dealers table's RLS (which would otherwise infinite-loop).
+create or replace function is_admin()
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select coalesce((select d.is_admin from dealers d where d.id = auth.uid()), false);
+$$;
+
+-- Dealers can see & edit their own profile row.
+create policy "dealers_select_own" on dealers for select
+  using (id = auth.uid());
+create policy "dealers_update_own" on dealers for update
+  using (id = auth.uid());
+
+-- Admins (you) can see every dealer's profile.
+create policy "dealers_select_admin" on dealers for select
+  using (is_admin());
+
+-- Auto-create a dealer profile row whenever someone signs up.
+-- Expects shop_name / phone / shop_slug passed in as auth signup metadata.
+create or replace function handle_new_dealer()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  insert into dealers (id, shop_name, shop_slug, phone, location)
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data->>'shop_name', 'New Shop'),
+    coalesce(new.raw_user_meta_data->>'shop_slug', 'shop-' || substr(new.id::text, 1, 8)),
+    new.raw_user_meta_data->>'phone',
+    new.raw_user_meta_data->>'location'
+  );
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function handle_new_dealer();
+
+-- Public, read-only directory so the Customer App can resolve a shop_slug to a dealer
+-- without exposing anything private. Runs as the (trusted) view owner, so it works
+-- even though the requester (a customer) isn't logged in.
+create or replace view public_shops
+  with (security_invoker = false) as
+  select id, shop_name, shop_slug, location from dealers;
+grant select on public_shops to anon, authenticated;
+
+-- ------------------------------------------------------------
+-- 2. INVENTORY
+-- ------------------------------------------------------------
+create table if not exists inventory (
+  id uuid primary key default gen_random_uuid(),
+  dealer_id uuid not null references dealers(id) on delete cascade,
+  imei text,
+  imei2 text,
+  model text not null,
+  storage text,
+  color text,
+  condition text check (condition in ('New','Used')),
+  battery int,
+  supplier text,
+  purchase_date date,
+  cost numeric,
+  price numeric,
+  status text not null default 'In Stock' check (status in ('In Stock','Reserved','Sold','In Repair')),
+  quantity int not null default 1,
+  shelf text,
+  notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists idx_inventory_dealer on inventory(dealer_id);
+create index if not exists idx_inventory_model on inventory using gin (to_tsvector('simple', model));
+
+alter table inventory enable row level security;
+
+create policy "inventory_all_own" on inventory for all
+  using (dealer_id = auth.uid())
+  with check (dealer_id = auth.uid());
+
+create policy "inventory_select_admin" on inventory for select
+  using (is_admin());
+
+-- Cross-dealer search, for logged-in dealers only. Deliberately excludes cost/supplier
+-- so no dealer can see another dealer's margins — only what a buyer needs to know.
+create or replace view dealer_network_view
+  with (security_invoker = false) as
+  select
+    i.id, i.dealer_id, d.shop_name as dealer_name, d.phone as dealer_phone,
+    i.model, i.storage, i.color, i.condition, i.battery, i.price, i.updated_at
+  from inventory i
+  join dealers d on d.id = i.dealer_id
+  where i.status = 'In Stock';
+grant select on dealer_network_view to authenticated;
+
+-- Public storefront catalog for the Customer App (one dealer's in-stock phones only,
+-- no cost/supplier/IMEI exposed).
+create or replace view public_catalog
+  with (security_invoker = false) as
+  select id, dealer_id, model, storage, color, condition, battery, price, status
+  from inventory
+  where status = 'In Stock';
+grant select on public_catalog to anon, authenticated;
+
+-- ------------------------------------------------------------
+-- 3. SALES
+-- ------------------------------------------------------------
+create table if not exists sales (
+  id uuid primary key default gen_random_uuid(),
+  dealer_id uuid not null references dealers(id) on delete cascade,
+  date date not null default current_date,
+  imei text,
+  model text,
+  cost numeric,
+  sale_price numeric,
+  customer_name text,
+  customer_phone text,
+  payment_method text,
+  staff text,
+  warranty_days int default 0,
+  quantity int not null default 1,
+  accessories text,
+  notes text,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_sales_dealer on sales(dealer_id);
+create index if not exists idx_sales_customer_phone on sales(customer_phone);
+
+alter table sales enable row level security;
+
+create policy "sales_all_own" on sales for all
+  using (dealer_id = auth.uid())
+  with check (dealer_id = auth.uid());
+
+create policy "sales_select_admin" on sales for select
+  using (is_admin());
+
+-- Lets a customer look up THEIR OWN purchase/warranty history by phone number,
+-- without exposing anyone else's sales. Only the fields they need, nothing private.
+create or replace function lookup_my_purchases(p_phone text)
+returns table (model text, date date, sale_price numeric, warranty_days int, shop_name text)
+language sql
+security definer set search_path = public
+as $$
+  select s.model, s.date, s.sale_price, s.warranty_days, d.shop_name
+  from sales s join dealers d on d.id = s.dealer_id
+  where regexp_replace(s.customer_phone, '\s', '', 'g') = regexp_replace(p_phone, '\s', '', 'g');
+$$;
+grant execute on function lookup_my_purchases(text) to anon, authenticated;
+
+-- Records a sale and marks the phone Sold, atomically, for the CURRENT dealer only.
+-- Runs with the caller's own privileges (not security definer), so normal RLS
+-- still applies — a dealer can only ever sell their own in-stock phones.
+-- Matches by inventory id (not IMEI) since IMEI is optional and multiple
+-- IMEI-less phones would otherwise be indistinguishable.
+drop function if exists sell_phone(uuid,numeric,text,text,text,text,int,text,text);
+
+create or replace function sell_phone(
+  p_inventory_id uuid, p_sale_price numeric, p_customer_name text, p_customer_phone text,
+  p_payment_method text, p_staff text, p_warranty_days int, p_accessories text, p_notes text,
+  p_imei text default null, p_quantity int default 1
+)
+returns sales
+language plpgsql
+as $$
+declare
+  v_phone inventory%rowtype;
+  v_sale sales%rowtype;
+  v_remaining int;
+begin
+  select * into v_phone from inventory
+    where id = p_inventory_id and dealer_id = auth.uid() and status = 'In Stock'
+    limit 1;
+
+  if v_phone.id is null then
+    raise exception 'No in-stock phone found for that selection';
+  end if;
+
+  if p_quantity is null or p_quantity < 1 then
+    p_quantity := 1;
+  end if;
+
+  if v_phone.quantity < p_quantity then
+    raise exception 'Only % in stock — cannot sell %', v_phone.quantity, p_quantity;
+  end if;
+
+  insert into sales (dealer_id, imei, model, cost, sale_price, customer_name, customer_phone,
+                      payment_method, staff, warranty_days, accessories, notes, quantity)
+  values (auth.uid(), coalesce(p_imei, v_phone.imei), v_phone.model, v_phone.cost, p_sale_price, p_customer_name, p_customer_phone,
+          p_payment_method, p_staff, p_warranty_days, p_accessories, p_notes, p_quantity)
+  returning * into v_sale;
+
+  v_remaining := v_phone.quantity - p_quantity;
+
+  update inventory
+    set quantity = v_remaining,
+        status = case when v_remaining <= 0 then 'Sold' else 'In Stock' end,
+        updated_at = now()
+    where id = v_phone.id;
+
+  return v_sale;
+end;
+$$;
+grant execute on function sell_phone(uuid,numeric,text,text,text,text,int,text,text,text,int) to authenticated;
+
+-- ------------------------------------------------------------
+-- 4. REQUESTS  (customer waiting-list asks, submitted from the Customer App)
+-- ------------------------------------------------------------
+create table if not exists requests (
+  id uuid primary key default gen_random_uuid(),
+  dealer_id uuid not null references dealers(id) on delete cascade,
+  date date not null default current_date,
+  customer_name text,
+  customer_phone text,
+  model text not null,
+  storage text,
+  color text,
+  budget numeric,
+  status text not null default 'Pending' check (status in ('Pending','Fulfilled','Cancelled')),
+  notes text,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_requests_dealer on requests(dealer_id);
+
+alter table requests enable row level security;
+
+-- Anyone (a customer, not logged in) can submit a request to a specific shop.
+create policy "requests_insert_anyone" on requests for insert
+  with check (true);
+
+-- Only the shop it was sent to (or an admin) can read/manage it.
+create policy "requests_select_own" on requests for select
+  using (dealer_id = auth.uid());
+create policy "requests_update_own" on requests for update
+  using (dealer_id = auth.uid());
+create policy "requests_select_admin" on requests for select
+  using (is_admin());
+
+-- ------------------------------------------------------------
+-- 5. SUPPLIERS  (each dealer's own private colleague/supplier contacts)
+-- ------------------------------------------------------------
+create table if not exists suppliers (
+  id uuid primary key default gen_random_uuid(),
+  dealer_id uuid not null references dealers(id) on delete cascade,
+  name text not null,
+  phone text,
+  whatsapp text,
+  location text,
+  supplies text,
+  notes text,
+  owed numeric default 0,
+  due date,
+  created_at timestamptz not null default now()
+);
+alter table suppliers enable row level security;
+create policy "suppliers_all_own" on suppliers for all
+  using (dealer_id = auth.uid())
+  with check (dealer_id = auth.uid());
+create policy "suppliers_select_admin" on suppliers for select
+  using (is_admin());
+
+-- ------------------------------------------------------------
+-- 6. BROADCASTS + RESPONSES  (network-wide "need this phone urgently")
+-- ------------------------------------------------------------
+create table if not exists broadcasts (
+  id uuid primary key default gen_random_uuid(),
+  dealer_id uuid not null references dealers(id) on delete cascade,   -- who's asking
+  date date not null default current_date,
+  model text not null,
+  storage text,
+  color text,
+  urgency text,
+  status text not null default 'Open' check (status in ('Open','Closed')),
+  created_at timestamptz not null default now()
+);
+alter table broadcasts enable row level security;
+
+-- Every registered dealer can see every open broadcast — that's the point of the network.
+create policy "broadcasts_select_all" on broadcasts for select
+  using (auth.uid() is not null);
+create policy "broadcasts_insert_own" on broadcasts for insert
+  with check (dealer_id = auth.uid());
+create policy "broadcasts_update_own" on broadcasts for update
+  using (dealer_id = auth.uid());
+
+create table if not exists broadcast_responses (
+  id uuid primary key default gen_random_uuid(),
+  broadcast_id uuid not null references broadcasts(id) on delete cascade,
+  dealer_id uuid not null references dealers(id) on delete cascade,   -- who's responding
+  price numeric,
+  quantity int default 1,
+  contact_phone text,
+  created_at timestamptz not null default now()
+);
+alter table broadcast_responses enable row level security;
+
+create policy "broadcast_responses_select_all" on broadcast_responses for select
+  using (auth.uid() is not null);
+create policy "broadcast_responses_insert_own" on broadcast_responses for insert
+  with check (dealer_id = auth.uid());
+
+-- ============================================================
+-- After running this file:
+-- 1. Sign up your own account through the Seller App (this creates your dealer row).
+-- 2. Run:  update dealers set is_admin = true where shop_slug = 'your-shop-slug';
+--    (or `where id = 'your-auth-user-id'` — find it in Authentication > Users)
+-- ============================================================
+
+======================================================================================================================================================
+
+.vscode\settings.json
+
+{
+  "deno.enablePaths": [
+    "supabase/functions"
+  ],
+  "deno.lint": true,
+  "deno.unstable": [
+    "bare-node-builtins",
+    "byonm",
+    "sloppy-imports",
+    "unsafe-proto",
+    "webgpu",
+    "broadcast-channel",
+    "worker-options",
+    "cron",
+    "kv",
+    "ffi",
+    "fs",
+    "http",
+    "net"
+  ],
+  "[typescript]": {
+    "editor.defaultFormatter": "denoland.vscode-deno"
+  }
+}
 
 ======================================================================================================================================================
 
@@ -2914,6 +3450,8 @@ SUPABASE_SETUP_GUIDE.md
 2. Click **New query**, paste in the entire contents of **schema.sql**, and click **Run**.
 3. You should see a series of "CREATE TABLE / CREATE POLICY / CREATE VIEW" success messages with no errors. This creates every table, security rule, and the two special database functions (`sell_phone`, `lookup_my_purchases`) that both apps depend on.
 
+> Note: `schema.sql` in this package already has IMEI as optional and `sell_phone` matching by inventory ID. You do **not** need to separately run `migration_optional_imei.sql` on a fresh project — that file exists only to upgrade an older deployment that used an earlier version of the schema.
+
 ## Step 3 — Turn off email confirmation (recommended for testing)
 
 By default, Supabase requires users to click an email confirmation link before they can log in. For fast testing with your first dealers, turn this off:
@@ -2935,6 +3473,8 @@ By default, Supabase requires users to click an email confirmation link before t
 2. You'll land on a Register/Log in screen. **Register your own shop first** — this is how you'll test as a dealer.
 3. Open the **Customer App** — it asks for the same two values once. After that, it shows a shop picker listing every registered dealer.
 
+> If you've deployed this for real and don't want every visitor to see the "Connect" screen, paste your project URL and anon key directly into the `HARDCODED_SUPABASE_URL` / `HARDCODED_SUPABASE_ANON_KEY` constants near the top of each app's `<script>` — both files already have a placeholder for this.
+
 ## Step 6 — Make yourself admin
 
 1. After registering in the Seller App, go back to Supabase's **SQL Editor** and run:
@@ -2944,9 +3484,16 @@ By default, Supabase requires users to click an email confirmation link before t
    (Find your exact `shop_slug` by running `select shop_name, shop_slug from dealers;` first.)
 2. Refresh/re-log into the Seller App — you'll now see an **Admin** tab showing every dealer, their stock counts, and total platform revenue.
 
+## Deploying with GitHub Pages
+
+1. Create a new GitHub repo and push the contents of this folder (keep the `seller/` and `customer/` subfolders intact).
+2. Repo → **Settings → Pages** → set source to the `main` branch, root folder.
+3. Wait a minute or two — your site will be live at `https://<your-username>.github.io/<repo-name>/`.
+
 ## Everyday use
 
 - **Each dealer registers their own account** — their inventory, sales, and customer requests are automatically private to them (enforced by the database itself, not just app-level logic).
+- **Inventory → "📋 Paste stock list"** lets a dealer paste their existing WhatsApp/notes-style stock list in bulk instead of typing each phone in one at a time.
 - **Dealer Network tab → Search stock** shows every registered dealer's in-stock phones (price, model, condition) so any dealer can find who has what — without ever seeing each other's cost prices.
 - **Broadcasts** are visible to every dealer instantly — no WhatsApp groups, no ban risk.
 - **Customer App** — anyone who picks a shop sees only that shop's real-time catalog; submitting a request writes straight into that dealer's Seller App "Asks" tab. "My purchases" searches across *all* shops by phone number, so a customer only needs to remember their own number, not which shop they bought from.
@@ -2955,6 +3502,8 @@ By default, Supabase requires users to click an email confirmation link before t
 
 Supabase's free tier includes 500MB database storage and 50,000 monthly active users — far beyond what 10–50 dealers and their customers will use. You will not need a paid plan until you're seeing real scale (many hundreds of dealers or heavy daily traffic), at which point upgrading is a plan change, not a rebuild.
 
+If you hit Supabase's auth email rate limit (2/hour on the shared testing SMTP) while testing signups, either wait ~30–60 minutes for it to clear, or set up free custom SMTP (Resend's free tier gives 3,000 emails/month, no card needed; Brevo is another good option) under **Authentication → Settings → SMTP Settings** — this removes the cap entirely once you're onboarding real dealers.
+
 ## What's next (Phase 4 ideas, once this is proven)
 
 - WhatsApp/SMS delivery for warranty reminders and broadcast alerts (needs a paid messaging API — Meta Cloud API or Twilio — this is the one piece that genuinely can't be free)
@@ -2962,12 +3511,62 @@ Supabase's free tier includes 500MB database storage and 50,000 monthly active u
 - A dealer reputation/verification layer (fulfillment rate, response time) now that broadcasts have real responders
 - Paid plans / monetization once dealers are asking to pay
 
+======================================================================================================================================================
 
-Future plan
+seller\sw.js
 
-The bucket refills roughly every hour. If you've only tested with 2 real signups but tried a few times each (typos, password-too-short errors, etc.), those failed attempts count too. Waiting ~30–60 minutes usually clears it.
-For the real fix once you're ready to onboard actual dealers: set up free custom SMTP so you're no longer using Supabase's shared/testing email service at all. This removes the 2/hour cap entirely (limits become whatever your SMTP provider allows).
+// PhoneHub Pro — Seller service worker
+// Handles incoming Web Push events so alerts show up (with sound + vibration)
+// even when the app isn't open, and routes taps back into the app.
 
-Resend (free tier: 3,000 emails/month, no credit card) or Brevo are both good, free, and take about 2 minutes.
-Configure it under Authentication → Settings → SMTP Settings in your Supabase dashboard.
+self.addEventListener('install', function(event){
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', function(event){
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('push', function(event){
+  var data = {};
+  try{ data = event.data ? event.data.json() : {}; }
+  catch(e){ data = { title: 'PhoneHub Pro', body: event.data ? event.data.text() : '' }; }
+
+  var title = data.title || 'PhoneHub Pro';
+  var options = {
+    body: data.body || '',
+    icon: './icon-192.png',
+    badge: './icon-192.png',
+    // Default device notification sound plays automatically unless silent:true —
+    // the Web Notification API doesn't support a custom .mp3, but vibration +
+    // the OS's own alert tone is what gets a dealer's attention even screen-off.
+    silent: false,
+    vibrate: [250, 100, 250, 100, 250],
+    tag: data.tag || ('phonehub-' + (data.type || 'alert')),
+    renotify: true,
+    requireInteraction: data.type === 'request' || data.type === 'broadcast',
+    data: { url: data.url || './' }
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', function(event){
+  event.notification.close();
+  var targetPath = (event.notification.data && event.notification.data.url) || './';
+
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clientList){
+      for (var i = 0; i < clientList.length; i++){
+        var client = clientList[i];
+        if ('focus' in client){
+          client.focus();
+          if ('navigate' in client) { try { client.navigate(targetPath); } catch(e){} }
+          return;
+        }
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(targetPath);
+    })
+  );
+});
 
