@@ -661,7 +661,7 @@ async function refreshAll(){
     sb.from('requests').select('*').eq('dealer_id', state.profile.id).order('date',{ascending:false}),
     sb.from('suppliers').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
     sb.from('dealer_network_view').select('*'),
-    sb.from('broadcasts').select('*').order('date',{ascending:false}),
+    sb.from('broadcasts').select('*').order('created_at',{ascending:false}),
     sb.from('dealer_reputation_view').select('*'),
   ]);
   state.inventory = inv.data || []; state.sales = sales.data || []; state.requests = reqs.data || [];
@@ -1139,7 +1139,7 @@ function dealerName(id){
 }
 
 function renderBroadcasts(){
-  const rows = state.broadcasts.slice().sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
+  const rows = state.broadcasts.slice().sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
   const body = rows.map(function(b){
     const responses = state.broadcastResponses.filter(function(r){ return r.broadcast_id===b.id; }).sort(function(a,b2){ return (Number(a.price)||0)-(Number(b2.price)||0); });
     const isMine = b.dealer_id === state.profile.id;
