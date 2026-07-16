@@ -8,9 +8,13 @@
 <meta name="theme-color" content="#10141C">
 <link rel="icon" href="./icon-192.png">
 <link rel="apple-touch-icon" href="./icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PhoneHub">
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
@@ -176,31 +180,9 @@ a.linklike{color:var(--info);cursor:pointer;text-decoration:underline;}
 .notif-row:last-child{border-bottom:none;}
 .notif-row .n-label{font-weight:600;font-size:13px;}
 .notif-row .n-sub{color:var(--text-faint);font-size:11.5px;margin-top:2px;}
-
-.install-banner{position:fixed;left:0;right:0;bottom:0;z-index:500;
-  background:linear-gradient(90deg,#F2B950,var(--accent));color:#10141C;
-  padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
-  box-shadow:0 -8px 28px rgba(0,0,0,.45);animation:ib-slide-up .25s ease-out;}
-@keyframes ib-slide-up{from{transform:translateY(100%);}to{transform:translateY(0);}}
-.install-banner .ib-icon{width:34px;height:34px;border-radius:8px;background:#10141C;color:var(--accent);
-  display:flex;align-items:center;justify-content:center;font-family:var(--font-display);font-weight:700;
-  font-size:13px;flex-shrink:0;}
-.install-banner .ib-text{flex:1;min-width:200px;}
-.install-banner .ib-title{font-family:var(--font-display);font-weight:700;font-size:13.5px;line-height:1.3;}
-.install-banner .ib-sub{font-size:11.5px;opacity:.85;margin-top:2px;line-height:1.4;}
-.install-banner .btn-install{background:#10141C;color:var(--accent);border-color:#10141C;font-size:12.5px;
-  padding:9px 16px;white-space:nowrap;}
-.install-banner .btn-install:hover{background:#20242F;}
-.install-banner .ib-ios-hint{font-size:11.5px;font-weight:600;max-width:180px;line-height:1.4;}
-.install-banner .ib-dismiss{background:none;border:none;color:#10141C;opacity:.55;font-size:19px;
-  cursor:pointer;line-height:1;padding:0 2px;flex-shrink:0;}
-.install-banner .ib-dismiss:hover{opacity:.9;}
-body.ib-padding .content{padding-bottom:96px;}
-body.ib-padding .connect-wrap{margin-bottom:96px;}
 </style>
 
 <div id="app"><div class="loading-screen"><div class="spinner"></div>booting dealer console…</div></div>
-<div id="installBannerRoot"></div>
 
 <script>
 (function(){
@@ -237,87 +219,13 @@ let state = {
   configError:null, configuring:false, urlInput:'', keyInput:'',
   authMode:'login', authError:null, authBusy:false,
   profile:null, isAdmin:false,
-  tab:'dashboard', inventory:[], sales:[], requests:[], suppliers:[], dealerNetwork:[], broadcasts:[], broadcastResponses:[],
+  tab:'dashboard', inventory:[], sales:[], requests:[], suppliers:[], dealerNetwork:[], broadcasts:[], broadcastResponses:[], dealerReputation:{},
   adminDealers:[], adminInventory:[], adminSales:[],
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
   networkView:'search', dealerSearchQuery:'',
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'',
-  pushStatus:'unsupported', // unsupported | off | prompting | on | denied
-  notifPromptShown:false // guards against re-opening the notif modal more than once per launch
+  pushStatus:'unsupported' // unsupported | off | prompting | on | denied
 };
-
-/* ---------- PWA install detection & prompt ---------- */
-let deferredInstallPrompt = null;
-let isStandaloneCached = false;
-
-function checkStandalone(){
-  let standalone = false;
-  try{ standalone = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches; } catch(e){ /* ignore */ }
-  if(!standalone && window.navigator && window.navigator.standalone) standalone = true; // iOS "Add to Home Screen"
-  isStandaloneCached = standalone;
-  return standalone;
-}
-function isIOSDevice(){
-  return /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
-}
-
-window.addEventListener('beforeinstallprompt', function(e){
-  e.preventDefault();
-  deferredInstallPrompt = e;
-  updateInstallBanner();
-});
-window.addEventListener('appinstalled', function(){
-  deferredInstallPrompt = null;
-  checkStandalone();
-  updateInstallBanner();
-  showToast('PhoneHub installed — you\'ll now get dealer requests and broadcasts as alerts');
-});
-
-function renderInstallBanner(){
-  if(checkStandalone()) return ''; // the only condition that hides it: actually installed
-  const ios = isIOSDevice();
-  let actionHtml;
-  if(deferredInstallPrompt){
-    actionHtml = '<button class="btn btn-install" id="installNowBtn">Install App</button>';
-  } else if(ios){
-    actionHtml = '<div class="ib-ios-hint">Tap <strong>Share</strong> ⬆️, then <strong>Add to Home Screen</strong></div>';
-  } else {
-    actionHtml = '<button class="btn btn-install" id="installHowBtn">How to install</button>';
-  }
-  return '<div class="install-banner" id="installBanner">' +
-      '<div class="ib-icon">PH</div>' +
-      '<div class="ib-text"><div class="ib-title">Install PhoneHub to get dealer alerts</div>' +
-        '<div class="ib-sub">Customer requests and network broadcasts from other dealers only reach you when the app is installed on this device.</div></div>' +
-      actionHtml +
-    '</div>';
-}
-
-function updateInstallBanner(){
-  const root = document.getElementById('installBannerRoot');
-  if(!root) return;
-  const html = renderInstallBanner();
-  root.innerHTML = html;
-  document.body.classList.toggle('ib-padding', !!html);
-  if(html) attachInstallBannerHandlers();
-}
-
-function attachInstallBannerHandlers(){
-  const installBtn = document.getElementById('installNowBtn');
-  if(installBtn) installBtn.addEventListener('click', async function(){
-    if(!deferredInstallPrompt) return;
-    try{
-      deferredInstallPrompt.prompt();
-      const choice = await deferredInstallPrompt.userChoice;
-      deferredInstallPrompt = null;
-      if(choice && choice.outcome === 'accepted'){ showToast('Installing PhoneHub…'); }
-    } catch(e){ /* ignore */ }
-    updateInstallBanner();
-  });
-  const howBtn = document.getElementById('installHowBtn');
-  if(howBtn) howBtn.addEventListener('click', function(){
-    showToast('Open your browser menu (⋮ or Share icon) and choose "Add to Home Screen" / "Install app"');
-  });
-}
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function naira(n){ n = Number(n)||0; return '₦'+n.toLocaleString('en-NG',{maximumFractionDigits:0}); }
@@ -328,7 +236,103 @@ function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').repl
 function val(id){ const el = document.getElementById(id); return el ? el.value : ''; }
 function slugify(s){ return (s||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,''); }
 
+/* ---------- invoice / warranty card PDF ---------- */
+function invoiceNumberFor(sale){
+  const raw = sale && sale.id ? String(sale.id) : Date.now().toString(36);
+  return 'INV-' + raw.replace(/-/g,'').slice(0,8).toUpperCase();
+}
+function generateInvoicePDF(sale){
+  if(!window.jspdf || !window.jspdf.jsPDF){ showToast('PDF library still loading — try again in a moment', true); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'pt', format:'a4' });
+  const shop = state.profile || {};
+  const left = 40, right = 555;
+  let y = 54;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(20); doc.setTextColor(30);
+  doc.text(shop.shop_name || 'PhoneHub Pro', left, y);
+  doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(90);
+  y += 18;
+  if(shop.location){ doc.text(shop.location, left, y); y += 13; }
+  if(shop.phone){ doc.text('Tel: '+shop.phone, left, y); y += 13; }
+
+  doc.setTextColor(30);
+  doc.setFont('helvetica','bold'); doc.setFontSize(11);
+  doc.text('INVOICE', right, 54, {align:'right'});
+  doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(90);
+  doc.text(invoiceNumberFor(sale), right, 70, {align:'right'});
+  doc.text('Date: '+(sale.date || todayISO()), right, 84, {align:'right'});
+
+  y = Math.max(y, 90) + 14;
+  doc.setDrawColor(210); doc.line(left, y, right, y); y += 26;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(30);
+  doc.text('Sold to', left, y); y += 15;
+  doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(70);
+  doc.text('Name: '+(sale.customer_name || '—'), left, y); y += 14;
+  doc.text('Phone: '+(sale.customer_phone || '—'), left, y); y += 26;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(30);
+  doc.text('Item', left, y); y += 15;
+  doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(70);
+  doc.text('Model: '+(sale.model || '—'), left, y); y += 14;
+  if(sale.imei){ doc.text('IMEI: '+sale.imei, left, y); y += 14; }
+  doc.text('Quantity: '+(sale.quantity || 1), left, y); y += 14;
+  if(sale.accessories){ doc.text('Accessories: '+sale.accessories, left, y); y += 14; }
+  doc.text('Payment method: '+(sale.payment_method || '—'), left, y); y += 14;
+  if(sale.staff){ doc.text('Served by: '+sale.staff, left, y); y += 14; }
+  y += 12;
+
+  doc.setDrawColor(210); doc.line(left, y, right, y); y += 24;
+  doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(30);
+  doc.text('Amount paid: '+naira(sale.sale_price), left, y); y += 32;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(11);
+  doc.text('Warranty', left, y); y += 15;
+  doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(70);
+  if(sale.warranty_days){
+    const expiry = new Date(sale.date || todayISO());
+    expiry.setDate(expiry.getDate() + Number(sale.warranty_days));
+    doc.text(sale.warranty_days+' days from purchase — valid until '+expiry.toISOString().slice(0,10)+'.', left, y); y += 14;
+    doc.text('Bring this invoice (or the phone number used at purchase) for any warranty claim.', left, y); y += 14;
+  } else {
+    doc.text('No warranty included on this sale.', left, y); y += 14;
+  }
+
+  y += 24;
+  doc.setDrawColor(225); doc.line(left, y, right, y); y += 18;
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(140);
+  doc.text('Thank you for your purchase. Keep this document as proof of purchase and for warranty claims.', left, y);
+
+  doc.save(invoiceNumberFor(sale)+'.pdf');
+}
+
 /* ---------- push notifications ---------- */
+function isIOSDevice(){
+  return /iP(hone|od|ad)/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPadOS reports as Mac
+}
+function isStandaloneDisplay(){
+  return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+}
+const IOS_INSTALL_DISMISS_KEY = 'phonehub-ios-install-dismissed';
+function iosInstallDismissed(){
+  try{ return localStorage.getItem(IOS_INSTALL_DISMISS_KEY) === '1'; } catch(e){ return false; }
+}
+function shouldShowIosInstallBanner(){
+  return isIOSDevice() && !isStandaloneDisplay() && !iosInstallDismissed();
+}
+function renderIosInstallBanner(){
+  if(!shouldShowIosInstallBanner()) return '';
+  return '<div id="iosInstallBanner" style="position:fixed;left:0;right:0;bottom:0;z-index:150;background:var(--panel-2);border-top:1px solid var(--accent);padding:12px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 -8px 24px rgba(0,0,0,.4);">' +
+    '<div style="flex:1;font-size:12.5px;color:var(--text);">' +
+      '<strong>Install PhoneHub on this iPhone</strong><br>' +
+      '<span style="color:var(--text-dim);">Tap the Share icon <span style="display:inline-block;transform:translateY(2px)">'+ICONS_SHARE+'</span> below, then "Add to Home Screen". This also turns on notifications.</span>' +
+    '</div>' +
+    '<button class="btn btn-sm" id="dismissIosInstallBtn" style="flex-shrink:0;">Dismiss</button>' +
+  '</div>';
+}
+const ICONS_SHARE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/></svg>';
 function urlBase64ToUint8Array(base64String){
   const padding = '='.repeat((4 - base64String.length % 4) % 4);
   const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
@@ -340,7 +344,7 @@ function urlBase64ToUint8Array(base64String){
 
 async function initPush(){
   if(!('serviceWorker' in navigator) || !('PushManager' in window)){
-    state.pushStatus = 'unsupported'; return;
+    state.pushStatus = 'unsupported'; render(); return;
   }
   try{
     const reg = await navigator.serviceWorker.register('./sw.js');
@@ -348,10 +352,8 @@ async function initPush(){
     if(existing && Notification.permission==='granted'){ state.pushStatus = 'on'; }
     else if(Notification.permission==='denied'){ state.pushStatus = 'denied'; }
     else { state.pushStatus = 'off'; }
-  } catch(e){
-    state.pushStatus = 'unsupported';
-    console.error('PhoneHub: push setup failed', e);
-  }
+  } catch(e){ state.pushStatus = 'unsupported'; }
+  render();
 }
 
 async function enablePush(){
@@ -645,16 +647,7 @@ async function loadAfterAuth(){
     state.profile = profile; state.isAdmin = !!profile.is_admin;
     await refreshAll();
     state.stage = 'app';
-    render();
-    await initPush();
-    // When the app is opened installed (standalone), a dealer may never scroll to the
-    // dashboard banner or notice the bell icon — so surface the notification prompt
-    // directly, once per app launch, instead of waiting for them to find it.
-    if(checkStandalone() && state.pushStatus==='off' && !state.notifPromptShown){
-      state.notifPromptShown = true;
-      openModal('notifSettings');
-    }
-    return;
+    initPush();
   } catch(e){
     state.stage = 'auth'; state.authError = 'Could not load your shop profile: ' + (e.message||e);
   }
@@ -662,16 +655,20 @@ async function loadAfterAuth(){
 }
 
 async function refreshAll(){
-  const [inv, sales, reqs, sups, dn, bc] = await Promise.all([
+  const [inv, sales, reqs, sups, dn, bc, rep] = await Promise.all([
     sb.from('inventory').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
     sb.from('sales').select('*').eq('dealer_id', state.profile.id).order('date',{ascending:false}),
     sb.from('requests').select('*').eq('dealer_id', state.profile.id).order('date',{ascending:false}),
     sb.from('suppliers').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
     sb.from('dealer_network_view').select('*'),
     sb.from('broadcasts').select('*').order('date',{ascending:false}),
+    sb.from('dealer_reputation_view').select('*'),
   ]);
   state.inventory = inv.data || []; state.sales = sales.data || []; state.requests = reqs.data || [];
   state.suppliers = sups.data || []; state.dealerNetwork = dn.data || []; state.broadcasts = bc.data || [];
+  const repMap = {};
+  (rep.data || []).forEach(function(r){ repMap[r.dealer_id] = r; });
+  state.dealerReputation = repMap;
   const bcIds = state.broadcasts.map(function(b){return b.id;});
   if(bcIds.length){
     const br = await sb.from('broadcast_responses').select('*').in('broadcast_id', bcIds);
@@ -758,10 +755,9 @@ function searchAll(q){
 /* ---------- render root ---------- */
 function render(){
   const app = document.getElementById('app');
-  updateInstallBanner();
   if(state.stage==='loading'){ app.innerHTML = '<div class="loading-screen"><div class="spinner"></div>booting dealer console…</div>'; return; }
   if(state.stage==='configure'){ app.innerHTML = renderConfigureScreen(); attachConfigureHandlers(); return; }
-  if(state.stage==='auth'){ app.innerHTML = renderAuthScreen(); attachAuthHandlers(); return; }
+  if(state.stage==='auth'){ app.innerHTML = renderAuthScreen() + renderIosInstallBanner(); attachAuthHandlers(); attachIosInstallHandler(); return; }
 
   app.innerHTML =
     '<div class="rail">' +
@@ -785,8 +781,17 @@ function render(){
       '<div class="content">'+renderTab()+'</div>' +
     '</div>' +
     (state.modal ? renderModal() : '') +
+    renderIosInstallBanner() +
     (state.toast ? ('<div class="toast '+(state.toastErr?'err':'')+'">'+escapeHtml(state.toast)+'</div>') : '');
   attachHandlers();
+  attachIosInstallHandler();
+}
+function attachIosInstallHandler(){
+  const btn = document.getElementById('dismissIosInstallBtn');
+  if(btn) btn.addEventListener('click', function(){
+    try{ localStorage.setItem(IOS_INSTALL_DISMISS_KEY, '1'); } catch(e){ /* ignore */ }
+    render();
+  });
 }
 
 /* ---------- configure (one-time, platform-wide) ---------- */
@@ -905,6 +910,29 @@ function badge(status){
   return '<span class="badge '+(map[status]||'badge-new')+'">'+escapeHtml(status)+'</span>';
 }
 
+const REP_TIER = {
+  elite:   {label:'⭐ Elite dealer',    cls:'badge-admin'},
+  trusted: {label:'✓ Trusted dealer',  cls:'badge-stock'},
+  active:  {label:'Active',            cls:'badge-new'},
+  new:     {label:'New',               cls:'badge-new'}
+};
+function formatResponseMinutes(mins){
+  if(mins==null) return '';
+  if(mins < 60) return Math.round(mins)+'m';
+  if(mins < 1440) return Math.round(mins/60)+'h';
+  return Math.round(mins/1440)+'d';
+}
+function reputationBadgeHTML(dealerId, opts){
+  opts = opts || {};
+  const r = state.dealerReputation[dealerId];
+  if(!r || r.tier==='new') return opts.compact ? '' : '<span class="badge badge-new" title="No broadcast responses yet">New dealer</span>';
+  const t = REP_TIER[r.tier] || REP_TIER.active;
+  let extra = '';
+  if(r.fulfillment_rate_pct!=null) extra += ' · '+r.fulfillment_rate_pct+'% fulfilled';
+  if(r.avg_response_minutes!=null) extra += ' · ~'+formatResponseMinutes(r.avg_response_minutes)+' avg reply';
+  return '<span class="badge '+t.cls+'" title="'+r.responses_count+' network responses'+escapeAttr(extra)+'">'+t.label+(opts.compact?'':escapeHtml(extra))+'</span>';
+}
+
 function renderTab(){
   if(state.tab==='dashboard') return renderDashboard();
   if(state.tab==='inventory') return renderInventory();
@@ -988,7 +1016,7 @@ function renderSales(){
       '<button class="btn btn-accent" data-open-modal="logSale">'+ICONS.plus+' Log a sale</button>' +
     '</div>' +
     '<div class="section"><div class="section-body" style="padding:0;overflow-x:auto;">' +
-      (rows.length ? ('<table><thead><tr><th>Date</th><th>Phone</th><th>Customer</th><th>Sale price</th><th>Profit</th><th>Payment</th><th>Staff</th><th>Warranty</th></tr></thead><tbody>' +
+      (rows.length ? ('<table><thead><tr><th>Date</th><th>Phone</th><th>Customer</th><th>Sale price</th><th>Profit</th><th>Payment</th><th>Staff</th><th>Warranty</th><th></th></tr></thead><tbody>' +
         rows.map(function(s){
           const expiry = new Date(s.date); expiry.setDate(expiry.getDate()+Number(s.warranty_days||0));
           const daysLeft = daysBetween(todayISO(), expiry.toISOString().slice(0,10));
@@ -1002,6 +1030,7 @@ function renderSales(){
           '<td>'+escapeHtml(s.payment_method)+'</td>' +
           '<td>'+escapeHtml(s.staff)+'</td>' +
           '<td>'+wStatus+'</td>' +
+          '<td><button class="btn btn-sm" data-print-invoice="'+s.id+'">🧾 Invoice</button></td>' +
         '</tr>'; }).join('') +
       '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No sales logged yet.</div></div>')) +
     '</div></div>';
@@ -1072,7 +1101,7 @@ function renderNetworkSearch(){
       (sorted.length ? ('<table><thead><tr><th>Model</th><th>Dealer</th><th>Price</th><th>Updated</th><th></th></tr></thead><tbody>' +
         sorted.map(function(d,i){ return '<tr>' +
           '<td class="strong">'+escapeHtml(d.model)+(d.storage?(' · '+escapeHtml(d.storage)):'')+(d.color?(' · '+escapeHtml(d.color)):'')+(d.condition==='Used'?(' · '+d.battery+'% batt'):'')+'</td>' +
-          '<td>'+escapeHtml(d.dealer_name)+(d.dealer_id===state.profile.id?' <span style="font-size:10px;color:var(--text-faint)">(you)</span>':'')+'</td>' +
+          '<td>'+escapeHtml(d.dealer_name)+(d.dealer_id===state.profile.id?' <span style="font-size:10px;color:var(--text-faint)">(you)</span>':'')+'<br>'+reputationBadgeHTML(d.dealer_id)+'</td>' +
           '<td class="mono" style="color:'+(i===0?'var(--success)':'var(--text)')+'">'+naira(d.price)+(i===0?' <span style="font-size:10px">· lowest</span>':'')+'</td>' +
           '<td class="mono" style="font-size:11px;color:var(--text-faint)">'+new Date(d.updated_at).toLocaleDateString()+'</td>' +
           '<td><a class="linklike" href="tel:'+escapeAttr(d.dealer_phone)+'">'+escapeHtml(d.dealer_phone||'—')+'</a></td>' +
@@ -1081,23 +1110,36 @@ function renderNetworkSearch(){
     '</div></div>';
 }
 
+function dealerName(id){
+  if(id===state.profile.id) return 'You';
+  const r = state.dealerReputation[id]; if(r && r.shop_name) return r.shop_name;
+  const n = state.dealerNetwork.find(function(d){ return d.dealer_id===id; });
+  return n ? n.dealer_name : 'A dealer';
+}
+
 function renderBroadcasts(){
   const rows = state.broadcasts.slice().sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
   const body = rows.map(function(b){
     const responses = state.broadcastResponses.filter(function(r){ return r.broadcast_id===b.id; }).sort(function(a,b2){ return (Number(a.price)||0)-(Number(b2.price)||0); });
     const isMine = b.dealer_id === state.profile.id;
+    const canAccept = isMine && b.status==='Open';
     return '<div class="section">' +
       '<div class="section-head"><div><strong>'+escapeHtml(b.model)+'</strong> '+(b.storage?(' · '+escapeHtml(b.storage)):'')+' '+(b.color?(' · '+escapeHtml(b.color)):'')+(isMine?' <span style="font-size:10px;color:var(--text-faint)">(your request)</span>':'')+
       '<div style="font-size:11.5px;color:var(--text-faint);margin-top:3px;">'+escapeHtml(b.date)+' · '+escapeHtml(b.urgency)+'</div></div>' +
       '<div style="display:flex;align-items:center;gap:10px;">'+badge(b.status)+
-        (isMine && b.status==='Open'?('<button class="btn btn-sm" data-close-broadcast="'+b.id+'">Close</button>'):'') +
+        (isMine && b.status==='Open'?('<button class="btn btn-sm" data-close-broadcast="'+b.id+'">Close (no deal)</button>'):'') +
         (!isMine && b.status==='Open'?('<button class="btn btn-sm btn-accent" data-open-modal="respondBroadcast" data-id="'+b.id+'">Respond</button>'):'') +
       '</div></div>' +
       '<div class="section-body" style="padding:0;">' +
-        (responses.length ? ('<table><thead><tr><th>Dealer</th><th>Price</th><th>Qty</th><th>Contact</th></tr></thead><tbody>' +
-          responses.map(function(r,i){ return '<tr><td class="strong">'+(r.dealer_id===state.profile.id?'You':'A dealer')+(i===0?' <span style="color:var(--success);font-size:10px">· best offer</span>':'')+'</td>' +
-          '<td class="mono">'+naira(r.price)+'</td><td class="mono">'+escapeHtml(r.quantity)+'</td>' +
-          '<td><a class="linklike" href="tel:'+escapeAttr(r.contact_phone)+'">'+escapeHtml(r.contact_phone)+'</a></td></tr>'; }).join('') +
+        (responses.length ? ('<table><thead><tr><th>Dealer</th><th>Reputation</th><th>Price</th><th>Qty</th><th>Contact</th><th></th></tr></thead><tbody>' +
+          responses.map(function(r,i){
+            const accepted = b.accepted_response_id === r.id;
+            return '<tr style="'+(accepted?'background:var(--success-dim);':'')+'"><td class="strong">'+escapeHtml(dealerName(r.dealer_id))+(i===0 && !b.accepted_response_id?' <span style="color:var(--success);font-size:10px">· best offer</span>':'')+'</td>' +
+            '<td>'+reputationBadgeHTML(r.dealer_id, {compact:true})+'</td>' +
+            '<td class="mono">'+naira(r.price)+'</td><td class="mono">'+escapeHtml(r.quantity)+'</td>' +
+            '<td><a class="linklike" href="tel:'+escapeAttr(r.contact_phone)+'">'+escapeHtml(r.contact_phone)+'</a></td>' +
+            '<td>'+(accepted ? '<span class="badge badge-stock">✓ Accepted</span>' : (canAccept ? '<button class="btn btn-sm btn-accent" data-accept-response="'+r.id+'" data-broadcast="'+b.id+'">Accept</button>' : ''))+'</td>' +
+          '</tr>'; }).join('') +
         '</tbody></table>') : '<div class="empty" style="padding:20px;">No responses yet.</div>') +
       '</div></div>';
   }).join('');
@@ -1165,9 +1207,11 @@ function renderModal(){
 function renderNotifModal(){
   const status = state.pushStatus;
   const statusLabel = {unsupported:'Not supported in this browser', off:'Off', prompting:'Waiting for permission…', on:'On for this device', denied:'Blocked in browser settings'}[status] || status;
+  const iosNotStandalone = isIOSDevice() && !isStandaloneDisplay();
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:460px;">' +
     '<div class="modal-head"><h3>Notifications</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body">' +
+      (iosNotStandalone ? ('<div class="notif-row"><div class="n-sub" style="color:var(--accent)">On iPhone/iPad, notifications only work once PhoneHub is added to your Home Screen and opened from that icon (not from Safari). Tap the Share button, then "Add to Home Screen", then reopen the app from the icon. Requires iOS 16.4 or later.</div></div>') : '') +
       '<div class="notif-row"><div><div class="n-label">Push notifications on this device</div>' +
         '<div class="n-sub">Status: '+escapeHtml(statusLabel)+'</div></div>' +
         (status==='on' ? '<button class="btn btn-danger btn-sm" id="disablePushBtn">Turn off</button>' :
@@ -1382,7 +1426,7 @@ function attachHandlers(){
     const price = Number(val('s-price'));
     if(!price){ showToast('Enter a sale price', true); return; }
     try{
-      const { error } = await sb.rpc('sell_phone', {
+      const { data, error } = await sb.rpc('sell_phone', {
         p_inventory_id: inventoryId, p_sale_price: price, p_customer_name: val('s-name'), p_customer_phone: val('s-phone'),
         p_payment_method: val('s-payment'), p_staff: val('s-staff'), p_warranty_days: Number(val('s-warranty'))||0,
         p_accessories: val('s-accessories'), p_notes: '',
@@ -1390,7 +1434,9 @@ function attachHandlers(){
       });
       if(error) throw error;
       await refreshAll();
-      closeModal(); showToast('Sale logged — inventory updated');
+      closeModal(); showToast('Sale logged — invoice downloading');
+      const savedSale = Array.isArray(data) ? data[0] : data;
+      if(savedSale) generateInvoicePDF(savedSale);
     } catch(e){ showToast('Sale failed: '+e.message, true); render(); }
   }); });
 
@@ -1404,6 +1450,12 @@ function attachHandlers(){
       await refreshAll();
       closeModal(); showToast('Supplier added');
     } catch(e){ showToast('Save failed: '+e.message, true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-print-invoice]').forEach(function(el){ el.addEventListener('click', function(){
+    const id = el.getAttribute('data-print-invoice');
+    const sale = state.sales.find(function(s){ return s.id===id; });
+    if(sale) generateInvoicePDF(sale); else showToast('Could not find that sale', true);
   }); });
 
   app.querySelectorAll('[data-fulfill-request]').forEach(function(el){ el.addEventListener('click', async function(){
@@ -1436,6 +1488,17 @@ function attachHandlers(){
       await refreshAll();
       showToast('Broadcast closed'); render();
     } catch(e){ showToast('Update failed: '+e.message, true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-accept-response]').forEach(function(el){ el.addEventListener('click', async function(){
+    const responseId = el.getAttribute('data-accept-response');
+    const broadcastId = el.getAttribute('data-broadcast');
+    try{
+      const { error } = await sb.from('broadcasts').update({ accepted_response_id: responseId, status: 'Closed' }).eq('id', broadcastId);
+      if(error) throw error;
+      await refreshAll();
+      showToast('Marked as accepted — this dealer\'s reputation just went up'); render();
+    } catch(e){ showToast('Could not accept: '+e.message, true); render(); }
   }); });
 
   app.querySelectorAll('[data-save-response]').forEach(function(el){ el.addEventListener('click', async function(){
