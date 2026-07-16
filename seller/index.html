@@ -647,6 +647,7 @@ async function loadAfterAuth(){
     await refreshAll();
     state.stage = 'app';
     initPush();
+    applyHashTab();
   } catch(e){
     state.stage = 'auth'; state.authError = 'Could not load your shop profile: ' + (e.message||e);
   }
@@ -702,7 +703,25 @@ async function toggleStatus(id){
 }
 
 function showToast(msg, err){ state.toast = msg; state.toastErr = !!err; render(); setTimeout(function(){ state.toast=null; render(); }, 3200); }
-function setTab(t){ state.tab = t; state.modal=null; render(); }
+function setTab(t){ 
+  state.tab = t; 
+  state.modal=null; 
+  if (window.location.hash !== '#tab=' + t) {
+    history.replaceState(null, '', '#tab=' + t);
+  }
+  render(); 
+}
+function applyHashTab(){
+  var hash = window.location.hash;
+  if (hash.startsWith('#tab=')){
+    var tab = hash.slice(5);
+    var valid = ['dashboard','inventory','sales','calc','requests','network','admin'];
+    if (valid.indexOf(tab) !== -1 && state.tab !== tab){
+      state.tab = tab;
+      render();
+    }
+  }
+}
 function openModal(name, payload){ state.modal = {name:name, payload: payload||{}}; render(); }
 function closeModal(){ state.modal = null; render(); }
 
@@ -1568,6 +1587,8 @@ function attachHandlers(){
       render();
     });
   });
+
+  window.addEventListener('hashchange', applyHashTab);
 }
 
 init();

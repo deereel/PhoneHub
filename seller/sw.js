@@ -37,6 +37,18 @@ self.addEventListener('push', function(event){
 self.addEventListener('notificationclick', function(event){
   event.notification.close();
   var targetPath = (event.notification.data && event.notification.data.url) || './';
+  var notifType = (event.notification.data && event.notification.data.type) || 'alert';
+
+  if (targetPath === './' || targetPath === '.' || targetPath === ''){
+    var typeToPath = {
+      request: './#tab=requests',
+      broadcast: './#tab=network',
+      warranty: './#tab=sales',
+      stock: './#tab=inventory',
+      response: './#tab=network'
+    };
+    targetPath = typeToPath[notifType] || './';
+  }
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clientList){
