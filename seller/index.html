@@ -315,12 +315,8 @@ function isIOSDevice(){
 function isStandaloneDisplay(){
   return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
 }
-const IOS_INSTALL_DISMISS_KEY = 'phonehub-ios-install-dismissed';
-function iosInstallDismissed(){
-  try{ return localStorage.getItem(IOS_INSTALL_DISMISS_KEY) === '1'; } catch(e){ return false; }
-}
 function shouldShowIosInstallBanner(){
-  return isIOSDevice() && !isStandaloneDisplay() && !iosInstallDismissed();
+  return isIOSDevice() && !isStandaloneDisplay();
 }
 function renderIosInstallBanner(){
   if(!shouldShowIosInstallBanner()) return '';
@@ -329,7 +325,6 @@ function renderIosInstallBanner(){
       '<strong>Install PhoneHub on this iPhone</strong><br>' +
       '<span style="color:var(--text-dim);">Tap the Share icon <span style="display:inline-block;transform:translateY(2px)">'+ICONS_SHARE+'</span> below, then "Add to Home Screen". This also turns on notifications.</span>' +
     '</div>' +
-    '<button class="btn btn-sm" id="dismissIosInstallBtn" style="flex-shrink:0;">Dismiss</button>' +
   '</div>';
 }
 const ICONS_SHARE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/></svg>';
@@ -757,7 +752,7 @@ function render(){
   const app = document.getElementById('app');
   if(state.stage==='loading'){ app.innerHTML = '<div class="loading-screen"><div class="spinner"></div>booting dealer console…</div>'; return; }
   if(state.stage==='configure'){ app.innerHTML = renderConfigureScreen(); attachConfigureHandlers(); return; }
-  if(state.stage==='auth'){ app.innerHTML = renderAuthScreen() + renderIosInstallBanner(); attachAuthHandlers(); attachIosInstallHandler(); return; }
+  if(state.stage==='auth'){ app.innerHTML = renderAuthScreen() + renderIosInstallBanner(); attachAuthHandlers(); return; }
 
   app.innerHTML =
     '<div class="rail">' +
@@ -784,14 +779,6 @@ function render(){
     renderIosInstallBanner() +
     (state.toast ? ('<div class="toast '+(state.toastErr?'err':'')+'">'+escapeHtml(state.toast)+'</div>') : '');
   attachHandlers();
-  attachIosInstallHandler();
-}
-function attachIosInstallHandler(){
-  const btn = document.getElementById('dismissIosInstallBtn');
-  if(btn) btn.addEventListener('click', function(){
-    try{ localStorage.setItem(IOS_INSTALL_DISMISS_KEY, '1'); } catch(e){ /* ignore */ }
-    render();
-  });
 }
 
 /* ---------- configure (one-time, platform-wide) ---------- */
