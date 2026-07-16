@@ -101,6 +101,10 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-body
 .btn-danger:hover{background:var(--danger-dim);}
 .btn-sm{padding:5px 10px;font-size:11.5px;}
 .btn:disabled{opacity:.4;cursor:not-allowed;}
+.btn-stock-toggle-on{background:var(--success-dim);color:var(--success);border-color:transparent;}
+.btn-stock-toggle-on:hover{background:#244a35;}
+.btn-stock-toggle-off{background:var(--danger-dim);color:var(--danger);border-color:transparent;}
+.btn-stock-toggle-off:hover{background:#4a2828;}
 
 table{width:100%;border-collapse:collapse;font-size:13px;}
 th{text-align:left;color:var(--text-faint);font-weight:600;font-size:11px;text-transform:uppercase;
@@ -685,6 +689,17 @@ async function refreshOne(table, target, extraFilter){
   const { data, error } = await q;
   if(!error) state[target] = data || [];
 }
+async function toggleStatus(id){
+  const item = state.inventory.find(function(x){ return x.id===id; });
+  if(!item) return;
+  const newStatus = item.status==='In Stock' ? 'Sold' : 'In Stock';
+  try{
+    const { error } = await sb.from('inventory').update({status:newStatus}).eq('id', id);
+    if(error) throw error;
+    await refreshAll();
+    showToast(item.status==='In Stock' ? 'Marked as out of stock' : 'Marked as in stock');
+  } catch(e){ showToast('Update failed: '+(e.message||e), true); render(); }
+}
 
 function showToast(msg, err){ state.toast = msg; state.toastErr = !!err; render(); setTimeout(function(){ state.toast=null; render(); }, 3200); }
 function setTab(t){ state.tab = t; state.modal=null; render(); }
@@ -988,7 +1003,7 @@ function renderInventory(){
           '<td class="mono">'+(p.cost?naira(p.cost):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
           '<td class="mono">'+(p.price?naira(p.price):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
           '<td class="mono" style="color:var(--success)">'+(p.price?naira((Number(p.price)||0)-(Number(p.cost)||0)):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
-          '<td>'+badge(p.status)+'</td>' +
+          '<td><button class="btn btn-sm '+(p.status==='In Stock'?'btn-stock-toggle-on':'btn-stock-toggle-off')+'" data-toggle-status="'+p.id+'">'+(p.status==='In Stock'?'In Stock':'Out of Stock')+'</button></td>' +
           '<td>'+escapeHtml(p.shelf)+'</td>' +
           '<td><button class="btn btn-sm" data-open-modal="editPhone" data-id="'+p.id+'">Edit</button></td>' +
         '</tr>'; }).join('') +
@@ -1373,6 +1388,7 @@ function attachHandlers(){
   app.querySelectorAll('[data-close-overlay]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-stop]').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); });
   app.querySelectorAll('[data-network-view]').forEach(function(el){ el.addEventListener('click', function(){ state.networkView = el.getAttribute('data-network-view'); render(); }); });
+  app.querySelectorAll('[data-toggle-status]').forEach(function(el){ el.addEventListener('click', function(){ toggleStatus(el.getAttribute('data-toggle-status')); }); });
 
   const dealerSearch = document.getElementById('dealerSearch');
   if(dealerSearch) dealerSearch.addEventListener('input', function(e){
