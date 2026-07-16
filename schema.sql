@@ -334,6 +334,15 @@ create policy "broadcast_responses_select_all" on broadcast_responses for select
 create policy "broadcast_responses_insert_own" on broadcast_responses for insert
   with check (dealer_id = auth.uid());
 
+
+
+-- ------------------------------------------------------------
+-- 7. REALTIME  (required for the seller app's live broadcast updates)
+-- ------------------------------------------------------------
+alter publication supabase_realtime add table broadcasts;
+alter publication supabase_realtime add table broadcast_responses;
+
+
 -- ============================================================
 -- After running this file:
 -- 1. Sign up your own account through the Seller App (this creates your dealer row).

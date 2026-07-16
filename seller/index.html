@@ -228,7 +228,8 @@ let state = {
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
   networkView:'search', dealerSearchQuery:'',
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'',
-  pushStatus:'unsupported' // unsupported | off | prompting | on | denied
+  pushStatus:'unsupported', // unsupported | off | prompting | on | denied
+  inventorySupplierFilter:null, supplierFilterName:''
 };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -353,6 +354,29 @@ async function initPush(){
     else { state.pushStatus = 'off'; }
   } catch(e){ state.pushStatus = 'unsupported'; }
   render();
+}
+async function initRealtime(){
+  if(!sb || !state.profile) return;
+  try{
+    const channel = sb.channel('public-broadcasts');
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'broadcasts' }, function(){
+      refreshBroadcastsData();
+    }).on('postgres_changes', { event: '*', schema: 'public', table: 'broadcast_responses' }, function(){
+      refreshBroadcastsData();
+    }).subscribe();
+  } catch(e){ console.warn('Realtime init failed:', e); }
+}
+async function refreshBroadcastsData(){
+  if(!state.profile) return;
+  const [bc, br] = await Promise.all([
+    sb.from('broadcasts').select('*').order('created_at',{ascending:false}),
+    sb.from('broadcast_responses').select('*')
+  ]);
+  state.broadcasts = bc.data || [];
+  state.broadcastResponses = br.data || [];
+  if(state.tab === 'network' && state.networkView === 'broadcasts'){
+    render();
+  }
 }
 
 async function enablePush(){
@@ -647,6 +671,7 @@ async function loadAfterAuth(){
     await refreshAll();
     state.stage = 'app';
     initPush();
+    initRealtime();
     applyHashTab();
   } catch(e){
     state.stage = 'auth'; state.authError = 'Could not load your shop profile: ' + (e.message||e);
@@ -1003,14 +1028,24 @@ function renderDashboard(){
 }
 
 function renderInventory(){
-  const items = state.inventory.slice().sort(function(a,b){ return (a.status==='In Stock'?0:1)-(b.status==='In Stock'?0:1); });
-  return '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">' +
+  let items = state.inventory.slice().sort(function(a,b){ return (a.status==='In Stock'?0:1)-(b.status==='In Stock'?0:1); });
+  let header = '';
+  if (state.inventorySupplierFilter){
+    items = items.filter(function(p){ return p.supplier === state.inventorySupplierFilter; });
+    header = '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">' +
+      '<div><h1 class="page-title">Stock gotten from '+escapeHtml(state.supplierFilterName)+'</h1><p class="page-sub">'+items.length+' phone'+(items.length===1?'':'s')+' tracked</p></div>' +
+      '<div style="display:flex;gap:8px;"><button class="btn" data-clear-supplier-filter="1">← Back to all inventory</button></div>' +
+    '</div>';
+  } else {
+    header = '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">' +
       '<div><h1 class="page-title">Inventory</h1><p class="page-sub">'+state.inventory.length+' phones tracked · '+state.inventory.filter(function(p){return p.status==='In Stock';}).length+' in stock</p></div>' +
       '<div style="display:flex;gap:8px;">' +
         '<button class="btn" data-open-modal="bulkImport">📋 Paste stock list</button>' +
         '<button class="btn btn-accent" data-open-modal="addPhone">'+ICONS.plus+' Add phone</button>' +
       '</div>' +
-    '</div>' +
+    '</div>';
+  }
+  return header +
     '<div class="section"><div class="section-body" style="padding:0;overflow-x:auto;">' +
       (items.length ? ('<table><thead><tr><th>Model</th><th>IMEI</th><th>Qty</th><th>Storage / Color</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
         items.map(function(p){ return '<tr>' +
@@ -1026,7 +1061,7 @@ function renderInventory(){
           '<td>'+escapeHtml(p.shelf)+'</td>' +
           '<td><button class="btn btn-sm" data-open-modal="editPhone" data-id="'+p.id+'">Edit</button></td>' +
         '</tr>'; }).join('') +
-      '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No phones yet. Add your first one.</div></div>')) +
+      '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No phones from this contact yet.</div></div>')) +
     '</div></div>';
 }
 
@@ -1172,13 +1207,18 @@ function renderSuppliers(){
   const rows = state.suppliers;
   return '<div style="display:flex;justify-content:flex-end;margin-bottom:14px;"><button class="btn btn-accent" data-open-modal="addSupplier">'+ICONS.plus+' Add contact</button></div>' +
     '<div class="section"><div class="section-body" style="padding:0;overflow-x:auto;">' +
-      (rows.length ? ('<table><thead><tr><th>Name</th><th>Phone</th><th>Location</th><th>Supplies</th><th>Owed</th></tr></thead><tbody>' +
+      (rows.length ? ('<table><thead><tr><th>Name</th><th>Phone</th><th>Location</th><th>Supplies</th><th>Owed</th><th></th></tr></thead><tbody>' +
         rows.map(function(s){ return '<tr>' +
           '<td class="strong">'+escapeHtml(s.name)+'</td>' +
           '<td class="mono">'+escapeHtml(s.phone)+'</td>' +
           '<td>'+escapeHtml(s.location)+'</td>' +
           '<td>'+escapeHtml(s.supplies)+'</td>' +
           '<td class="mono" style="color:'+(Number(s.owed)>0?'var(--danger)':'var(--text-dim)')+'">'+naira(s.owed)+'</td>' +
+          '<td style="display:flex;gap:6px;">' +
+            '<button class="btn btn-sm" data-open-modal="editSupplier" data-id="'+s.id+'">Edit</button>' +
+            '<button class="btn btn-sm btn-danger" data-delete-supplier="'+s.id+'">Delete</button>' +
+            '<button class="btn btn-sm" data-view-supplier-stock="'+s.id+'">View stock</button>' +
+          '</td>' +
         '</tr>'; }).join('') +
       '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No suppliers added yet.</div></div>')) +
     '</div></div>';
@@ -1217,7 +1257,7 @@ function renderModal(){
   const m = state.modal;
   if(m.name==='addPhone' || m.name==='editPhone') return renderPhoneModal(m);
   if(m.name==='logSale') return renderSaleModal();
-  if(m.name==='addSupplier') return renderSupplierModal();
+  if(m.name==='addSupplier' || m.name==='editSupplier') return renderSupplierModal(m);
   if(m.name==='newBroadcast') return renderBroadcastModal();
   if(m.name==='respondBroadcast') return renderRespondModal(m);
   if(m.name==='bulkImport') return renderBulkImportModal();
@@ -1335,18 +1375,23 @@ function renderSaleModal(){
   '</div></div>';
 }
 
-function renderSupplierModal(){
+function renderSupplierModal(m){
+  const editing = m && m.name === 'editSupplier';
+  const p = editing ? (state.suppliers.find(function(x){ return x.id === m.payload.id; }) || {}) : {};
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
-    '<div class="modal-head"><h3>Add supplier / colleague</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-head"><h3>'+(editing?'Edit contact':'Add supplier / colleague')+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body"><div class="form-grid">' +
-      '<div class="field"><label>Name</label><input id="sup-name"/></div>' +
-      '<div class="field"><label>Phone</label><input id="sup-phone"/></div>' +
-      '<div class="field"><label>Location</label><input id="sup-location"/></div>' +
-      '<div class="field"><label>Amount owed (₦)</label><input type="number" id="sup-owed" value="0"/></div>' +
-      '<div class="field full"><label>Phones they usually supply</label><input id="sup-supplies"/></div>' +
+      '<div class="field"><label>Name</label><input id="sup-name" value="'+escapeAttr(p.name||'')+'"/></div>' +
+      '<div class="field"><label>Phone</label><input id="sup-phone" value="'+escapeAttr(p.phone||'')+'"/></div>' +
+      '<div class="field"><label>Location</label><input id="sup-location" value="'+escapeAttr(p.location||'')+'"/></div>' +
+      '<div class="field"><label>Amount owed (₦)</label><input type="number" id="sup-owed" value="'+(p.owed!=null?p.owed:0)+'"/></div>' +
+      '<div class="field full"><label>Phones they usually supply</label><input id="sup-supplies" value="'+escapeAttr(p.supplies||'')+'"/></div>' +
     '</div></div>' +
-    '<div class="modal-foot"><button class="btn" data-close-modal="1">Cancel</button><button class="btn btn-accent" data-save-supplier="1">Save contact</button></div>' +
-  '</div></div>';
+    '<div class="modal-foot">' +
+      (editing ? ('<button class="btn btn-danger" data-delete-supplier="'+p.id+'">Delete</button>') : '') +
+      '<button class="btn" data-close-modal="1">Cancel</button>' +
+      '<button class="btn btn-accent" data-save-supplier="'+(editing?p.id:'')+'">'+(editing?'Save changes':'Save contact')+'</button>' +
+    '</div></div></div>';
 }
 
 function renderBroadcastModal(){
@@ -1381,7 +1426,10 @@ function renderRespondModal(m){
 /* ---------- event wiring ---------- */
 function attachHandlers(){
   const app = document.getElementById('app');
-  app.querySelectorAll('[data-tab]').forEach(function(el){ el.addEventListener('click', function(){ setTab(el.getAttribute('data-tab')); }); });
+  app.querySelectorAll('[data-tab]').forEach(function(el){ el.addEventListener('click', function(){
+    state.inventorySupplierFilter = null; state.supplierFilterName = '';
+    setTab(el.getAttribute('data-tab'));
+  }); });
   const logoutBtn = document.getElementById('logoutBtn');
   if(logoutBtn) logoutBtn.addEventListener('click', async function(){ await sb.auth.signOut(); state.stage='auth'; state.profile=null; render(); });
 
@@ -1463,15 +1511,48 @@ function attachHandlers(){
   }); });
 
   app.querySelectorAll('[data-save-supplier]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-save-supplier');
     const name = val('sup-name');
     if(!name){ showToast('Name is required', true); return; }
-    const data = { dealer_id: state.profile.id, name:name, phone:val('sup-phone'), whatsapp:val('sup-phone'), location:val('sup-location'), supplies:val('sup-supplies'), owed:Number(val('sup-owed'))||0 };
+    const data = { name:name, phone:val('sup-phone'), whatsapp:val('sup-phone'), location:val('sup-location'), supplies:val('sup-supplies'), owed:Number(val('sup-owed'))||0 };
     try{
-      const { error } = await sb.from('suppliers').insert(data);
+      if(id){
+        const { error } = await sb.from('suppliers').update(data).eq('id', id);
+        if(error) throw error;
+        closeModal(); showToast('Contact updated');
+      } else {
+        data.dealer_id = state.profile.id;
+        const { error } = await sb.from('suppliers').insert(data);
+        if(error) throw error;
+        closeModal(); showToast('Contact added');
+      }
+      await refreshAll();
+    } catch(e){ showToast('Save failed: '+(e.message||e), true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-delete-supplier]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-delete-supplier');
+    try{
+      const { error } = await sb.from('suppliers').delete().eq('id', id);
       if(error) throw error;
       await refreshAll();
-      closeModal(); showToast('Supplier added');
-    } catch(e){ showToast('Save failed: '+e.message, true); render(); }
+      closeModal(); showToast('Contact deleted');
+    } catch(e){ showToast('Delete failed: '+(e.message||e), true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-view-supplier-stock]').forEach(function(el){ el.addEventListener('click', function(){
+    const id = el.getAttribute('data-view-supplier-stock');
+    const s = state.suppliers.find(function(x){ return x.id === id; });
+    if(!s) return;
+    state.inventorySupplierFilter = s.name;
+    state.supplierFilterName = s.name;
+    setTab('inventory');
+  }); });
+
+  app.querySelectorAll('[data-clear-supplier-filter]').forEach(function(el){ el.addEventListener('click', function(){
+    state.inventorySupplierFilter = null;
+    state.supplierFilterName = '';
+    render();
   }); });
 
   app.querySelectorAll('[data-print-invoice]').forEach(function(el){ el.addEventListener('click', function(){

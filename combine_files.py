@@ -13,7 +13,7 @@ import argparse
 import os
 
 # Which file extensions to include. Add/remove as needed.
-EXTENSIONS = {".gs", ".html", ".js", ".json", ".sql", ".css", ".md", ".txt"}
+EXTENSIONS = {".gs", ".html", ".js", ".json", ".sql", ".css", ".md", ".txt", ".ts"}
 
 SEPARATOR = "=" * 150
 

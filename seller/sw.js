@@ -28,7 +28,7 @@ self.addEventListener('push', function(event){
     tag: data.tag || ('phonehub-' + (data.type || 'alert')),
     renotify: true,
     requireInteraction: data.type === 'request' || data.type === 'broadcast',
-    data: { url: data.url || './' }
+    data: { url: data.url || './', type: data.type || 'alert' }
   };
 
   event.waitUntil(self.registration.showNotification(title, options));
