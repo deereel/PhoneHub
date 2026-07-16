@@ -295,6 +295,22 @@ create policy "suppliers_select_admin" on suppliers for select
   using (is_admin());
 
 -- ------------------------------------------------------------
+-- 5b. INVENTORY <-> SUPPLIERS  (link phones to a tracked contact by id, not name)
+-- ------------------------------------------------------------
+alter table inventory add column if not exists supplier_id uuid references suppliers(id) on delete set null;
+create index if not exists idx_inventory_supplier_id on inventory(supplier_id);
+
+-- One-time backfill: match existing inventory.supplier text to a contact with
+-- the same name (case/whitespace-insensitive), for the same dealer.
+update inventory i
+set supplier_id = s.id
+from suppliers s
+where i.supplier_id is null
+  and i.supplier is not null
+  and s.dealer_id = i.dealer_id
+  and lower(trim(i.supplier)) = lower(trim(s.name));
+
+-- ------------------------------------------------------------
 -- 6. BROADCASTS + RESPONSES  (network-wide "need this phone urgently")
 -- ------------------------------------------------------------
 create table if not exists broadcasts (
@@ -334,14 +350,11 @@ create policy "broadcast_responses_select_all" on broadcast_responses for select
 create policy "broadcast_responses_insert_own" on broadcast_responses for insert
   with check (dealer_id = auth.uid());
 
-
-
 -- ------------------------------------------------------------
 -- 7. REALTIME  (required for the seller app's live broadcast updates)
 -- ------------------------------------------------------------
 alter publication supabase_realtime add table broadcasts;
 alter publication supabase_realtime add table broadcast_responses;
-
 
 -- ============================================================
 -- After running this file:

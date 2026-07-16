@@ -227,7 +227,7 @@ let state = {
   adminDealers:[], adminInventory:[], adminSales:[],
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
   networkView:'search', dealerSearchQuery:'',
-  bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'',
+  bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'', bulkImportSupplierId:'',
   pushStatus:'unsupported', // unsupported | off | prompting | on | denied
   inventorySupplierFilter:null, supplierFilterName:''
 };
@@ -1031,9 +1031,11 @@ function renderInventory(){
   let items = state.inventory.slice().sort(function(a,b){ return (a.status==='In Stock'?0:1)-(b.status==='In Stock'?0:1); });
   let header = '';
   if (state.inventorySupplierFilter){
-    items = items.filter(function(p){ return p.supplier === state.inventorySupplierFilter; });
+    items = items.filter(function(p){ return p.supplier_id === state.inventorySupplierFilter; });
+    const filterContact = state.suppliers.find(function(x){ return x.id === state.inventorySupplierFilter; });
+    const filterName = filterContact ? filterContact.name : state.supplierFilterName;
     header = '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">' +
-      '<div><h1 class="page-title">Stock gotten from '+escapeHtml(state.supplierFilterName)+'</h1><p class="page-sub">'+items.length+' phone'+(items.length===1?'':'s')+' tracked</p></div>' +
+      '<div><h1 class="page-title">Stock gotten from '+escapeHtml(filterName)+'</h1><p class="page-sub">'+items.length+' phone'+(items.length===1?'':'s')+' tracked</p></div>' +
       '<div style="display:flex;gap:8px;"><button class="btn" data-clear-supplier-filter="1">← Back to all inventory</button></div>' +
     '</div>';
   } else {
@@ -1298,7 +1300,10 @@ function renderPhoneModal(m){
       '<div class="field"><label>Color</label><input id="f-color" value="'+escapeAttr(p.color)+'"/></div>' +
       '<div class="field"><label>Condition</label><select id="f-condition"><option '+(p.condition==='New'?'selected':'')+'>New</option><option '+(p.condition==='Used'?'selected':'')+'>Used</option></select></div>' +
       '<div class="field"><label>Battery health %</label><input type="number" id="f-battery" value="'+(p.battery!=null?p.battery:100)+'"/></div>' +
-      '<div class="field"><label>Supplier</label><input id="f-supplier" value="'+escapeAttr(p.supplier)+'"/></div>' +
+      '<div class="field"><label>Supplier contact (optional)</label><select id="f-supplier-id"><option value="">— none / type below —</option>' +
+        state.suppliers.map(function(s){ return '<option value="'+s.id+'" '+(p.supplier_id===s.id?'selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('') +
+      '</select></div>' +
+      '<div class="field"><label>Supplier / source label</label><input id="f-supplier" value="'+escapeAttr(p.supplier)+'" placeholder="e.g. UK import batch, or contact name"/></div>' +
       '<div class="field mono"><label>Cost price (₦)</label><input type="number" id="f-cost" value="'+(p.cost||'')+'"/></div>' +
       '<div class="field mono"><label>Selling price (₦)</label><input type="number" id="f-price" value="'+(p.price||'')+'"/></div>' +
       '<div class="field"><label>Status</label><select id="f-status">'+['In Stock','Reserved','Sold','In Repair'].map(function(s){ return '<option '+(p.status===s?'selected':'')+'>'+s+'</option>'; }).join('')+'</select></div>' +
@@ -1320,7 +1325,10 @@ function renderBulkImportModal(){
         '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">Paste your list exactly as you have it — any format, any separator (works with iPhone-style short-hand like "12promax256gb_490k"). We\'ll match model, storage, and cost price automatically. Selling price is left blank since these lists show what you paid, not what you\'re charging — set your selling price per phone after import (or use the profit calculator to decide it first).</p>' +
         '<div class="form-grid">' +
           '<div class="field"><label>Condition (applies to this whole batch)</label><select id="bi-condition"><option value="Used" '+(state.bulkImportCondition==='Used'?'selected':'')+'>Used</option><option value="New" '+(state.bulkImportCondition==='New'?'selected':'')+'>New</option></select></div>' +
-          '<div class="field"><label>Supplier / source (optional)</label><input id="bi-supplier" placeholder="e.g. UK import batch" value="'+escapeAttr(state.bulkImportSupplier)+'"/></div>' +
+          '<div class="field"><label>Supplier contact (optional)</label><select id="bi-supplier-id"><option value="">— none / type freeform below —</option>' +
+            state.suppliers.map(function(s){ return '<option value="'+s.id+'" '+(state.bulkImportSupplierId===s.id?'selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('') +
+          '</select></div>' +
+          '<div class="field"><label>Supplier / source label</label><input id="bi-supplier" placeholder="e.g. UK import batch" value="'+escapeAttr(state.bulkImportSupplier)+'"/></div>' +
         '</div>' +
         '<div class="field full" style="margin-top:14px;"><label>Paste here</label><textarea id="bi-text" rows="14" style="font-family:var(--font-mono);font-size:12.5px;" placeholder="Ip16 128–850k&#10;Ip14 pro 128–635k&#10;...">'+escapeHtml(state.bulkImportText)+'</textarea></div>'
       ) : renderBulkImportPreview()) +
@@ -1463,12 +1471,19 @@ function attachHandlers(){
     const el = document.getElementById('dealerSearch'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = state.dealerSearchQuery.length; }
   });
 
+  const fSupplierId = document.getElementById('f-supplier-id');
+  if(fSupplierId) fSupplierId.addEventListener('change', function(){
+    const s = state.suppliers.find(function(x){ return x.id === fSupplierId.value; });
+    const fSupplier = document.getElementById('f-supplier');
+    if(s && fSupplier) fSupplier.value = s.name;
+  });
+
   app.querySelectorAll('[data-save-phone]').forEach(function(el){ el.addEventListener('click', async function(){
     const id = el.getAttribute('data-save-phone');
     const data = {
       imei: val('f-imei')||null, imei2: val('f-imei2')||null, model: val('f-model'), storage: val('f-storage'),
       color: val('f-color'), condition: val('f-condition'), battery: Number(val('f-battery')),
-      supplier: val('f-supplier'), purchase_date: todayISO(), cost: Number(val('f-cost')), price: Number(val('f-price')),
+      supplier: val('f-supplier'), supplier_id: val('f-supplier-id')||null, purchase_date: todayISO(), cost: Number(val('f-cost')), price: Number(val('f-price')),
       status: val('f-status'), shelf: val('f-shelf'), notes: val('f-notes')
     };
     if(!data.model){ showToast('Phone model is required', true); return; }
@@ -1544,7 +1559,7 @@ function attachHandlers(){
     const id = el.getAttribute('data-view-supplier-stock');
     const s = state.suppliers.find(function(x){ return x.id === id; });
     if(!s) return;
-    state.inventorySupplierFilter = s.name;
+    state.inventorySupplierFilter = s.id;
     state.supplierFilterName = s.name;
     setTab('inventory');
   }); });
@@ -1623,6 +1638,7 @@ function attachHandlers(){
     state.bulkImportText = text;
     state.bulkImportCondition = val('bi-condition');
     state.bulkImportSupplier = val('bi-supplier');
+    state.bulkImportSupplierId = val('bi-supplier-id') || null;
     const parsed = parseBulkStock(text);
     state.bulkImportRows = parsed.rows; state.bulkImportSkipped = parsed.skipped;
     if(!state.bulkImportRows.length){ showToast('No recognizable stock lines found in that paste', true); return; }
@@ -1630,6 +1646,13 @@ function attachHandlers(){
   });
   const biBackBtn = document.getElementById('bi-back-btn');
   if(biBackBtn) biBackBtn.addEventListener('click', function(){ state.bulkImportRows = []; render(); });
+
+  const biSupplierId = document.getElementById('bi-supplier-id');
+  if(biSupplierId) biSupplierId.addEventListener('change', function(){
+    const s = state.suppliers.find(function(x){ return x.id === biSupplierId.value; });
+    const biSupplier = document.getElementById('bi-supplier');
+    if(s && biSupplier) biSupplier.value = s.name;
+  });
 
   document.querySelectorAll('[data-bi-include]').forEach(function(el){
     el.addEventListener('change', function(){ state.bulkImportRows[Number(el.getAttribute('data-bi-include'))].include = el.checked; });
@@ -1647,7 +1670,9 @@ function attachHandlers(){
       return {
         dealer_id: state.profile.id, model: r.model, storage: r.storage, color: '',
         condition: state.bulkImportCondition, battery: state.bulkImportCondition==='Used' ? 100 : null,
-        quantity: Number(r.quantity)||1, supplier: state.bulkImportSupplier || (r.sectionLabel||''), purchase_date: todayISO(),
+        quantity: Number(r.quantity)||1, supplier: state.bulkImportSupplier || (r.sectionLabel||''),
+        supplier_id: state.bulkImportSupplierId || null,
+        purchase_date: todayISO(),
         cost: Number(r.price)||0, price: null, status: 'In Stock', shelf: '', notes: 'Bulk imported: '+r.raw
       };
     });
@@ -1656,7 +1681,7 @@ function attachHandlers(){
       const { error } = await sb.from('inventory').insert(toInsert);
       if(error) throw error;
       await refreshAll();
-      state.bulkImportRows = []; state.bulkImportText='';
+      state.bulkImportRows = []; state.bulkImportText=''; state.bulkImportSupplierId='';
       closeModal(); showToast(toInsert.length+' phones imported');
     } catch(e){ showToast('Import failed: '+e.message, true); render(); }
   });
