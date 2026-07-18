@@ -27,8 +27,8 @@
   --font-display:'Space Grotesk',sans-serif; --font-body:'Inter',sans-serif; --font-mono:'JetBrains Mono',monospace;
 }
 *{box-sizing:border-box;}
-body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-body);}
-#app{display:flex;min-height:600px;background:var(--bg);}
+html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-body);overflow-x:hidden;max-width:100%;}
+#app{display:flex;min-height:600px;background:var(--bg);max-width:100vw;overflow-x:hidden;}
 ::selection{background:var(--accent);color:#10141C;}
 ::-webkit-scrollbar{width:8px;height:8px;}
 ::-webkit-scrollbar-thumb{background:var(--panel-3);border-radius:4px;}
@@ -63,7 +63,8 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-body
 .bell.on{color:var(--success);}
 .gear{cursor:pointer;color:var(--text-faint);}
 .gear:hover{color:var(--text-dim);}
-.content{flex:1;overflow-y:auto;padding:24px 28px 60px;}
+.content{flex:1;overflow-y:auto;overflow-x:hidden;padding:24px 28px 60px;min-width:0;}
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;}
 .page-title{font-family:var(--font-display);font-size:22px;font-weight:700;margin:0 0 4px;}
 .page-sub{color:var(--text-dim);font-size:13px;margin:0 0 22px;}
 
@@ -135,6 +136,14 @@ tr:hover td{background:var(--panel-2);}
   color:var(--text);font-family:var(--font-body);font-size:13px;outline:none;}
 .field input:focus, .field select:focus, .field textarea:focus{border-color:var(--accent);}
 .field.mono input{font-family:var(--font-mono);}
+.thumb{width:38px;height:38px;border-radius:6px;object-fit:cover;background:var(--panel-3);display:block;}
+.thumb-placeholder{width:38px;height:38px;border-radius:6px;background:var(--panel-3);display:flex;align-items:center;
+  justify-content:center;color:var(--text-faint);}
+.thumb-placeholder svg{width:16px;height:16px;}
+.photo-upload{display:flex;align-items:center;gap:12px;}
+.photo-preview{width:84px;height:84px;border-radius:10px;object-fit:cover;background:var(--panel-3);border:1px solid var(--border);}
+.photo-preview-empty{width:84px;height:84px;border-radius:10px;background:var(--panel-3);border:1px dashed var(--border);
+  display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:10.5px;text-align:center;padding:6px;}
 
 .overlay{position:fixed;inset:0;background:rgba(8,10,15,.65);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px;}
 .modal{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);width:100%;max-width:620px;max-height:88vh;overflow-y:auto;}
@@ -150,7 +159,7 @@ tr:hover td{background:var(--panel-2);}
   color:var(--text);padding:12px 18px;border-radius:var(--radius-sm);font-size:13px;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.4);max-width:340px;}
 .toast.err{border-color:var(--danger);color:var(--danger);}
 .pill-tabs{display:flex;gap:6px;margin-bottom:18px;background:var(--panel);padding:4px;border-radius:var(--radius-sm);
-  border:1px solid var(--border);width:fit-content;}
+  border:1px solid var(--border);width:fit-content;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;}
 .pill-tab{padding:7px 14px;border-radius:5px;font-size:12.5px;font-weight:600;color:var(--text-dim);cursor:pointer;}
 .pill-tab.active{background:var(--panel-3);color:var(--accent);}
 .calc-result{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px;margin-top:6px;}
@@ -226,13 +235,27 @@ let state = {
   tab:'dashboard', inventory:[], sales:[], requests:[], suppliers:[], dealerNetwork:[], broadcasts:[], broadcastResponses:[], dealerReputation:{},
   adminDealers:[], adminInventory:[], adminSales:[],
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
-  networkView:'search', dealerSearchQuery:'',
+  networkView:'search', dealerSearchQuery:'', networkOrder:[], networkVisibleCount:20,
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'', bulkImportSupplierId:'',
   pushStatus:'unsupported', // unsupported | off | prompting | on | denied
   inventorySupplierFilter:null, supplierFilterName:''
 };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function shuffleArray(arr){
+  const a = arr.slice();
+  for(let i=a.length-1;i>0;i--){ const j = Math.floor(Math.random()*(i+1)); const t=a[i]; a[i]=a[j]; a[j]=t; }
+  return a;
+}
+// Keeps the network browse order stable across refreshes (so "Load more" doesn't
+// jump around), while any newly-listed phones get slotted in at random.
+function syncNetworkOrder(){
+  const liveIds = {}; state.dealerNetwork.forEach(function(d){ liveIds[d.id] = true; });
+  const kept = state.networkOrder.filter(function(id){ return liveIds[id]; });
+  const keptSet = {}; kept.forEach(function(id){ keptSet[id] = true; });
+  const freshIds = state.dealerNetwork.map(function(d){ return d.id; }).filter(function(id){ return !keptSet[id]; });
+  state.networkOrder = kept.concat(shuffleArray(freshIds));
+}
 function naira(n){ n = Number(n)||0; return '₦'+n.toLocaleString('en-NG',{maximumFractionDigits:0}); }
 function todayISO(){ return new Date().toISOString().slice(0,10); }
 function daysBetween(a,b){ return Math.round((new Date(b)-new Date(a))/86400000); }
@@ -240,6 +263,47 @@ function escapeAttr(s){ return (s||'').toString().replace(/"/g,'&quot;'); }
 function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function val(id){ const el = document.getElementById(id); return el ? el.value : ''; }
 function slugify(s){ return (s||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,''); }
+
+/* ---------- phone photos ---------- */
+function thumbHTML(url){
+  if(url) return '<img class="thumb" src="'+escapeAttr(url)+'" loading="lazy" alt=""/>';
+  return '<div class="thumb-placeholder">'+ICONS.inventory+'</div>';
+}
+// Shrinks a photo client-side before upload — most Computer Village connections
+// are slow/data-capped, so a 12MB camera photo becomes a ~150-200KB JPEG here.
+function resizeImageFile(file, maxDim, quality){
+  maxDim = maxDim || 1000; quality = quality || 0.8;
+  return new Promise(function(resolve, reject){
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onerror = function(){ reject(new Error('Could not read that file')); };
+    reader.onload = function(){
+      img.onerror = function(){ reject(new Error('Could not read that image')); };
+      img.onload = function(){
+        let w = img.width, h = img.height;
+        if(w > h && w > maxDim){ h = Math.round(h*(maxDim/w)); w = maxDim; }
+        else if(h > maxDim){ w = Math.round(w*(maxDim/h)); h = maxDim; }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        canvas.toBlob(function(blob){
+          if(!blob){ reject(new Error('Could not process that image')); return; }
+          resolve(blob);
+        }, 'image/jpeg', quality);
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+async function uploadPhoneImage(file){
+  const blob = await resizeImageFile(file, 1000, 0.8);
+  const path = state.profile.id + '/' + Date.now().toString(36) + Math.random().toString(36).slice(2,7) + '.jpg';
+  const { error } = await sb.storage.from('phone-images').upload(path, blob, { contentType:'image/jpeg', upsert:false });
+  if(error) throw error;
+  const { data } = sb.storage.from('phone-images').getPublicUrl(path);
+  return data.publicUrl;
+}
 
 /* ---------- invoice / warranty card PDF ---------- */
 function invoiceNumberFor(sale){
@@ -691,6 +755,7 @@ async function refreshAll(){
   ]);
   state.inventory = inv.data || []; state.sales = sales.data || []; state.requests = reqs.data || [];
   state.suppliers = sups.data || []; state.dealerNetwork = dn.data || []; state.broadcasts = bc.data || [];
+  syncNetworkOrder();
   const repMap = {};
   (rep.data || []).forEach(function(r){ repMap[r.dealer_id] = r; });
   state.dealerReputation = repMap;
@@ -927,6 +992,7 @@ function attachAuthHandlers(){
 }
 
 function badgeCount(n){ return n>0 ? '<span style="position:absolute;margin-left:26px;margin-top:-30px;background:var(--accent);color:#10141C;font-size:9px;font-weight:700;border-radius:8px;padding:1px 5px;">'+n+'</span>' : ''; }
+function pillBadge(n){ return n>0 ? '<span style="display:inline-block;margin-left:6px;background:var(--accent);color:#10141C;font-size:10px;font-weight:700;border-radius:8px;padding:1px 6px;">'+n+'</span>' : ''; }
 function railItem(key, label, extra){
   return '<div class="rail-item '+(state.tab===key?'active':'')+'" data-tab="'+key+'" style="position:relative">'+ICONS[key]+'<span>'+label+'</span>'+(extra||'')+'</div>';
 }
@@ -1048,9 +1114,10 @@ function renderInventory(){
     '</div>';
   }
   return header +
-    '<div class="section"><div class="section-body" style="padding:0;overflow-x:auto;">' +
-      (items.length ? ('<table><thead><tr><th>Model</th><th>IMEI</th><th>Qty</th><th>Storage / Color</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
+    '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
+      (items.length ? ('<table><thead><tr><th>Photo</th><th>Model</th><th>IMEI</th><th>Qty</th><th>Storage / Color</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
         items.map(function(p){ return '<tr>' +
+          '<td>'+thumbHTML(p.image_url)+'</td>' +
           '<td class="strong">'+escapeHtml(p.model)+'</td>' +
           '<td class="mono">'+(p.imei?escapeHtml(p.imei):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
           '<td class="mono">'+(p.quantity!=null?p.quantity:1)+'</td>' +
@@ -1073,7 +1140,7 @@ function renderSales(){
       '<div><h1 class="page-title">Sales log</h1><p class="page-sub">'+state.sales.length+' sales recorded</p></div>' +
       '<button class="btn btn-accent" data-open-modal="logSale">'+ICONS.plus+' Log a sale</button>' +
     '</div>' +
-    '<div class="section"><div class="section-body" style="padding:0;overflow-x:auto;">' +
+    '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
       (rows.length ? ('<table><thead><tr><th>Date</th><th>Phone</th><th>Customer</th><th>Sale price</th><th>Profit</th><th>Payment</th><th>Staff</th><th>Warranty</th><th></th></tr></thead><tbody>' +
         rows.map(function(s){
           const expiry = new Date(s.date); expiry.setDate(expiry.getDate()+Number(s.warranty_days||0));
@@ -1122,7 +1189,7 @@ function renderRequests(){
   const rows = state.requests.slice().sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
   return '<h1 class="page-title">Customer requests</h1>' +
     '<p class="page-sub">Phones customers asked for that weren\'t in stock — submitted from your Customer App storefront.</p>' +
-    '<div class="section"><div class="section-body" style="padding:0;overflow-x:auto;">' +
+    '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
       (rows.length ? ('<table><thead><tr><th>Date</th><th>Customer</th><th>Phone wanted</th><th>Budget</th><th>Status</th><th></th></tr></thead><tbody>' +
         rows.map(function(r){ return '<tr>' +
           '<td class="mono">'+escapeHtml(r.date)+'</td>' +
@@ -1137,11 +1204,12 @@ function renderRequests(){
 }
 
 function renderNetwork(){
+  const openBroadcastCount = state.broadcasts.filter(function(b){ return b.status==='Open'; }).length;
   return '<h1 class="page-title">Dealer network</h1>' +
-    '<p class="page-sub">Search every registered dealer\'s in-stock phones, or broadcast an urgent need.</p>' +
+    '<p class="page-sub">Search every registered dealer\'s in-stock phones, or request an urgent need.</p>' +
     '<div class="pill-tabs">' +
       '<div class="pill-tab '+(state.networkView==='search'?'active':'')+'" data-network-view="search">Search stock</div>' +
-      '<div class="pill-tab '+(state.networkView==='broadcasts'?'active':'')+'" data-network-view="broadcasts">Broadcasts</div>' +
+      '<div class="pill-tab '+(state.networkView==='broadcasts'?'active':'')+'" data-network-view="broadcasts">Requests'+pillBadge(openBroadcastCount)+'</div>' +
       '<div class="pill-tab '+(state.networkView==='suppliers'?'active':'')+'" data-network-view="suppliers">My contacts</div>' +
     '</div>' +
     (state.networkView==='search' ? renderNetworkSearch() : '') +
@@ -1151,20 +1219,36 @@ function renderNetwork(){
 
 function renderNetworkSearch(){
   const q = state.dealerSearchQuery.toLowerCase();
-  const results = q ? state.dealerNetwork.filter(function(d){ return String(d.model||'').toLowerCase().includes(q); }) : state.dealerNetwork;
-  const sorted = results.slice().sort(function(a,b){ return (Number(a.price)||0)-(Number(b.price)||0); });
+  let list, isSearching = !!q, showLoadMore = false, totalCount = 0;
+
+  if(isSearching){
+    list = state.dealerNetwork.filter(function(d){ return String(d.model||'').toLowerCase().includes(q); })
+      .slice().sort(function(a,b){ return (Number(a.price)||0)-(Number(b.price)||0); });
+  } else {
+    const byId = {}; state.dealerNetwork.forEach(function(d){ byId[d.id] = d; });
+    const ordered = state.networkOrder.map(function(id){ return byId[id]; }).filter(Boolean);
+    totalCount = ordered.length;
+    list = ordered.slice(0, state.networkVisibleCount);
+    showLoadMore = ordered.length > state.networkVisibleCount;
+  }
+
   return '<div class="section"><div class="section-body">' +
       '<input id="dealerSearch" placeholder="e.g. S24 Ultra, iPhone 15…" value="'+escapeAttr(state.dealerSearchQuery)+'" ' +
-      'style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;color:var(--text);font-family:var(--font-mono);font-size:13px;outline:none;margin-bottom:14px;"/>' +
-      (sorted.length ? ('<table><thead><tr><th>Model</th><th>Dealer</th><th>Price</th><th>Updated</th><th></th></tr></thead><tbody>' +
-        sorted.map(function(d,i){ return '<tr>' +
+      'style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;color:var(--text);font-family:var(--font-mono);font-size:13px;outline:none;margin-bottom:10px;"/>' +
+      (!isSearching && totalCount>0 ? ('<div style="font-size:11.5px;color:var(--text-faint);margin-bottom:14px;">Showing '+list.length+' of '+totalCount+' network listings, in random order — search above to find something specific.</div>') : '') +
+      '<div class="table-scroll">' +
+      (list.length ? ('<table><thead><tr><th>Img</th><th>Model</th><th>Dealer</th><th>Price</th><th>Updated</th><th></th></tr></thead><tbody>' +
+        list.map(function(d,i){ return '<tr>' +
+          '<td>'+thumbHTML(d.image_url)+'</td>' +
           '<td class="strong">'+escapeHtml(d.model)+(d.storage?(' · '+escapeHtml(d.storage)):'')+(d.color?(' · '+escapeHtml(d.color)):'')+(d.condition==='Used'?(' · '+d.battery+'% batt'):'')+'</td>' +
           '<td>'+escapeHtml(d.dealer_name)+(d.dealer_id===state.profile.id?' <span style="font-size:10px;color:var(--text-faint)">(you)</span>':'')+'<br>'+reputationBadgeHTML(d.dealer_id)+'</td>' +
-          '<td class="mono" style="color:'+(i===0?'var(--success)':'var(--text)')+'">'+naira(d.price)+(i===0?' <span style="font-size:10px">· lowest</span>':'')+'</td>' +
+          '<td class="mono" style="color:'+(isSearching && i===0?'var(--success)':'var(--text)')+'">'+naira(d.price)+(isSearching && i===0?' <span style="font-size:10px">· lowest</span>':'')+'</td>' +
           '<td class="mono" style="font-size:11px;color:var(--text-faint)">'+new Date(d.updated_at).toLocaleDateString()+'</td>' +
           '<td><a class="linklike" href="tel:'+escapeAttr(d.dealer_phone)+'">'+escapeHtml(d.dealer_phone||'—')+'</a></td>' +
         '</tr>'; }).join('') +
-      '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No matches in the network yet. Try a broadcast instead.</div></div>')) +
+      '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No matches in the network yet. Try a request instead.</div></div>')) +
+      '</div>' +
+      (showLoadMore ? '<div style="text-align:center;margin-top:14px;"><button class="btn" id="networkLoadMoreBtn">Load 20 more</button></div>' : '') +
     '</div></div>';
 }
 
@@ -1188,7 +1272,7 @@ function renderBroadcasts(){
         (isMine && b.status==='Open'?('<button class="btn btn-sm" data-close-broadcast="'+b.id+'">Close (no deal)</button>'):'') +
         (!isMine && b.status==='Open'?('<button class="btn btn-sm btn-accent" data-open-modal="respondBroadcast" data-id="'+b.id+'">Respond</button>'):'') +
       '</div></div>' +
-      '<div class="section-body" style="padding:0;">' +
+      '<div class="section-body table-scroll" style="padding:0;">' +
         (responses.length ? ('<table><thead><tr><th>Dealer</th><th>Reputation</th><th>Price</th><th>Qty</th><th>Contact</th><th></th></tr></thead><tbody>' +
           responses.map(function(r,i){
             const accepted = b.accepted_response_id === r.id;
@@ -1208,7 +1292,7 @@ function renderBroadcasts(){
 function renderSuppliers(){
   const rows = state.suppliers;
   return '<div style="display:flex;justify-content:flex-end;margin-bottom:14px;"><button class="btn btn-accent" data-open-modal="addSupplier">'+ICONS.plus+' Add contact</button></div>' +
-    '<div class="section"><div class="section-body" style="padding:0;overflow-x:auto;">' +
+    '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
       (rows.length ? ('<table><thead><tr><th>Name</th><th>Phone</th><th>Location</th><th>Supplies</th><th>Owed</th><th></th></tr></thead><tbody>' +
         rows.map(function(s){ return '<tr>' +
           '<td class="strong">'+escapeHtml(s.name)+'</td>' +
@@ -1240,7 +1324,7 @@ function renderAdmin(){
       '<div class="kpi"><div class="kpi-label">Total phones tracked</div><div class="kpi-value">'+totalPhones+'</div></div>' +
       '<div class="kpi"><div class="kpi-label">Total platform revenue</div><div class="kpi-value accent">'+naira(totalRevenue)+'</div></div>' +
     '</div>' +
-    '<div class="section"><div class="section-head"><h3>Dealers</h3></div><div class="section-body" style="padding:0;overflow-x:auto;">' +
+    '<div class="section"><div class="section-head"><h3>Dealers</h3></div><div class="section-body table-scroll" style="padding:0;">' +
       '<table><thead><tr><th>Shop</th><th>Location</th><th>Phone</th><th>Phones tracked</th><th>Sales</th><th>Revenue</th><th>Joined</th></tr></thead><tbody>' +
       dealers.map(function(d){
         const inv = invByDealer[d.id]||[]; const sal = salesByDealer[d.id]||[];
@@ -1293,6 +1377,13 @@ function renderPhoneModal(m){
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>'+(editing?'Edit phone':'Add phone')+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body"><div class="form-grid">' +
+      '<div class="field full"><label>Photo</label><div class="photo-upload">' +
+        (p.image_url ? ('<img class="photo-preview" id="f-image-preview" src="'+escapeAttr(p.image_url)+'"/>') : ('<div class="photo-preview-empty" id="f-image-preview">No photo yet</div>')) +
+        '<div style="display:flex;flex-direction:column;gap:8px;">' +
+          '<input type="file" id="f-image" accept="image/*" capture="environment"/>' +
+          (p.image_url ? '<label style="font-size:11.5px;color:var(--text-dim);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="f-image-remove"/> Remove current photo</label>' : '<span style="font-size:11px;color:var(--text-faint);">Snap it with your camera or pick from gallery — resized automatically before upload.</span>') +
+        '</div>' +
+      '</div></div>' +
       '<div class="field mono"><label>IMEI 1 (optional)</label><input id="f-imei" value="'+escapeAttr(p.imei)+'"/></div>' +
       '<div class="field mono"><label>IMEI 2 (optional)</label><input id="f-imei2" value="'+escapeAttr(p.imei2)+'"/></div>' +
       '<div class="field"><label>Phone model</label><input id="f-model" value="'+escapeAttr(p.model)+'" placeholder="e.g. iPhone 14 Pro"/></div>' +
@@ -1471,11 +1562,31 @@ function attachHandlers(){
     const el = document.getElementById('dealerSearch'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = state.dealerSearchQuery.length; }
   });
 
+  const networkLoadMoreBtn = document.getElementById('networkLoadMoreBtn');
+  if(networkLoadMoreBtn) networkLoadMoreBtn.addEventListener('click', function(){
+    state.networkVisibleCount += 20; render();
+  });
+
   const fSupplierId = document.getElementById('f-supplier-id');
   if(fSupplierId) fSupplierId.addEventListener('change', function(){
     const s = state.suppliers.find(function(x){ return x.id === fSupplierId.value; });
     const fSupplier = document.getElementById('f-supplier');
     if(s && fSupplier) fSupplier.value = s.name;
+  });
+
+  const fImage = document.getElementById('f-image');
+  if(fImage) fImage.addEventListener('change', function(){
+    const file = fImage.files && fImage.files[0];
+    if(!file) return;
+    const url = URL.createObjectURL(file);
+    const preview = document.getElementById('f-image-preview');
+    if(preview){
+      const img = document.createElement('img');
+      img.className = 'photo-preview'; img.id = 'f-image-preview'; img.src = url;
+      preview.replaceWith(img);
+    }
+    const removeBox = document.getElementById('f-image-remove');
+    if(removeBox) removeBox.checked = false;
   });
 
   app.querySelectorAll('[data-save-phone]').forEach(function(el){ el.addEventListener('click', async function(){
@@ -1487,12 +1598,21 @@ function attachHandlers(){
       status: val('f-status'), shelf: val('f-shelf'), notes: val('f-notes')
     };
     if(!data.model){ showToast('Phone model is required', true); return; }
+    const imageFileEl = document.getElementById('f-image');
+    const imageFile = imageFileEl && imageFileEl.files && imageFileEl.files[0];
+    const removeChecked = document.getElementById('f-image-remove');
     try{
+      if(imageFile){
+        showToast('Uploading photo…');
+        data.image_url = await uploadPhoneImage(imageFile);
+      } else if(removeChecked && removeChecked.checked){
+        data.image_url = null;
+      }
       if(id){ const { error } = await sb.from('inventory').update(data).eq('id', id); if(error) throw error; }
       else{ data.dealer_id = state.profile.id; const { error } = await sb.from('inventory').insert(data); if(error) throw error; }
       await refreshAll();
       closeModal(); showToast(id?'Phone updated':'Phone added to inventory');
-    } catch(e){ showToast('Save failed: '+e.message, true); render(); }
+    } catch(e){ showToast('Save failed: '+(e.message||e), true); render(); }
   }); });
 
   app.querySelectorAll('[data-delete-phone]').forEach(function(el){ el.addEventListener('click', async function(){

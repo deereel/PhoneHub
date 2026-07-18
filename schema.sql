@@ -101,9 +101,11 @@ create table if not exists inventory (
   quantity int not null default 1,
   shelf text,
   notes text,
+  image_url text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table inventory add column if not exists image_url text;
 create index if not exists idx_inventory_dealer on inventory(dealer_id);
 create index if not exists idx_inventory_model on inventory using gin (to_tsvector('simple', model));
 
@@ -118,11 +120,12 @@ create policy "inventory_select_admin" on inventory for select
 
 -- Cross-dealer search, for logged-in dealers only. Deliberately excludes cost/supplier
 -- so no dealer can see another dealer's margins — only what a buyer needs to know.
+drop view if exists dealer_network_view;
 create or replace view dealer_network_view
   with (security_invoker = false) as
   select
     i.id, i.dealer_id, d.shop_name as dealer_name, d.phone as dealer_phone,
-    i.model, i.storage, i.color, i.condition, i.battery, i.price, i.updated_at
+    i.model, i.storage, i.color, i.condition, i.battery, i.price, i.updated_at, i.image_url
   from inventory i
   join dealers d on d.id = i.dealer_id
   where i.status = 'In Stock';
@@ -130,9 +133,10 @@ grant select on dealer_network_view to authenticated;
 
 -- Public storefront catalog for the Customer App (one dealer's in-stock phones only,
 -- no cost/supplier/IMEI exposed).
+drop view if exists public_catalog;
 create or replace view public_catalog
   with (security_invoker = false) as
-  select id, dealer_id, model, storage, color, condition, battery, price, status
+  select id, dealer_id, model, storage, color, condition, battery, price, status, image_url
   from inventory
   where status = 'In Stock';
 grant select on public_catalog to anon, authenticated;
@@ -355,6 +359,26 @@ create policy "broadcast_responses_insert_own" on broadcast_responses for insert
 -- ------------------------------------------------------------
 alter publication supabase_realtime add table broadcasts;
 alter publication supabase_realtime add table broadcast_responses;
+
+-- ------------------------------------------------------------
+-- 8. STORAGE  (phone photos — public read, dealers can only manage their own folder)
+-- ------------------------------------------------------------
+insert into storage.buckets (id, name, public)
+  values ('phone-images', 'phone-images', true)
+  on conflict (id) do nothing;
+
+-- Anyone can view phone photos (needed for the public Customer App catalog).
+create policy "phone_images_public_read" on storage.objects for select
+  using (bucket_id = 'phone-images');
+
+-- A logged-in dealer can only upload/replace/delete files inside a folder
+-- named after their own dealer id, e.g. phone-images/<dealer_id>/xyz.jpg
+create policy "phone_images_insert_own" on storage.objects for insert
+  with check (bucket_id = 'phone-images' and (storage.foldername(name))[1] = auth.uid()::text);
+create policy "phone_images_update_own" on storage.objects for update
+  using (bucket_id = 'phone-images' and (storage.foldername(name))[1] = auth.uid()::text);
+create policy "phone_images_delete_own" on storage.objects for delete
+  using (bucket_id = 'phone-images' and (storage.foldername(name))[1] = auth.uid()::text);
 
 -- ============================================================
 -- After running this file:
