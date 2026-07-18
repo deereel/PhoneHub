@@ -210,7 +210,9 @@ const ICONS = {
   gear:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 005 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 005 8.6a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019 8.6a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>',
   plus:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>',
   empty:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg>',
-  bell:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>'
+  bell:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>',
+  consign:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="8" r="3"/><path d="M2.5 21v-1.5A4 4 0 016.5 15.5h1"/><path d="M21.5 21v-1.5a4 4 0 00-4-3.5h-1"/><path d="M9.5 17h5"/></svg>',
+  broadcast:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 10v4a1 1 0 001 1h1.5l5 4v-14l-5 4H5a1 1 0 00-1 1z"/><path d="M15 9a3.5 3.5 0 010 6"/><path d="M17.5 6.5a7 7 0 010 11"/></svg>'
 };
 
 const CONFIG_KEY = 'phonehub-supabase-config';
@@ -232,13 +234,16 @@ let state = {
   configError:null, configuring:false, urlInput:'', keyInput:'',
   authMode:'login', authError:null, authBusy:false,
   profile:null, isAdmin:false,
-  tab:'dashboard', inventory:[], sales:[], requests:[], suppliers:[], dealerNetwork:[], broadcasts:[], broadcastResponses:[], dealerReputation:{},
+  tab:'dashboard', inventory:[], sales:[], requests:[], suppliers:[], dealerNetwork:[], broadcasts:[], broadcastResponses:[], dealerReputation:{}, consignments:[],
   adminDealers:[], adminInventory:[], adminSales:[],
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
   networkView:'search', dealerSearchQuery:'', networkOrder:[], networkVisibleCount:20,
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'', bulkImportSupplierId:'',
   pushStatus:'unsupported', // unsupported | off | prompting | on | denied
-  inventorySupplierFilter:null, supplierFilterName:''
+  inventorySupplierFilter:null, supplierFilterName:'',
+  selectedInventoryIds:[], // checked rows in Inventory, used by the "Broadcast selected" flow
+  broadcastComposer:{ids:[], target:'network', message:'', selectedContactIds:[]},
+  networkBroadcastTypeFilter:'All' // All | Need | Stock — filter for the Network > Broadcasts view
 };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -744,7 +749,7 @@ async function loadAfterAuth(){
 }
 
 async function refreshAll(){
-  const [inv, sales, reqs, sups, dn, bc, rep] = await Promise.all([
+  const [inv, sales, reqs, sups, dn, bc, rep, cons] = await Promise.all([
     sb.from('inventory').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
     sb.from('sales').select('*').eq('dealer_id', state.profile.id).order('date',{ascending:false}),
     sb.from('requests').select('*').eq('dealer_id', state.profile.id).order('date',{ascending:false}),
@@ -752,9 +757,11 @@ async function refreshAll(){
     sb.from('dealer_network_view').select('*'),
     sb.from('broadcasts').select('*').order('created_at',{ascending:false}),
     sb.from('dealer_reputation_view').select('*'),
+    sb.from('consignments').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
   ]);
   state.inventory = inv.data || []; state.sales = sales.data || []; state.requests = reqs.data || [];
   state.suppliers = sups.data || []; state.dealerNetwork = dn.data || []; state.broadcasts = bc.data || [];
+  state.consignments = cons.data || [];
   syncNetworkOrder();
   const repMap = {};
   (rep.data || []).forEach(function(r){ repMap[r.dealer_id] = r; });
@@ -814,6 +821,12 @@ function applyHashTab(){
 }
 function openModal(name, payload){ state.modal = {name:name, payload: payload||{}}; render(); }
 function closeModal(){ state.modal = null; render(); }
+function openBroadcastComposer(ids){
+  if(!ids || !ids.length){ showToast('Select at least one phone first', true); return; }
+  const items = state.inventory.filter(function(p){ return ids.indexOf(p.id)>-1; });
+  state.broadcastComposer = { ids: ids, target: 'network', message: defaultBroadcastMessage(items), selectedContactIds: [] };
+  openModal('sendBroadcastAdvert', {});
+}
 
 function isToday(d){ return d === todayISO(); }
 function thisMonth(d){ if(!d) return false; const now=new Date(); const dd=new Date(d); return dd.getFullYear()===now.getFullYear() && dd.getMonth()===now.getMonth(); }
@@ -835,6 +848,8 @@ function computeKPIs(){
   const expired = warrantyList.filter(function(w){ return w.daysLeft<0; }).length;
   const pendingRequests = state.requests.filter(function(r){ return r.status==='Pending'; }).length;
   const openBroadcasts = state.broadcasts.filter(function(b){ return b.status==='Open'; }).length;
+  const outstandingConsignments = state.consignments.filter(function(c){ return c.status!=='Settled' && c.status!=='Returned'; });
+  const consignOwed = outstandingConsignments.reduce(function(a,c){ return a+consignmentBalance(c); },0);
   return {
     unitsToday: salesToday.length,
     revenueToday: salesToday.reduce(function(a,s){ return a+(Number(s.sale_price)||0); },0),
@@ -843,8 +858,15 @@ function computeKPIs(){
     revenueMonth: salesMonth.reduce(function(a,s){ return a+(Number(s.sale_price)||0); },0),
     profitMonth: salesMonth.reduce(function(a,s){ return a+profit(s); },0),
     inStockCount: inStock.length, reservedCount: reserved.length, stockValue: stockValue,
-    expiringSoon: expiringSoon, expired: expired, pendingRequests: pendingRequests, openBroadcasts: openBroadcasts
+    expiringSoon: expiringSoon, expired: expired, pendingRequests: pendingRequests, openBroadcasts: openBroadcasts,
+    consignCount: outstandingConsignments.length, consignOwed: consignOwed
   };
+}
+
+// Total still owed to you on a consignment (what colleague should pay, minus what they've paid).
+function consignmentBalance(c){
+  const total = (Number(c.unit_price)||0) * (Number(c.quantity)||1);
+  return total - (Number(c.amount_paid)||0);
 }
 
 function staffLeaderboard(){
@@ -883,6 +905,7 @@ function render(){
       '<div class="rail-logo">PH</div>' +
       railItem('dashboard','Home') + railItem('inventory','Stock') + railItem('sales','Sales') +
       railItem('calc','Price') + railItem('requests','Asks', badgeCount(state.requests.filter(function(r){return r.status==='Pending';}).length)) +
+      railItem('consign','Owed', badgeCount(state.consignments.filter(function(c){return c.status!=='Settled' && c.status!=='Returned';}).length)) +
       railItem('network','Network', badgeCount(state.broadcasts.filter(function(b){return b.status==='Open';}).length)) +
       (state.isAdmin ? railItem('admin','Admin') : '') +
     '</div>' +
@@ -1018,7 +1041,7 @@ function renderSearchDropdown(){
 }
 
 function badge(status){
-  const map = {'In Stock':'badge-stock','Sold':'badge-sold','Reserved':'badge-reserved','In Repair':'badge-repair','Pending':'badge-reserved','Fulfilled':'badge-stock','Cancelled':'badge-sold','Open':'badge-open','Closed':'badge-closed'};
+  const map = {'In Stock':'badge-stock','Sold':'badge-sold','Reserved':'badge-reserved','In Repair':'badge-repair','Consigned':'badge-repair','Pending':'badge-reserved','Fulfilled':'badge-stock','Cancelled':'badge-sold','Open':'badge-open','Closed':'badge-closed','Out':'badge-reserved','Partially Paid':'badge-repair','Settled':'badge-stock','Returned':'badge-sold'};
   return '<span class="badge '+(map[status]||'badge-new')+'">'+escapeHtml(status)+'</span>';
 }
 
@@ -1051,6 +1074,7 @@ function renderTab(){
   if(state.tab==='sales') return renderSales();
   if(state.tab==='calc') return renderCalc();
   if(state.tab==='requests') return renderRequests();
+  if(state.tab==='consign') return renderConsignments();
   if(state.tab==='network') return renderNetwork();
   if(state.tab==='admin') return renderAdmin();
   return '';
@@ -1072,6 +1096,7 @@ function renderDashboard(){
       '<div class="kpi"><div class="kpi-label">Phones in stock</div><div class="kpi-value">'+k.inStockCount+'</div><div class="kpi-delta">'+k.reservedCount+' reserved</div></div>' +
       '<div class="kpi"><div class="kpi-label">Stock value (cost)</div><div class="kpi-value">'+naira(k.stockValue)+'</div></div>' +
       '<div class="kpi"><div class="kpi-label">Warranty alerts</div><div class="kpi-value '+(k.expired>0?'warn':'')+'">'+(k.expiringSoon+k.expired)+'</div><div class="kpi-delta">'+k.expiringSoon+' expiring soon · '+k.expired+' expired</div></div>' +
+      '<div class="kpi"><div class="kpi-label">Owed to you (consignment)</div><div class="kpi-value '+(k.consignOwed>0?'accent':'')+'">'+naira(k.consignOwed)+'</div><div class="kpi-delta">'+k.consignCount+' phone'+(k.consignCount===1?'':'s')+' out with colleagues</div></div>' +
     '</div>' +
     '<div class="section"><div class="section-head"><h3>This month</h3></div>' +
       '<div class="section-body kpi-grid" style="margin:0;">' +
@@ -1090,7 +1115,12 @@ function renderDashboard(){
       '<div style="display:flex;gap:8px;">' +
         (k.pendingRequests>0?'<button class="btn btn-sm" data-tab="requests">View requests</button>':'') +
         (k.openBroadcasts>0?'<button class="btn btn-sm" data-tab="network">View network</button>':'') +
-      '</div></div></div>') : '');
+      '</div></div></div>') : '') +
+    (k.consignCount>0 ? ('<div class="section"><div class="section-body" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between;">' +
+      '<div>'+ICONS.consign.replace('<svg ', '<svg style="width:15px;height:15px;vertical-align:-3px;margin-right:6px;color:var(--accent)" ')+
+        '<strong style="color:var(--accent)">'+naira(k.consignOwed)+'</strong> owed to you across '+k.consignCount+' colleague'+(k.consignCount>1?'s':'')+' holding phones on credit.</div>' +
+      '<button class="btn btn-sm" data-tab="consign">View ledger</button>' +
+    '</div></div>') : '');
 }
 
 function renderInventory(){
@@ -1107,16 +1137,23 @@ function renderInventory(){
   } else {
     header = '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">' +
       '<div><h1 class="page-title">Inventory</h1><p class="page-sub">'+state.inventory.length+' phones tracked · '+state.inventory.filter(function(p){return p.status==='In Stock';}).length+' in stock</p></div>' +
-      '<div style="display:flex;gap:8px;">' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+        (items.some(function(p){return p.status==='In Stock';}) ? '<button class="btn" id="selectAllInStockBtn">Select all in stock</button>' : '') +
         '<button class="btn" data-open-modal="bulkImport">📋 Paste stock list</button>' +
         '<button class="btn btn-accent" data-open-modal="addPhone">'+ICONS.plus+' Add phone</button>' +
       '</div>' +
     '</div>';
   }
+  const selectedCount = state.selectedInventoryIds.length;
   return header +
-    '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
-      (items.length ? ('<table><thead><tr><th>Photo</th><th>Model</th><th>IMEI</th><th>Qty</th><th>Storage / Color</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
+    (selectedCount>0 ? ('<div class="section" style="margin-top:16px;border-color:var(--accent);"><div class="section-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">' +
+      '<div><strong>'+selectedCount+'</strong> phone'+(selectedCount===1?'':'s')+' selected</div>' +
+      '<div style="display:flex;gap:8px;"><button class="btn" id="clearSelectionBtn">Clear</button><button class="btn btn-accent" id="broadcastSelectedBtn">'+ICONS.broadcast.replace('<svg ', '<svg style="width:14px;height:14px;vertical-align:-2px;margin-right:4px;" ')+'Broadcast selected</button></div>' +
+    '</div></div>') : '') +
+    '<div class="section" style="margin-top:16px;"><div class="section-body table-scroll" style="padding:0;">' +
+      (items.length ? ('<table><thead><tr><th></th><th>Photo</th><th>Model</th><th>IMEI</th><th>Qty</th><th>Storage / Color</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
         items.map(function(p){ return '<tr>' +
+          '<td><input type="checkbox" data-select-inventory="'+p.id+'" '+(state.selectedInventoryIds.indexOf(p.id)>-1?'checked':'')+'/></td>' +
           '<td>'+thumbHTML(p.image_url)+'</td>' +
           '<td class="strong">'+escapeHtml(p.model)+'</td>' +
           '<td class="mono">'+(p.imei?escapeHtml(p.imei):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
@@ -1128,7 +1165,10 @@ function renderInventory(){
           '<td class="mono" style="color:var(--success)">'+(p.price?naira((Number(p.price)||0)-(Number(p.cost)||0)):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
           '<td><button class="btn btn-sm '+(p.status==='In Stock'?'btn-stock-toggle-on':'btn-stock-toggle-off')+'" data-toggle-status="'+p.id+'">'+(p.status==='In Stock'?'In Stock':'Out of Stock')+'</button></td>' +
           '<td>'+escapeHtml(p.shelf)+'</td>' +
-          '<td><button class="btn btn-sm" data-open-modal="editPhone" data-id="'+p.id+'">Edit</button></td>' +
+          '<td style="display:flex;gap:6px;white-space:nowrap;">' +
+            '<button class="btn btn-sm" data-open-modal="editPhone" data-id="'+p.id+'">Edit</button>' +
+            '<button class="btn btn-sm" data-broadcast-single="'+p.id+'" title="Send as broadcast">📣</button>' +
+          '</td>' +
         '</tr>'; }).join('') +
       '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No phones from this contact yet.</div></div>')) +
     '</div></div>';
@@ -1203,13 +1243,49 @@ function renderRequests(){
     '</div></div>';
 }
 
+function renderConsignments(){
+  const rows = state.consignments.slice().sort(function(a,b){
+    const rank = function(c){ return (c.status==='Out'||c.status==='Partially Paid') ? 0 : 1; };
+    const r = rank(a)-rank(b);
+    if(r) return r;
+    return new Date(b.created_at)-new Date(a.created_at);
+  });
+  const totalOwed = state.consignments.filter(function(c){ return c.status!=='Settled' && c.status!=='Returned'; })
+    .reduce(function(a,c){ return a+consignmentBalance(c); },0);
+  return '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">' +
+      '<div><h1 class="page-title">Owed to you</h1><p class="page-sub">Phones colleagues collected from you on credit, and what they still owe. Total outstanding: <strong style="color:var(--accent)">'+naira(totalOwed)+'</strong></p></div>' +
+      '<button class="btn btn-accent" data-open-modal="addConsignment">'+ICONS.plus+' Log phone given out</button>' +
+    '</div>' +
+    '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
+      (rows.length ? ('<table><thead><tr><th>Colleague</th><th>Phone</th><th>Qty</th><th>Unit price</th><th>Paid</th><th>Balance</th><th>Status</th><th>Date given</th><th></th></tr></thead><tbody>' +
+        rows.map(function(c){
+          const balance = consignmentBalance(c);
+          const canSettle = c.status!=='Settled' && c.status!=='Returned';
+          return '<tr>' +
+          '<td class="strong">'+escapeHtml(c.contact_name)+(c.contact_phone?('<br><span class="mono" style="color:var(--text-faint);font-size:11px">'+escapeHtml(c.contact_phone)+'</span>'):'')+'</td>' +
+          '<td>'+escapeHtml(c.model)+(c.storage?(' · '+escapeHtml(c.storage)):'')+(c.color?(' · '+escapeHtml(c.color)):'')+(c.imei?('<br><span class="mono" style="color:var(--text-faint);font-size:11px">IMEI '+escapeHtml(c.imei)+'</span>'):'')+'</td>' +
+          '<td class="mono">'+(c.quantity||1)+'</td>' +
+          '<td class="mono">'+naira(c.unit_price)+'</td>' +
+          '<td class="mono">'+naira(c.amount_paid)+'</td>' +
+          '<td class="mono" style="color:'+(balance>0?'var(--danger)':'var(--success)')+'">'+naira(balance)+'</td>' +
+          '<td>'+badge(c.status)+'</td>' +
+          '<td class="mono">'+escapeHtml(c.date_given)+'</td>' +
+          '<td style="display:flex;gap:6px;white-space:nowrap;">' +
+            (canSettle ? '<button class="btn btn-sm btn-accent" data-open-modal="logConsignmentPayment" data-id="'+c.id+'">Log payment</button>' : '') +
+            '<button class="btn btn-sm" data-open-modal="editConsignment" data-id="'+c.id+'">Edit</button>' +
+          '</td>' +
+        '</tr>'; }).join('') +
+      '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No phones given out on credit yet. Log one when a colleague collects stock from you.</div></div>')) +
+    '</div></div>';
+}
+
 function renderNetwork(){
   const openBroadcastCount = state.broadcasts.filter(function(b){ return b.status==='Open'; }).length;
   return '<h1 class="page-title">Dealer network</h1>' +
-    '<p class="page-sub">Search every registered dealer\'s in-stock phones, or request an urgent need.</p>' +
+    '<p class="page-sub">Search every registered dealer\'s in-stock phones, request an urgent need, or catch stock adverts from other dealers.</p>' +
     '<div class="pill-tabs">' +
       '<div class="pill-tab '+(state.networkView==='search'?'active':'')+'" data-network-view="search">Search stock</div>' +
-      '<div class="pill-tab '+(state.networkView==='broadcasts'?'active':'')+'" data-network-view="broadcasts">Requests'+pillBadge(openBroadcastCount)+'</div>' +
+      '<div class="pill-tab '+(state.networkView==='broadcasts'?'active':'')+'" data-network-view="broadcasts">Broadcasts'+pillBadge(openBroadcastCount)+'</div>' +
       '<div class="pill-tab '+(state.networkView==='suppliers'?'active':'')+'" data-network-view="suppliers">My contacts</div>' +
     '</div>' +
     (state.networkView==='search' ? renderNetworkSearch() : '') +
@@ -1258,10 +1334,44 @@ function dealerName(id){
   const n = state.dealerNetwork.find(function(d){ return d.dealer_id===id; });
   return n ? n.dealer_name : 'A dealer';
 }
+function dealerPhone(id){
+  const n = state.dealerNetwork.find(function(d){ return d.dealer_id===id; });
+  return n ? n.dealer_phone : '';
+}
+
+function renderStockAdvertCard(b){
+  const isMine = b.dealer_id === state.profile.id;
+  const items = Array.isArray(b.items) ? b.items : (b.items ? (function(){ try{ return JSON.parse(b.items); }catch(e){ return []; } })() : []);
+  const phone = dealerPhone(b.dealer_id);
+  return '<div class="section">' +
+    '<div class="section-head"><div><strong>'+ICONS.broadcast.replace('<svg ', '<svg style="width:13px;height:13px;vertical-align:-2px;margin-right:5px;color:var(--accent)" ')+
+      (isMine ? 'Your stock advert' : escapeHtml(dealerName(b.dealer_id))+'\'s stock advert')+'</strong>' +
+      '<div style="font-size:11.5px;color:var(--text-faint);margin-top:3px;">'+escapeHtml(b.date)+'</div></div>' +
+      '<div style="display:flex;align-items:center;gap:10px;">'+badge(b.status)+
+        (isMine && b.status==='Open'?('<button class="btn btn-sm" data-close-broadcast="'+b.id+'">Close</button>'):'') +
+      '</div></div>' +
+    '<div class="section-body">' +
+      (b.message ? ('<div style="color:var(--text-dim);font-size:13px;margin-bottom:12px;">'+escapeHtml(b.message)+'</div>') : '') +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;">' +
+        items.map(function(it){ return '<div style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:10px;">' +
+          (it.image_url ? ('<img src="'+escapeAttr(it.image_url)+'" style="width:100%;height:84px;object-fit:cover;border-radius:6px;margin-bottom:6px;"/>') : '') +
+          '<div class="strong" style="font-size:12.5px;">'+escapeHtml(it.model)+'</div>' +
+          '<div style="font-size:11px;color:var(--text-faint);">'+escapeHtml(it.storage||'')+' '+escapeHtml(it.color||'')+'</div>' +
+          '<div class="mono" style="color:var(--accent);font-size:13px;margin-top:4px;">'+(it.price?naira(it.price):'—')+'</div>' +
+        '</div>'; }).join('') +
+      '</div>' +
+      (!isMine && phone ? ('<div style="margin-top:14px;"><a class="btn btn-sm btn-accent" href="tel:'+escapeAttr(phone)+'">📞 Contact '+escapeHtml(dealerName(b.dealer_id))+'</a></div>') : '') +
+    '</div></div>';
+}
 
 function renderBroadcasts(){
-  const rows = state.broadcasts.slice().sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
+  const filter = state.networkBroadcastTypeFilter;
+  const rows = state.broadcasts.slice()
+    .filter(function(b){ return filter==='All' || (b.type||'Need')===filter; })
+    .sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
+
   const body = rows.map(function(b){
+    if((b.type||'Need')==='Stock') return renderStockAdvertCard(b);
     const responses = state.broadcastResponses.filter(function(r){ return r.broadcast_id===b.id; }).sort(function(a,b2){ return (Number(a.price)||0)-(Number(b2.price)||0); });
     const isMine = b.dealer_id === state.profile.id;
     const canAccept = isMine && b.status==='Open';
@@ -1285,8 +1395,14 @@ function renderBroadcasts(){
         '</tbody></table>') : '<div class="empty" style="padding:20px;">No responses yet.</div>') +
       '</div></div>';
   }).join('');
-  return '<div style="display:flex;justify-content:flex-end;margin-bottom:14px;"><button class="btn btn-accent" data-open-modal="newBroadcast">'+ICONS.plus+' New broadcast</button></div>' +
-    (body || ('<div class="empty">'+ICONS.empty+'<div>No broadcasts yet. Send one when you need a phone urgently.</div></div>'));
+
+  return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">' +
+      '<div class="pill-tabs" style="margin:0;">' +
+        ['All','Need','Stock'].map(function(f){ return '<div class="pill-tab '+(filter===f?'active':'')+'" data-broadcast-type-filter="'+f+'">'+(f==='All'?'All':(f==='Need'?'Need it':'For sale'))+'</div>'; }).join('') +
+      '</div>' +
+      '<button class="btn btn-accent" data-open-modal="newBroadcast">'+ICONS.plus+' New request</button>' +
+    '</div>' +
+    (body || ('<div class="empty">'+ICONS.empty+'<div>No broadcasts yet. Send one when you need a phone urgently, or advertise stock straight from the Inventory tab.</div></div>'));
 }
 
 function renderSuppliers(){
@@ -1348,6 +1464,9 @@ function renderModal(){
   if(m.name==='respondBroadcast') return renderRespondModal(m);
   if(m.name==='bulkImport') return renderBulkImportModal();
   if(m.name==='notifSettings') return renderNotifModal();
+  if(m.name==='addConsignment' || m.name==='editConsignment') return renderConsignmentModal(m);
+  if(m.name==='logConsignmentPayment') return renderConsignmentPaymentModal(m);
+  if(m.name==='sendBroadcastAdvert') return renderBroadcastComposerModal(m);
   return '';
 }
 
@@ -1397,7 +1516,7 @@ function renderPhoneModal(m){
       '<div class="field"><label>Supplier / source label</label><input id="f-supplier" value="'+escapeAttr(p.supplier)+'" placeholder="e.g. UK import batch, or contact name"/></div>' +
       '<div class="field mono"><label>Cost price (₦)</label><input type="number" id="f-cost" value="'+(p.cost||'')+'"/></div>' +
       '<div class="field mono"><label>Selling price (₦)</label><input type="number" id="f-price" value="'+(p.price||'')+'"/></div>' +
-      '<div class="field"><label>Status</label><select id="f-status">'+['In Stock','Reserved','Sold','In Repair'].map(function(s){ return '<option '+(p.status===s?'selected':'')+'>'+s+'</option>'; }).join('')+'</select></div>' +
+      '<div class="field"><label>Status</label><select id="f-status">'+['In Stock','Reserved','Sold','In Repair','Consigned'].map(function(s){ return '<option '+(p.status===s?'selected':'')+'>'+s+'</option>'; }).join('')+'</select></div>' +
       '<div class="field"><label>Shelf location</label><input id="f-shelf" value="'+escapeAttr(p.shelf)+'"/></div>' +
       '<div class="field full"><label>Notes</label><textarea id="f-notes" rows="2">'+escapeHtml(p.notes)+'</textarea></div>' +
     '</div></div>' +
@@ -1493,6 +1612,110 @@ function renderSupplierModal(m){
     '</div></div></div>';
 }
 
+function renderConsignmentModal(m){
+  const editing = m && m.name === 'editConsignment';
+  const c = editing ? (state.consignments.find(function(x){ return x.id === m.payload.id; }) || {}) : {};
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
+    '<div class="modal-head"><h3>'+(editing?'Edit consignment':'Log phone given out on credit')+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">Track a phone a colleague collected from you to sell, and what they owe you for it.</p>' +
+      '<div class="form-grid">' +
+        '<div class="field"><label>Colleague contact (optional)</label><select id="cn-contact-id"><option value="">— none / type below —</option>' +
+          state.suppliers.map(function(s){ return '<option value="'+s.id+'" '+(c.contact_id===s.id?'selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('') +
+        '</select></div>' +
+        '<div class="field"><label>Colleague name</label><input id="cn-name" value="'+escapeAttr(c.contact_name||'')+'"/></div>' +
+        '<div class="field"><label>Colleague phone</label><input id="cn-phone" value="'+escapeAttr(c.contact_phone||'')+'"/></div>' +
+        '<div class="field"><label>Link to inventory phone (optional)</label><select id="cn-inventory-id"><option value="">— none / type below —</option>' +
+          state.inventory.filter(function(p){ return p.status==='In Stock' || p.id===c.inventory_id; }).map(function(p){ return '<option value="'+p.id+'" '+(c.inventory_id===p.id?'selected':'')+'>'+escapeHtml(p.model)+' · '+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</option>'; }).join('') +
+        '</select></div>' +
+        '<div class="field"><label>Phone model</label><input id="cn-model" value="'+escapeAttr(c.model||'')+'" placeholder="e.g. iPhone 13 Pro"/></div>' +
+        '<div class="field"><label>Storage</label><input id="cn-storage" value="'+escapeAttr(c.storage||'')+'"/></div>' +
+        '<div class="field"><label>Color</label><input id="cn-color" value="'+escapeAttr(c.color||'')+'"/></div>' +
+        '<div class="field mono"><label>IMEI (optional)</label><input id="cn-imei" value="'+escapeAttr(c.imei||'')+'"/></div>' +
+        '<div class="field"><label>Quantity</label><input type="number" min="1" id="cn-quantity" value="'+(c.quantity||1)+'"/></div>' +
+        '<div class="field mono"><label>Amount owed per unit (₦)</label><input type="number" id="cn-price" value="'+(c.unit_price||'')+'"/></div>' +
+        '<div class="field mono"><label>Already paid (₦)</label><input type="number" id="cn-paid" value="'+(c.amount_paid||0)+'"/></div>' +
+        '<div class="field"><label>Date given</label><input type="date" id="cn-date" value="'+(c.date_given||todayISO())+'"/></div>' +
+        '<div class="field"><label>Due date (optional)</label><input type="date" id="cn-due" value="'+(c.due_date||'')+'"/></div>' +
+        '<div class="field full"><label>Notes</label><textarea id="cn-notes" rows="2">'+escapeHtml(c.notes||'')+'</textarea></div>' +
+      '</div></div>' +
+    '<div class="modal-foot">' +
+      (editing ? ('<button class="btn btn-danger" data-delete-consignment="'+c.id+'">Delete</button>') : '') +
+      '<button class="btn" data-close-modal="1">Cancel</button>' +
+      '<button class="btn btn-accent" data-save-consignment="'+(editing?c.id:'')+'">'+(editing?'Save changes':'Save')+'</button>' +
+    '</div></div></div>';
+}
+
+function renderConsignmentPaymentModal(m){
+  const c = state.consignments.find(function(x){ return x.id === m.payload.id; });
+  if(!c) return '';
+  const balance = consignmentBalance(c);
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
+    '<div class="modal-head"><h3>Log payment — '+escapeHtml(c.contact_name)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">'+escapeHtml(c.model)+' — currently owes <strong style="color:var(--accent)">'+naira(balance)+'</strong>.</p>' +
+      '<div class="field mono"><label>Amount received now (₦)</label><input type="number" id="cnp-amount" value=""/></div>' +
+    '</div>' +
+    '<div class="modal-foot">' +
+      '<button class="btn btn-danger" data-mark-consignment="Returned" data-id="'+c.id+'">Mark returned (no sale)</button>' +
+      '<button class="btn" data-close-modal="1">Cancel</button>' +
+      '<button class="btn btn-accent" data-log-consignment-payment="'+c.id+'">Log payment</button>' +
+    '</div></div></div>';
+}
+
+function defaultBroadcastMessage(items){
+  const shopName = state.profile ? state.profile.shop_name : 'our shop';
+  const lines = items.map(function(p){ return '• '+p.model+(p.storage?(' '+p.storage):'')+(p.color?(' · '+p.color):'')+' — '+(p.price?naira(p.price):'price on request'); });
+  return 'New stock available at '+shopName+':\n\n'+lines.join('\n')+'\n\nReply or call to grab it!';
+}
+
+function renderBroadcastComposerModal(m){
+  const ids = state.broadcastComposer.ids || [];
+  const items = state.inventory.filter(function(p){ return ids.indexOf(p.id)>-1; });
+  if(!items.length) return '';
+  const target = state.broadcastComposer.target;
+  const shopName = state.profile ? state.profile.shop_name : '';
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:640px;">' +
+    '<div class="modal-head"><h3>'+ICONS.broadcast.replace('<svg ', '<svg style="width:16px;height:16px;vertical-align:-3px;margin-right:6px;" ')+'Send as broadcast</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;">' +
+        items.map(function(p){ return '<div style="display:flex;align-items:center;gap:8px;background:var(--panel-2);border:1px solid var(--border);border-radius:20px;padding:5px 12px 5px 5px;">'+
+          thumbHTML(p.image_url)+'<span style="font-size:12px;">'+escapeHtml(p.model)+(p.storage?(' · '+escapeHtml(p.storage)):'')+' — '+(p.price?naira(p.price):'no price')+'</span></div>'; }).join('') +
+      '</div>' +
+      '<div class="pill-tabs" style="margin-bottom:16px;">' +
+        '<div class="pill-tab '+(target==='network'?'active':'')+'" data-broadcast-target="network">📡 Open market (all dealers)</div>' +
+        '<div class="pill-tab '+(target==='contacts'?'active':'')+'" data-broadcast-target="contacts">💬 My saved contacts</div>' +
+      '</div>' +
+      (target==='network' ? (
+        '<p style="color:var(--text-dim);font-size:13px;">Every registered dealer on the network will instantly see these phones as a stock advert — no WhatsApp group needed.</p>' +
+        '<div class="field full"><label>Note (optional)</label><textarea id="bc-message" rows="3" placeholder="e.g. Fresh UK arrivals, negotiable">'+escapeHtml(state.broadcastComposer.message)+'</textarea></div>'
+      ) : (
+        '<p style="color:var(--text-dim);font-size:13px;">Pick which saved contacts to notify. Since they may not be on PhoneHub yet, this opens a pre-filled WhatsApp message straight to their saved number.</p>' +
+        (state.suppliers.length ? ('<div style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;margin-bottom:14px;">' +
+          state.suppliers.map(function(s){ return '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;border-bottom:1px solid var(--border);">' +
+            '<input type="checkbox" data-broadcast-contact="'+s.id+'" '+(state.broadcastComposer.selectedContactIds.indexOf(s.id)>-1?'checked':'')+'/>' +
+            '<span class="strong">'+escapeHtml(s.name)+'</span><span class="mono" style="color:var(--text-faint);font-size:11px;">'+escapeHtml(s.phone||'no phone saved')+'</span>' +
+          '</label>'; }).join('') +
+        '</div>') : '<div class="empty">No saved contacts yet — add one under Network → My contacts.</div>') +
+        '<div class="field full"><label>Message</label><textarea id="bc-message" rows="5" style="font-size:12.5px;">'+escapeHtml(state.broadcastComposer.message)+'</textarea></div>' +
+        (state.broadcastComposer.selectedContactIds.length ? ('<div style="margin-top:6px;"><div style="font-size:11.5px;color:var(--text-dim);margin-bottom:8px;">Tap each contact to open their WhatsApp chat with the message above:</div>' +
+          '<div style="display:flex;flex-direction:column;gap:6px;">' +
+          state.broadcastComposer.selectedContactIds.map(function(id){
+            const s = state.suppliers.find(function(x){ return x.id===id; });
+            if(!s) return '';
+            const digits = (s.phone||'').replace(/[^0-9+]/g,'');
+            const waText = encodeURIComponent(state.broadcastComposer.message || defaultBroadcastMessage(items));
+            return '<a class="btn btn-sm" target="_blank" rel="noopener" href="https://wa.me/'+escapeAttr(digits)+'?text='+waText+'">💬 Open WhatsApp — '+escapeHtml(s.name)+'</a>';
+          }).join('') +
+          '</div></div>') : '')
+      )) +
+    '</div>' +
+    '<div class="modal-foot">' +
+      '<button class="btn" data-close-modal="1">Close</button>' +
+      (target==='network' ? '<button class="btn btn-accent" id="sendNetworkBroadcastBtn">Send to network</button>' : '<button class="btn btn-accent" id="logContactBroadcastBtn">Save to broadcast history</button>') +
+    '</div></div></div>';
+}
+
 function renderBroadcastModal(){
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>Broadcast an urgent need</h3><button class="close-x" data-close-modal="1">×</button></div>' +
@@ -1554,7 +1777,79 @@ function attachHandlers(){
   app.querySelectorAll('[data-close-overlay]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-stop]').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); });
   app.querySelectorAll('[data-network-view]').forEach(function(el){ el.addEventListener('click', function(){ state.networkView = el.getAttribute('data-network-view'); render(); }); });
+  app.querySelectorAll('[data-broadcast-type-filter]').forEach(function(el){ el.addEventListener('click', function(){ state.networkBroadcastTypeFilter = el.getAttribute('data-broadcast-type-filter'); render(); }); });
   app.querySelectorAll('[data-toggle-status]').forEach(function(el){ el.addEventListener('click', function(){ toggleStatus(el.getAttribute('data-toggle-status')); }); });
+
+  /* ---- Inventory selection + "send as broadcast" ---- */
+  app.querySelectorAll('[data-select-inventory]').forEach(function(el){ el.addEventListener('change', function(){
+    const id = el.getAttribute('data-select-inventory');
+    const idx = state.selectedInventoryIds.indexOf(id);
+    if(el.checked && idx===-1) state.selectedInventoryIds.push(id);
+    else if(!el.checked && idx>-1) state.selectedInventoryIds.splice(idx,1);
+    render();
+  }); });
+  const clearSelectionBtn = document.getElementById('clearSelectionBtn');
+  if(clearSelectionBtn) clearSelectionBtn.addEventListener('click', function(){ state.selectedInventoryIds = []; render(); });
+  const selectAllInStockBtn = document.getElementById('selectAllInStockBtn');
+  if(selectAllInStockBtn) selectAllInStockBtn.addEventListener('click', function(){
+    state.selectedInventoryIds = state.inventory.filter(function(p){ return p.status==='In Stock'; }).map(function(p){ return p.id; });
+    render();
+  });
+  const broadcastSelectedBtn = document.getElementById('broadcastSelectedBtn');
+  if(broadcastSelectedBtn) broadcastSelectedBtn.addEventListener('click', function(){ openBroadcastComposer(state.selectedInventoryIds.slice()); });
+  app.querySelectorAll('[data-broadcast-single]').forEach(function(el){ el.addEventListener('click', function(){ openBroadcastComposer([el.getAttribute('data-broadcast-single')]); }); });
+
+  /* ---- Broadcast composer (send stock as a broadcast) ---- */
+  app.querySelectorAll('[data-broadcast-target]').forEach(function(el){ el.addEventListener('click', function(){
+    state.broadcastComposer.target = el.getAttribute('data-broadcast-target'); render();
+  }); });
+  const bcMessage = document.getElementById('bc-message');
+  if(bcMessage) bcMessage.addEventListener('input', function(e){
+    state.broadcastComposer.message = e.target.value; render();
+    const el = document.getElementById('bc-message'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = state.broadcastComposer.message.length; }
+  });
+  app.querySelectorAll('[data-broadcast-contact]').forEach(function(el){ el.addEventListener('change', function(){
+    const id = el.getAttribute('data-broadcast-contact');
+    const idx = state.broadcastComposer.selectedContactIds.indexOf(id);
+    if(el.checked && idx===-1) state.broadcastComposer.selectedContactIds.push(id);
+    else if(!el.checked && idx>-1) state.broadcastComposer.selectedContactIds.splice(idx,1);
+    render();
+  }); });
+  const sendNetworkBroadcastBtn = document.getElementById('sendNetworkBroadcastBtn');
+  if(sendNetworkBroadcastBtn) sendNetworkBroadcastBtn.addEventListener('click', async function(){
+    const ids = state.broadcastComposer.ids;
+    const items = state.inventory.filter(function(p){ return ids.indexOf(p.id)>-1; });
+    if(!items.length){ showToast('Nothing to broadcast', true); return; }
+    const itemsPayload = items.map(function(p){ return { inventory_id:p.id, model:p.model, storage:p.storage, color:p.color, condition:p.condition, price:p.price, image_url:p.image_url }; });
+    const data = {
+      dealer_id: state.profile.id, type:'Stock', status:'Open',
+      model: items.length===1 ? items[0].model : (items.length+' phones'),
+      items: itemsPayload, message: state.broadcastComposer.message || null
+    };
+    try{
+      const { error } = await sb.from('broadcasts').insert(data);
+      if(error) throw error;
+      await refreshAll();
+      state.selectedInventoryIds = []; state.broadcastComposer = {ids:[], target:'network', message:'', selectedContactIds:[]};
+      closeModal(); showToast('Stock advert sent to the network');
+    } catch(e){ showToast('Broadcast failed: '+(e.message||e), true); render(); }
+  });
+  const logContactBroadcastBtn = document.getElementById('logContactBroadcastBtn');
+  if(logContactBroadcastBtn) logContactBroadcastBtn.addEventListener('click', async function(){
+    const ids = state.broadcastComposer.ids;
+    const items = state.inventory.filter(function(p){ return ids.indexOf(p.id)>-1; });
+    const contactIds = state.broadcastComposer.selectedContactIds;
+    if(!contactIds.length){ showToast('Select at least one saved contact', true); return; }
+    const names = contactIds.map(function(id){ const s = state.suppliers.find(function(x){ return x.id===id; }); return s?s.name:''; }).filter(Boolean);
+    const itemsPayload = items.map(function(p){ return { inventory_id:p.id, model:p.model, storage:p.storage, color:p.color, condition:p.condition, price:p.price, image_url:p.image_url }; });
+    try{
+      const { error } = await sb.from('stock_broadcast_log').insert({
+        dealer_id: state.profile.id, contact_names: names.join(', '), items: itemsPayload, message: state.broadcastComposer.message || null
+      });
+      if(error) throw error;
+      showToast('Saved — tap each contact above to open WhatsApp with the message');
+    } catch(e){ showToast('Could not save: '+(e.message||e), true); render(); }
+  });
 
   const dealerSearch = document.getElementById('dealerSearch');
   if(dealerSearch) dealerSearch.addEventListener('input', function(e){
@@ -1690,6 +1985,86 @@ function attachHandlers(){
     render();
   }); });
 
+  /* ---- Consignments (phones out with colleagues on credit) ---- */
+  const cnContactId = document.getElementById('cn-contact-id');
+  if(cnContactId) cnContactId.addEventListener('change', function(){
+    const s = state.suppliers.find(function(x){ return x.id === cnContactId.value; });
+    if(s){
+      const nameEl = document.getElementById('cn-name'), phoneEl = document.getElementById('cn-phone');
+      if(nameEl) nameEl.value = s.name;
+      if(phoneEl) phoneEl.value = s.phone || '';
+    }
+  });
+  const cnInventoryId = document.getElementById('cn-inventory-id');
+  if(cnInventoryId) cnInventoryId.addEventListener('change', function(){
+    const p = state.inventory.find(function(x){ return x.id === cnInventoryId.value; });
+    if(p){
+      const set = function(id,v){ const el=document.getElementById(id); if(el) el.value = v||''; };
+      set('cn-model', p.model); set('cn-storage', p.storage); set('cn-color', p.color); set('cn-imei', p.imei);
+      if(!val('cn-price') && p.price) set('cn-price', p.price);
+    }
+  });
+
+  app.querySelectorAll('[data-save-consignment]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-save-consignment');
+    const contactName = val('cn-name');
+    const model = val('cn-model');
+    if(!contactName){ showToast('Colleague name is required', true); return; }
+    if(!model){ showToast('Phone model is required', true); return; }
+    const data = {
+      contact_id: val('cn-contact-id')||null, contact_name: contactName, contact_phone: val('cn-phone'),
+      inventory_id: val('cn-inventory-id')||null, model: model, storage: val('cn-storage'), color: val('cn-color'), imei: val('cn-imei')||null,
+      quantity: Number(val('cn-quantity'))||1, unit_price: Number(val('cn-price'))||0, amount_paid: Number(val('cn-paid'))||0,
+      date_given: val('cn-date')||todayISO(), due_date: val('cn-due')||null, notes: val('cn-notes')
+    };
+    const total = data.unit_price*data.quantity;
+    data.status = data.amount_paid<=0 ? 'Out' : (data.amount_paid>=total ? 'Settled' : 'Partially Paid');
+    try{
+      if(id){ const { error } = await sb.from('consignments').update(data).eq('id', id); if(error) throw error; }
+      else { data.dealer_id = state.profile.id; const { error } = await sb.from('consignments').insert(data); if(error) throw error; }
+      await refreshAll();
+      closeModal(); showToast(id?'Consignment updated':'Logged — you\'ll see it under Owed');
+    } catch(e){ showToast('Save failed: '+(e.message||e), true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-delete-consignment]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-delete-consignment');
+    try{
+      const { error } = await sb.from('consignments').delete().eq('id', id);
+      if(error) throw error;
+      await refreshAll();
+      closeModal(); showToast('Consignment removed');
+    } catch(e){ showToast('Delete failed: '+(e.message||e), true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-log-consignment-payment]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-log-consignment-payment');
+    const c = state.consignments.find(function(x){ return x.id===id; });
+    if(!c) return;
+    const amount = Number(val('cnp-amount'))||0;
+    if(amount<=0){ showToast('Enter an amount received', true); return; }
+    const newPaid = (Number(c.amount_paid)||0) + amount;
+    const total = (Number(c.unit_price)||0)*(Number(c.quantity)||1);
+    const newStatus = newPaid >= total ? 'Settled' : 'Partially Paid';
+    try{
+      const { error } = await sb.from('consignments').update({ amount_paid:newPaid, status:newStatus }).eq('id', id);
+      if(error) throw error;
+      await refreshAll();
+      closeModal(); showToast(newStatus==='Settled' ? 'Fully paid — marked as settled' : 'Payment logged');
+    } catch(e){ showToast('Failed: '+(e.message||e), true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-mark-consignment]').forEach(function(el){ el.addEventListener('click', async function(){
+    const status = el.getAttribute('data-mark-consignment');
+    const id = el.getAttribute('data-id');
+    try{
+      const { error } = await sb.from('consignments').update({ status:status }).eq('id', id);
+      if(error) throw error;
+      await refreshAll();
+      closeModal(); showToast('Marked as '+status.toLowerCase());
+    } catch(e){ showToast('Failed: '+(e.message||e), true); render(); }
+  }); });
+
   app.querySelectorAll('[data-print-invoice]').forEach(function(el){ el.addEventListener('click', function(){
     const id = el.getAttribute('data-print-invoice');
     const sale = state.sales.find(function(s){ return s.id===id; });
@@ -1709,7 +2084,7 @@ function attachHandlers(){
   app.querySelectorAll('[data-save-broadcast]').forEach(function(el){ el.addEventListener('click', async function(){
     const model = val('b-model');
     if(!model){ showToast('Enter a phone model', true); return; }
-    const data = { dealer_id: state.profile.id, model:model, storage:val('b-variant'), urgency: val('b-urgency')||'Normal', status:'Open' };
+    const data = { dealer_id: state.profile.id, type:'Need', model:model, storage:val('b-variant'), urgency: val('b-urgency')||'Normal', status:'Open' };
     try{
       const { error } = await sb.from('broadcasts').insert(data);
       if(error) throw error;

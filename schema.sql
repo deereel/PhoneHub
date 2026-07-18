@@ -1,3 +1,5 @@
+schema.sql
+
 -- ============================================================
 -- PhoneHub Pro — Supabase Schema (Phase 2, multi-tenant)
 -- ============================================================
@@ -97,7 +99,7 @@ create table if not exists inventory (
   purchase_date date,
   cost numeric,
   price numeric,
-  status text not null default 'In Stock' check (status in ('In Stock','Reserved','Sold','In Repair')),
+  status text not null default 'In Stock' check (status in ('In Stock','Reserved','Sold','In Repair','Consigned')),
   quantity int not null default 1,
   shelf text,
   notes text,
@@ -315,16 +317,20 @@ where i.supplier_id is null
   and lower(trim(i.supplier)) = lower(trim(s.name));
 
 -- ------------------------------------------------------------
--- 6. BROADCASTS + RESPONSES  (network-wide "need this phone urgently")
+-- 6. BROADCASTS + RESPONSES  (network-wide "need this phone urgently", or a
+--    "Stock" advert for one or more inventory items being offered for sale)
 -- ------------------------------------------------------------
 create table if not exists broadcasts (
   id uuid primary key default gen_random_uuid(),
-  dealer_id uuid not null references dealers(id) on delete cascade,   -- who's asking
+  dealer_id uuid not null references dealers(id) on delete cascade,   -- who's asking / advertising
   date date not null default current_date,
-  model text not null,
+  type text not null default 'Need' check (type in ('Need','Stock')),
+  model text not null,        -- for type='Stock' with multiple items, a summary label (e.g. "3 phones")
   storage text,
   color text,
   urgency text,
+  items jsonb not null default '[]'::jsonb,   -- type='Stock': [{inventory_id, model, storage, color, condition, price, image_url}, ...]
+  message text,                                -- optional free-text note shown with a Stock advert
   status text not null default 'Open' check (status in ('Open','Closed')),
   created_at timestamptz not null default now()
 );
@@ -352,6 +358,58 @@ alter table broadcast_responses enable row level security;
 create policy "broadcast_responses_select_all" on broadcast_responses for select
   using (auth.uid() is not null);
 create policy "broadcast_responses_insert_own" on broadcast_responses for insert
+  with check (dealer_id = auth.uid());
+
+-- ------------------------------------------------------------
+-- 6b. CONSIGNMENTS  ("Owed to you" — phones colleagues collected from you on
+--     credit, and what they still owe. A private ledger, not network-visible.)
+-- ------------------------------------------------------------
+create table if not exists consignments (
+  id uuid primary key default gen_random_uuid(),
+  dealer_id uuid not null references dealers(id) on delete cascade,
+  contact_id uuid references suppliers(id) on delete set null,
+  contact_name text not null,
+  contact_phone text,
+  inventory_id uuid references inventory(id) on delete set null,
+  model text not null,
+  storage text,
+  color text,
+  imei text,
+  quantity int not null default 1,
+  unit_price numeric not null default 0,
+  amount_paid numeric not null default 0,
+  status text not null default 'Out' check (status in ('Out','Partially Paid','Settled','Returned')),
+  date_given date not null default current_date,
+  due_date date,
+  notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists idx_consignments_dealer on consignments(dealer_id);
+alter table consignments enable row level security;
+
+create policy "consignments_all_own" on consignments for all
+  using (dealer_id = auth.uid())
+  with check (dealer_id = auth.uid());
+create policy "consignments_select_admin" on consignments for select
+  using (is_admin());
+
+-- ------------------------------------------------------------
+-- 6c. STOCK BROADCAST LOG  (private record of stock adverts sent straight to
+--     saved contacts via WhatsApp — never visible to other dealers)
+-- ------------------------------------------------------------
+create table if not exists stock_broadcast_log (
+  id uuid primary key default gen_random_uuid(),
+  dealer_id uuid not null references dealers(id) on delete cascade,
+  contact_names text,
+  items jsonb not null default '[]'::jsonb,
+  message text,
+  created_at timestamptz not null default now()
+);
+alter table stock_broadcast_log enable row level security;
+
+create policy "stock_broadcast_log_all_own" on stock_broadcast_log for all
+  using (dealer_id = auth.uid())
   with check (dealer_id = auth.uid());
 
 -- ------------------------------------------------------------
