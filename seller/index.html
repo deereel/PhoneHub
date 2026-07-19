@@ -264,6 +264,7 @@ let state = {
   adminDealers:[], adminInventory:[], adminSales:[],
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
   networkView:'search', dealerSearchQuery:'', networkOrder:[], networkVisibleCount:20,
+  networkDealerFilter:null, dealerFilterQuery:'', dealerFilterOpen:false,
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'', bulkImportSupplierId:'',
   pushStatus:'unsupported', // unsupported | off | prompting | on | denied
   mobileMenuOpen:false,
@@ -1323,15 +1324,48 @@ function renderNetwork(){
     (state.networkView==='suppliers' ? renderSuppliers() : '');
 }
 
+function uniqueNetworkDealers(){
+  const seen = {}; const list = [];
+  state.dealerNetwork.forEach(function(d){
+    if(!seen[d.dealer_id]){ seen[d.dealer_id]=true; list.push({id:d.dealer_id, name:d.dealer_name}); }
+  });
+  return list.sort(function(a,b){ return String(a.name).localeCompare(String(b.name)); });
+}
+
+function renderDealerFilterDropdown(){
+  const dealers = uniqueNetworkDealers();
+  const q = state.dealerFilterQuery.toLowerCase();
+  const selected = state.networkDealerFilter ? dealers.find(function(d){ return d.id===state.networkDealerFilter; }) : null;
+  const filtered = q ? dealers.filter(function(d){ return String(d.name||'').toLowerCase().includes(q); }) : dealers;
+  return '<div style="position:relative;max-width:280px;margin-bottom:12px;">' +
+    '<input id="dealerFilterInput" autocomplete="off" placeholder="Filter by dealer…" value="'+escapeAttr(selected?selected.name:state.dealerFilterQuery)+'" '+(selected?'readonly':'')+' ' +
+      'style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 30px 9px 12px;color:var(--text);font-family:var(--font-body);font-size:13px;outline:none;"/>' +
+    (selected ? ('<button id="clearDealerFilterBtn" title="Clear dealer filter" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:17px;line-height:1;">×</button>') :
+      '<span style="position:absolute;right:10px;top:50%;transform:translateY(-50%);color:var(--text-faint);pointer-events:none;font-size:12px;">▾</span>') +
+    (state.dealerFilterOpen && !selected ? (
+      '<div style="position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:220px;overflow-y:auto;z-index:60;box-shadow:0 12px 28px rgba(0,0,0,.45);">' +
+        (filtered.length ? filtered.map(function(d){ return '<div class="search-row" data-select-dealer-filter="'+d.id+'">'+
+            '<span class="sr-main">'+escapeHtml(d.name)+(d.id===state.profile.id?' <span style="color:var(--text-faint);font-weight:400;">(you)</span>':'')+'</span>' +
+          '</div>'; }).join('') :
+          '<div style="padding:12px 14px;color:var(--text-faint);font-size:12.5px;">No dealers match</div>') +
+      '</div>'
+    ) : '') +
+  '</div>';
+}
+
 function renderNetworkSearch(){
   const q = state.dealerSearchQuery.toLowerCase();
-  let list, isSearching = !!q, showLoadMore = false, totalCount = 0;
+  const dealerFilterId = state.networkDealerFilter;
+  const isFiltered = !!q || !!dealerFilterId;
+  let list, showLoadMore = false, totalCount = 0;
 
-  if(isSearching){
-    list = state.dealerNetwork.filter(function(d){ return String(d.model||'').toLowerCase().includes(q); })
+  let base = dealerFilterId ? state.dealerNetwork.filter(function(d){ return d.dealer_id===dealerFilterId; }) : state.dealerNetwork;
+
+  if(isFiltered){
+    list = base.filter(function(d){ return !q || String(d.model||'').toLowerCase().includes(q); })
       .slice().sort(function(a,b){ return (Number(a.price)||0)-(Number(b.price)||0); });
   } else {
-    const byId = {}; state.dealerNetwork.forEach(function(d){ byId[d.id] = d; });
+    const byId = {}; base.forEach(function(d){ byId[d.id] = d; });
     const ordered = state.networkOrder.map(function(id){ return byId[id]; }).filter(Boolean);
     totalCount = ordered.length;
     list = ordered.slice(0, state.networkVisibleCount);
@@ -1339,16 +1373,17 @@ function renderNetworkSearch(){
   }
 
   return '<div class="section"><div class="section-body">' +
+      renderDealerFilterDropdown() +
       '<input id="dealerSearch" placeholder="e.g. S24 Ultra, iPhone 15…" value="'+escapeAttr(state.dealerSearchQuery)+'" ' +
       'style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;color:var(--text);font-family:var(--font-mono);font-size:13px;outline:none;margin-bottom:10px;"/>' +
-      (!isSearching && totalCount>0 ? ('<div style="font-size:11.5px;color:var(--text-faint);margin-bottom:14px;">Showing '+list.length+' of '+totalCount+' network listings, in random order — search above to find something specific.</div>') : '') +
+      (!isFiltered && totalCount>0 ? ('<div style="font-size:11.5px;color:var(--text-faint);margin-bottom:14px;">Showing '+list.length+' of '+totalCount+' network listings, in random order — search above to find something specific.</div>') : '') +
       '<div class="table-scroll">' +
       (list.length ? ('<table><thead><tr><th>Img</th><th>Model</th><th>Dealer</th><th>Price</th><th>Updated</th><th></th></tr></thead><tbody>' +
-        list.map(function(d,i){ return '<tr>' +
+        list.map(function(d,i){ return '<tr data-view-network-item="'+d.id+'" style="cursor:pointer;">' +
           '<td>'+thumbHTML(d.image_url)+'</td>' +
           '<td class="strong">'+escapeHtml(d.model)+(d.storage?(' · '+escapeHtml(d.storage)):'')+(d.color?(' · '+escapeHtml(d.color)):'')+(d.condition==='Used'?(' · '+d.battery+'% batt'):'')+'</td>' +
           '<td>'+escapeHtml(d.dealer_name)+(d.dealer_id===state.profile.id?' <span style="font-size:10px;color:var(--text-faint)">(you)</span>':'')+'<br>'+reputationBadgeHTML(d.dealer_id)+'</td>' +
-          '<td class="mono" style="color:'+(isSearching && i===0?'var(--success)':'var(--text)')+'">'+naira(d.price)+(isSearching && i===0?' <span style="font-size:10px">· lowest</span>':'')+'</td>' +
+          '<td class="mono" style="color:'+(isFiltered && i===0?'var(--success)':'var(--text)')+'">'+naira(d.price)+(isFiltered && i===0?' <span style="font-size:10px">· lowest</span>':'')+'</td>' +
           '<td class="mono" style="font-size:11px;color:var(--text-faint)">'+new Date(d.updated_at).toLocaleDateString()+'</td>' +
           '<td><a class="linklike" href="tel:'+escapeAttr(d.dealer_phone)+'">'+escapeHtml(d.dealer_phone||'—')+'</a></td>' +
         '</tr>'; }).join('') +
@@ -1426,9 +1461,13 @@ function renderBroadcasts(){
       '</div></div>';
   }).join('');
 
+  const openNeedCount = state.broadcasts.filter(function(b){ return b.status==='Open' && (b.type||'Need')==='Need'; }).length;
+  const openStockCount = state.broadcasts.filter(function(b){ return b.status==='Open' && (b.type||'Need')==='Stock'; }).length;
+  const pillCounts = { All: openNeedCount+openStockCount, Need: openNeedCount, Stock: openStockCount };
+
   return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">' +
       '<div class="pill-tabs" style="margin:0;">' +
-        ['All','Need','Stock'].map(function(f){ return '<div class="pill-tab '+(filter===f?'active':'')+'" data-broadcast-type-filter="'+f+'">'+(f==='All'?'All':(f==='Need'?'Need it':'For sale'))+'</div>'; }).join('') +
+        ['All','Need','Stock'].map(function(f){ return '<div class="pill-tab '+(filter===f?'active':'')+'" data-broadcast-type-filter="'+f+'">'+(f==='All'?'All':(f==='Need'?'Need it':'For sale'))+pillBadge(pillCounts[f])+'</div>'; }).join('') +
       '</div>' +
       '<button class="btn btn-accent" data-open-modal="newBroadcast">'+ICONS.plus+' New request</button>' +
     '</div>' +
@@ -1498,7 +1537,29 @@ function renderModal(){
   if(m.name==='logConsignmentPayment') return renderConsignmentPaymentModal(m);
   if(m.name==='sendBroadcastAdvert') return renderBroadcastComposerModal(m);
   if(m.name==='viewStockItem') return renderStockItemModal(m);
+  if(m.name==='viewNetworkItem') return renderNetworkItemModal(m);
   return '';
+}
+
+function renderNetworkItemModal(m){
+  const d = state.dealerNetwork.find(function(x){ return x.id === m.payload.id; });
+  if(!d) return '';
+  const isMine = d.dealer_id === state.profile.id;
+  const row = function(k,v){ return '<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="color:var(--text-dim);">'+k+'</span><span class="strong">'+v+'</span></div>'; };
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
+    '<div class="modal-head"><h3>'+escapeHtml(d.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      (d.image_url ? ('<img src="'+escapeAttr(d.image_url)+'" style="width:100%;max-height:320px;object-fit:cover;border-radius:10px;margin-bottom:16px;"/>') :
+        ('<div class="thumb-placeholder" style="width:100%;height:200px;border-radius:10px;margin-bottom:16px;">'+ICONS.inventory+'</div>')) +
+      row('Storage', escapeHtml(d.storage||'—')) +
+      row('Color', escapeHtml(d.color||'—')) +
+      row('Condition', escapeHtml(d.condition||'—')+(d.condition==='Used' && d.battery!=null?(' · '+d.battery+'% battery'):'')) +
+      row('Price', '<span style="color:var(--accent);font-size:16px;">'+naira(d.price)+'</span>') +
+      row('Dealer', escapeHtml(d.dealer_name)+(isMine?' <span style="color:var(--text-faint);">(you)</span>':'')) +
+      row('Last updated', new Date(d.updated_at).toLocaleDateString()) +
+    '</div>' +
+    (!isMine && d.dealer_phone ? ('<div class="modal-foot"><a class="btn btn-accent" href="tel:'+escapeAttr(d.dealer_phone)+'" style="width:100%;justify-content:center;">📞 Contact '+escapeHtml(d.dealer_name)+'</a></div>') : '') +
+  '</div></div>';
 }
 
 function renderStockItemModal(m){
@@ -1921,6 +1982,32 @@ function attachHandlers(){
     state.dealerSearchQuery = e.target.value; render();
     const el = document.getElementById('dealerSearch'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = state.dealerSearchQuery.length; }
   });
+
+  const dealerFilterInput = document.getElementById('dealerFilterInput');
+  if(dealerFilterInput){
+    dealerFilterInput.addEventListener('focus', function(){ state.dealerFilterOpen = true; render(); });
+    dealerFilterInput.addEventListener('input', function(e){
+      state.dealerFilterQuery = e.target.value; state.dealerFilterOpen = true; render();
+      const el = document.getElementById('dealerFilterInput'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = state.dealerFilterQuery.length; }
+    });
+    dealerFilterInput.addEventListener('blur', function(){ setTimeout(function(){ state.dealerFilterOpen = false; render(); }, 150); });
+  }
+  app.querySelectorAll('[data-select-dealer-filter]').forEach(function(el){
+    el.addEventListener('mousedown', function(e){ e.preventDefault(); });
+    el.addEventListener('click', function(){
+      state.networkDealerFilter = el.getAttribute('data-select-dealer-filter');
+      state.dealerFilterQuery = ''; state.dealerFilterOpen = false; render();
+    });
+  });
+  const clearDealerFilterBtn = document.getElementById('clearDealerFilterBtn');
+  if(clearDealerFilterBtn) clearDealerFilterBtn.addEventListener('click', function(){
+    state.networkDealerFilter = null; state.dealerFilterQuery = ''; render();
+  });
+
+  app.querySelectorAll('[data-view-network-item]').forEach(function(el){ el.addEventListener('click', function(e){
+    if(e.target.closest('a')) return;
+    openModal('viewNetworkItem', { id: el.getAttribute('data-view-network-item') });
+  }); });
 
   const networkLoadMoreBtn = document.getElementById('networkLoadMoreBtn');
   if(networkLoadMoreBtn) networkLoadMoreBtn.addEventListener('click', function(){
