@@ -254,6 +254,7 @@ const HARDCODED_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3
 const VAPID_PUBLIC_KEY = 'BBaI8oRyneg29btIHbptXiW5JA8oAXDk5V3MehmsvJXHvsQXn97QVCLTvwiKJI4QOIvp8S31krRlw0exiAJ-KWg';
 
 let sb = null;
+let dealerFilterBlurTimer = null;
 
 let state = {
   stage:'loading', // loading -> configure -> auth -> app
@@ -1986,6 +1987,7 @@ function attachHandlers(){
   const dealerFilterInput = document.getElementById('dealerFilterInput');
   if(dealerFilterInput){
     dealerFilterInput.addEventListener('focus', function(){
+      if(dealerFilterBlurTimer){ clearTimeout(dealerFilterBlurTimer); dealerFilterBlurTimer = null; }
       if(!state.dealerFilterOpen){
         state.dealerFilterOpen = true; render();
         const el = document.getElementById('dealerFilterInput');
@@ -1993,20 +1995,26 @@ function attachHandlers(){
       }
     });
     dealerFilterInput.addEventListener('input', function(e){
+      if(dealerFilterBlurTimer){ clearTimeout(dealerFilterBlurTimer); dealerFilterBlurTimer = null; }
       state.dealerFilterQuery = e.target.value; state.dealerFilterOpen = true; render();
       const el = document.getElementById('dealerFilterInput'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = state.dealerFilterQuery.length; }
     });
-    dealerFilterInput.addEventListener('blur', function(){ setTimeout(function(){ state.dealerFilterOpen = false; render(); }, 150); });
+    dealerFilterInput.addEventListener('blur', function(){
+      if(dealerFilterBlurTimer) clearTimeout(dealerFilterBlurTimer);
+      dealerFilterBlurTimer = setTimeout(function(){ dealerFilterBlurTimer = null; state.dealerFilterOpen = false; render(); }, 150);
+    });
   }
   app.querySelectorAll('[data-select-dealer-filter]').forEach(function(el){
     el.addEventListener('mousedown', function(e){ e.preventDefault(); });
     el.addEventListener('click', function(){
+      if(dealerFilterBlurTimer){ clearTimeout(dealerFilterBlurTimer); dealerFilterBlurTimer = null; }
       state.networkDealerFilter = el.getAttribute('data-select-dealer-filter');
       state.dealerFilterQuery = ''; state.dealerFilterOpen = false; render();
     });
   });
   const clearDealerFilterBtn = document.getElementById('clearDealerFilterBtn');
   if(clearDealerFilterBtn) clearDealerFilterBtn.addEventListener('click', function(){
+    if(dealerFilterBlurTimer){ clearTimeout(dealerFilterBlurTimer); dealerFilterBlurTimer = null; }
     state.networkDealerFilter = null; state.dealerFilterQuery = ''; render();
   });
 
