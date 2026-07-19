@@ -146,7 +146,7 @@ let state = {
   stage:'loading', // loading -> configure -> pickShop -> shop
   configError:null, configuring:false, urlInput:'', keyInput:'',
   shops:[], selectedShop:null,
-  tab:'shop', inventory:[], q:'', condFilter:'All', maxPrice:'', modal:null, toast:null, toastErr:false,
+  tab:'shop', inventory:[], q:'', condFilter:'All', maxPrice:'', categoryFilter:'All', modal:null, toast:null, toastErr:false,
   lookupPhone:'', lookupDone:false, lookupResults:[]
 };
 
@@ -227,7 +227,12 @@ function closeModal(){ state.modal=null; render(); }
 
 function catalog(){
   return state.inventory.filter(function(p){ return p.status==='In Stock'; }).filter(function(p){
-    if(state.q && !((String(p.model||'').toLowerCase().includes(state.q.toLowerCase())) || (String(p.color||'').toLowerCase().includes(state.q.toLowerCase())))) return false;
+    if(state.categoryFilter!=='All' && (p.item_type||'Phone')!==state.categoryFilter) return false;
+    if(state.q){
+      const q = state.q.toLowerCase();
+      const hay = [p.model,p.color,p.brand,p.cpu].filter(Boolean).join(' ').toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
     if(state.condFilter!=='All' && p.condition!==state.condFilter) return false;
     if(state.maxPrice && Number(p.price) > Number(state.maxPrice)) return false;
     return true;
@@ -309,20 +314,28 @@ function renderTab(){
 
 function renderShop(){
   const items = catalog();
-  return '<div class="hero"><h1>Find your next phone</h1><p>Everything below is verified and in stock at '+escapeHtml(state.selectedShop.shop_name)+' right now.</p></div>' +
+  const catCounts = { All: state.inventory.filter(function(p){return p.status==='In Stock';}).length,
+    Phone: state.inventory.filter(function(p){return p.status==='In Stock' && (p.item_type||'Phone')==='Phone';}).length,
+    Laptop: state.inventory.filter(function(p){return p.status==='In Stock' && p.item_type==='Laptop';}).length };
+  return '<div class="hero"><h1>Find your next phone or laptop</h1><p>Everything below is verified and in stock at '+escapeHtml(state.selectedShop.shop_name)+' right now.</p></div>' +
+    '<div class="filter-row" style="margin-bottom:10px;">' +
+      ['All','Phone','Laptop'].map(function(c){ return '<span class="nav-tab '+(state.categoryFilter===c?'active':'')+'" data-category-filter="'+c+'" style="cursor:pointer;">'+(c==='All'?'All':(c==='Phone'?'📱 Phones':'💻 Laptops'))+' ('+catCounts[c]+')</span>'; }).join('') +
+    '</div>' +
     '<div class="filter-row">' +
-      '<input id="q" placeholder="Search model or color…" value="'+escapeHtml(state.q)+'"/>' +
+      '<input id="q" placeholder="Search model, brand, or color…" value="'+escapeHtml(state.q)+'"/>' +
       '<select id="cond"><option '+(state.condFilter==='All'?'selected':'')+'>All</option><option '+(state.condFilter==='New'?'selected':'')+'>New</option><option '+(state.condFilter==='Used'?'selected':'')+'>Used</option></select>' +
       '<input id="maxPrice" type="number" placeholder="Max budget (₦)" value="'+escapeHtml(state.maxPrice)+'"/>' +
     '</div>' +
     '<div class="grid">' + items.map(function(p){
+      const isLaptop = (p.item_type||'Phone')==='Laptop';
+      const spec = isLaptop ? [p.cpu,p.ram,p.storage].filter(Boolean).join(' · ') : [p.storage,p.color].filter(Boolean).join(' · ');
       return '<div class="tag-card" data-view-phone="'+p.id+'">' +
         (p.image_url ? ('<img class="tag-photo" src="'+escapeAttr(p.image_url)+'" loading="lazy" alt="'+escapeAttr(p.model)+'"/>') : '') +
         '<span class="tag-condition '+(p.condition==='New'?'new':'used')+'">'+escapeHtml(p.condition)+'</span>' +
-        '<div class="tag-model">'+escapeHtml(p.model)+'</div>' +
-        '<div class="tag-spec">'+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</div>' +
+        '<div class="tag-model">'+(isLaptop && p.brand ? escapeHtml(p.brand)+' ' : '')+escapeHtml(p.model)+'</div>' +
+        '<div class="tag-spec">'+escapeHtml(spec)+'</div>' +
         '<div class="tag-price">'+naira(p.price)+'</div>' +
-        (p.condition==='Used' ? ('<div class="tag-battery">Battery health '+p.battery+'%</div>') : '') +
+        (p.condition==='Used' && p.battery!=null ? ('<div class="tag-battery">Battery health '+p.battery+'%</div>') : '') +
       '</div>';
     }).join('') + '</div>' +
     (!items.length ? ('<div class="empty"><div class="big">Nothing matches right now</div>Try a wider budget, or tell us what you\'re looking for.<br/><br/>' +
@@ -332,18 +345,27 @@ function renderShop(){
 function renderModal(){
   const p = state.inventory.find(function(x){ return x.id===state.modal.payload.id; });
   if(!p) return '';
+  const isLaptop = (p.item_type||'Phone')==='Laptop';
   return '<div class="overlay" data-close-overlay="1"><div class="sheet" data-stop="1">' +
     '<button class="close-x" data-close-modal="1">×</button>' +
     (p.image_url ? ('<img class="sheet-photo" src="'+escapeAttr(p.image_url)+'" alt="'+escapeAttr(p.model)+'"/>') : '') +
     '<span class="tag-condition '+(p.condition==='New'?'new':'used')+'">'+escapeHtml(p.condition)+'</span>' +
-    '<h2>'+escapeHtml(p.model)+'</h2>' +
+    '<h2>'+(isLaptop && p.brand ? escapeHtml(p.brand)+' ' : '')+escapeHtml(p.model)+'</h2>' +
     '<div class="price-big">'+naira(p.price)+'</div>' +
-    '<div class="detail-row"><span class="k">Storage</span><span class="v">'+escapeHtml(p.storage)+'</span></div>' +
+    (isLaptop ? (
+      '<div class="detail-row"><span class="k">Processor</span><span class="v">'+escapeHtml(p.cpu||'—')+'</span></div>' +
+      '<div class="detail-row"><span class="k">RAM</span><span class="v">'+escapeHtml(p.ram||'—')+'</span></div>' +
+      '<div class="detail-row"><span class="k">Storage</span><span class="v">'+escapeHtml(p.storage||'—')+'</span></div>' +
+      '<div class="detail-row"><span class="k">Screen</span><span class="v">'+escapeHtml(p.screen_size||'—')+'</span></div>' +
+      (p.gpu ? ('<div class="detail-row"><span class="k">Graphics</span><span class="v">'+escapeHtml(p.gpu)+'</span></div>') : '')
+    ) : (
+      '<div class="detail-row"><span class="k">Storage</span><span class="v">'+escapeHtml(p.storage)+'</span></div>'
+    )) +
     '<div class="detail-row"><span class="k">Color</span><span class="v">'+escapeHtml(p.color)+'</span></div>' +
-    (p.condition==='Used' ? ('<div class="detail-row"><span class="k">Battery health</span><span class="v">'+p.battery+'%</span></div>') : '') +
+    (p.condition==='Used' && p.battery!=null ? ('<div class="detail-row"><span class="k">Battery health</span><span class="v">'+p.battery+'%</span></div>') : '') +
     '<div class="detail-row"><span class="k">Warranty</span><span class="v">Included on purchase</span></div>' +
     '<div class="detail-row"><span class="k">Availability</span><span class="v" style="color:var(--success)">In stock now</span></div>' +
-    '<button class="btn btn-primary btn-block" style="margin-top:18px;" data-tab="request" data-close-modal="1">Ask about this phone</button>' +
+    '<button class="btn btn-primary btn-block" style="margin-top:18px;" data-tab="request" data-close-modal="1">Ask about this '+(isLaptop?'laptop':'phone')+'</button>' +
   '</div></div>';
 }
 
@@ -351,7 +373,7 @@ function renderRequestForm(){
   return '<div class="hero"><h1>Can\'t find it?</h1><p>Tell '+escapeHtml(state.selectedShop.shop_name)+' what you want — they\'ll reach out the moment it\'s available, sometimes from their trusted dealer network.</p></div>' +
     '<div class="form-card">' +
       '<div class="two-col"><div class="field"><label>Your name</label><input id="r-name"/></div><div class="field"><label>Phone number</label><input id="r-phone"/></div></div>' +
-      '<div class="two-col"><div class="field"><label>Phone model</label><input id="r-model" placeholder="e.g. Google Pixel 9"/></div><div class="field"><label>Storage / color (optional)</label><input id="r-variant" placeholder="256GB, Black"/></div></div>' +
+      '<div class="two-col"><div class="field"><label>Phone or laptop model</label><input id="r-model" placeholder="e.g. Google Pixel 9, or HP EliteBook 840"/></div><div class="field"><label>Storage / color / spec (optional)</label><input id="r-variant" placeholder="256GB, Black, 16GB RAM…"/></div></div>' +
       '<div class="field"><label>Your budget (₦, optional)</label><input type="number" id="r-budget"/></div>' +
       '<div class="field"><label>Anything else?</label><textarea id="r-notes" rows="2"></textarea></div>' +
       '<button class="btn btn-primary btn-block" id="submitRequestBtn">Send request</button>' +
@@ -386,6 +408,7 @@ function attachHandlers(){
     state.selectedShop = null; await loadShopPicker();
   });
   app.querySelectorAll('[data-view-phone]').forEach(function(el){ el.addEventListener('click', function(){ openModal('view',{id:el.getAttribute('data-view-phone')}); }); });
+  app.querySelectorAll('[data-category-filter]').forEach(function(el){ el.addEventListener('click', function(){ state.categoryFilter = el.getAttribute('data-category-filter'); render(); }); });
   app.querySelectorAll('[data-close-modal]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-close-overlay]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-stop]').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); });

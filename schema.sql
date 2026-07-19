@@ -114,7 +114,24 @@ alter table inventory add column if not exists image_urls jsonb not null default
 update inventory set image_urls = jsonb_build_array(image_url)
   where image_url is not null and jsonb_array_length(image_urls) = 0;
 
+-- Laptop support: inventory now holds both phones and laptops, distinguished
+-- by item_type. Laptops reuse the shared fields above (model, color, condition,
+-- battery, cost, price, status, quantity, shelf, notes, photos, supplier, IMEI
+-- left blank) plus a few laptop-only spec columns below. Keeping laptops in the
+-- same table means they automatically flow through sales, the dealer network,
+-- broadcasts, consignments ("Owed to you"), and the Customer App catalog —
+-- nothing else needs a parallel table.
+alter table inventory add column if not exists item_type text not null default 'Phone';
+alter table inventory drop constraint if exists inventory_item_type_check;
+alter table inventory add constraint inventory_item_type_check check (item_type in ('Phone','Laptop'));
+alter table inventory add column if not exists brand text;       -- laptop brand, e.g. HP, Dell, Apple
+alter table inventory add column if not exists cpu text;         -- e.g. Intel Core i7-1165G7
+alter table inventory add column if not exists ram text;         -- e.g. 16GB
+alter table inventory add column if not exists screen_size text; -- e.g. 15.6"
+alter table inventory add column if not exists gpu text;         -- optional, e.g. RTX 3050
+
 create index if not exists idx_inventory_dealer on inventory(dealer_id);
+create index if not exists idx_inventory_item_type on inventory(item_type);
 create index if not exists idx_inventory_model on inventory using gin (to_tsvector('simple', model));
 
 alter table inventory enable row level security;
@@ -133,19 +150,21 @@ create or replace view dealer_network_view
   with (security_invoker = false) as
   select
     i.id, i.dealer_id, d.shop_name as dealer_name, d.phone as dealer_phone,
-    i.model, i.storage, i.color, i.condition, i.battery, i.price, i.updated_at,
+    i.item_type, i.model, i.storage, i.color, i.condition, i.battery, i.price, i.updated_at,
+    i.brand, i.cpu, i.ram, i.screen_size, i.gpu,
     i.image_url, i.image_urls
   from inventory i
   join dealers d on d.id = i.dealer_id
   where i.status = 'In Stock';
 grant select on dealer_network_view to authenticated;
 
--- Public storefront catalog for the Customer App (one dealer's in-stock phones only,
--- no cost/supplier/IMEI exposed).
+-- Public storefront catalog for the Customer App (one dealer's in-stock phones
+-- and laptops only, no cost/supplier/IMEI exposed).
 drop view if exists public_catalog;
 create or replace view public_catalog
   with (security_invoker = false) as
-  select id, dealer_id, model, storage, color, condition, battery, price, status, image_url, image_urls
+  select id, dealer_id, item_type, model, storage, color, condition, battery, price, status,
+         brand, cpu, ram, screen_size, gpu, image_url, image_urls
   from inventory
   where status = 'In Stock';
 grant select on public_catalog to anon, authenticated;
