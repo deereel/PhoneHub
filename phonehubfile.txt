@@ -1806,7 +1806,7 @@ let state = {
   configError:null, configuring:false, urlInput:'', keyInput:'',
   authMode:'login', authError:null, authBusy:false,
   profile:null, isAdmin:false,
-  tab:'dashboard', inventory:[], sales:[], requests:[], suppliers:[], dealerNetwork:[], broadcasts:[], broadcastResponses:[], dealerReputation:{}, consignments:[],
+  tab:'dashboard', inventory:[], sales:[], requests:[], suppliers:[], dealerNetwork:[], broadcasts:[], broadcastResponses:[], dealerReputation:{}, consignments:[], consignmentPayments:[],
   adminDealers:[], adminInventory:[], adminSales:[],
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
   networkView:'search', dealerSearchQuery:'', networkOrder:[], networkVisibleCount:20,
@@ -1817,7 +1817,9 @@ let state = {
   inventorySupplierFilter:null, supplierFilterName:'',
   selectedInventoryIds:[], // checked rows in Inventory, used by the "Broadcast selected" flow
   broadcastComposer:{ids:[], target:'network', message:'', selectedContactIds:[]},
-  networkBroadcastTypeFilter:'All' // All | Need | Stock — filter for the Network > Broadcasts view
+  networkBroadcastTypeFilter:'All', // All | Need | Stock — filter for the Network > Broadcasts view
+  photoModalRemovedUrls:[], // urls marked for removal while editing a phone's photos (until Save)
+  galleryIndex:0 // current slide index for the image gallery inside view modals
 };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -1847,6 +1849,33 @@ function slugify(s){ return (s||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'
 function thumbHTML(url){
   if(url) return '<img class="thumb" src="'+escapeAttr(url)+'" loading="lazy" alt=""/>';
   return '<div class="thumb-placeholder">'+ICONS.inventory+'</div>';
+}
+// Returns the ordered list of image URLs for a phone/network-item/stock-item
+// record, falling back to the legacy single image_url when image_urls is empty.
+function imagesFor(obj){
+  if(!obj) return [];
+  if(Array.isArray(obj.image_urls) && obj.image_urls.length) return obj.image_urls;
+  if(obj.image_url) return [obj.image_url];
+  return [];
+}
+// Renders a swipeable/clickable image gallery for use inside view-detail modals.
+// `images` is an ordered array of URLs; `idx` is the currently shown slide.
+function renderImageGallery(images, idx){
+  if(!images || !images.length){
+    return '<div class="thumb-placeholder" style="width:100%;height:200px;border-radius:10px;margin-bottom:16px;">'+ICONS.inventory+'</div>';
+  }
+  idx = Math.max(0, Math.min(idx||0, images.length-1));
+  return '<div id="galleryWrap" data-gallery-total="'+images.length+'" style="position:relative;margin-bottom:16px;">' +
+    '<img src="'+escapeAttr(images[idx])+'" style="width:100%;max-height:320px;object-fit:cover;border-radius:10px;display:block;"/>' +
+    (images.length>1 ? (
+      '<button type="button" data-gallery-prev="1" data-gallery-total="'+images.length+'" aria-label="Previous photo" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.55);color:#fff;border:none;border-radius:50%;width:32px;height:32px;cursor:pointer;font-size:16px;">‹</button>' +
+      '<button type="button" data-gallery-next="1" data-gallery-total="'+images.length+'" aria-label="Next photo" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.55);color:#fff;border:none;border-radius:50%;width:32px;height:32px;cursor:pointer;font-size:16px;">›</button>' +
+      '<div style="position:absolute;bottom:8px;left:0;right:0;text-align:center;display:flex;justify-content:center;gap:5px;">' +
+        images.map(function(_,i){ return '<span style="width:6px;height:6px;border-radius:50%;background:'+(i===idx?'#fff':'rgba(255,255,255,.45)')+';display:inline-block;"></span>'; }).join('') +
+      '</div>' +
+      '<div style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;">'+(idx+1)+' / '+images.length+'</div>'
+    ) : '') +
+  '</div>';
 }
 // Shrinks a photo client-side before upload — most Computer Village connections
 // are slow/data-capped, so a 12MB camera photo becomes a ~150-200KB JPEG here.
@@ -1971,7 +2000,7 @@ function renderIosInstallBanner(){
   return '<div id="iosInstallBanner" style="position:fixed;left:0;right:0;bottom:0;z-index:150;background:var(--panel-2);border-top:1px solid var(--accent);padding:12px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 -8px 24px rgba(0,0,0,.4);">' +
     '<div style="flex:1;font-size:12.5px;color:var(--text);">' +
       '<strong>Install PhoneHub on this iPhone</strong><br>' +
-      '<span style="color:var(--text-dim);">Tap the Share icon <span style="display:inline-block;transform:translateY(2px)">'+ICONS_SHARE+'</span> below, then "Add to Home Screen". This also turns on notifications.</span>' +
+      '<span style="color:var(--text-dim);">Tap the Share icon <span style="display:inline-block;transform:translateY(2px)">'+ICONS_SHARE+'</span> below, then "Add to Home Screen" to receive phone and order requests. This also turns on notifications.</span>' +
     '</div>' +
   '</div>';
 }
@@ -2323,7 +2352,7 @@ async function loadAfterAuth(){
 }
 
 async function refreshAll(){
-  const [inv, sales, reqs, sups, dn, bc, rep, cons] = await Promise.all([
+  const [inv, sales, reqs, sups, dn, bc, rep, cons, cnp] = await Promise.all([
     sb.from('inventory').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
     sb.from('sales').select('*').eq('dealer_id', state.profile.id).order('date',{ascending:false}),
     sb.from('requests').select('*').eq('dealer_id', state.profile.id).order('date',{ascending:false}),
@@ -2332,10 +2361,12 @@ async function refreshAll(){
     sb.from('broadcasts').select('*').order('created_at',{ascending:false}),
     sb.from('dealer_reputation_view').select('*'),
     sb.from('consignments').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
+    sb.from('consignment_payments').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
   ]);
   state.inventory = inv.data || []; state.sales = sales.data || []; state.requests = reqs.data || [];
   state.suppliers = sups.data || []; state.dealerNetwork = dn.data || []; state.broadcasts = bc.data || [];
   state.consignments = cons.data || [];
+  state.consignmentPayments = cnp.data || [];
   syncNetworkOrder();
   const repMap = {};
   (rep.data || []).forEach(function(r){ repMap[r.dealer_id] = r; });
@@ -2393,7 +2424,11 @@ function applyHashTab(){
     }
   }
 }
-function openModal(name, payload){ state.modal = {name:name, payload: payload||{}}; render(); }
+function openModal(name, payload){
+  if(name==='addPhone' || name==='editPhone') state.photoModalRemovedUrls = [];
+  if(name==='viewNetworkItem' || name==='viewStockItem') state.galleryIndex = 0;
+  state.modal = {name:name, payload: payload||{}}; render();
+}
 function closeModal(){ state.modal = null; render(); }
 function openBroadcastComposer(ids){
   if(!ids || !ids.length){ showToast('Select at least one phone first', true); return; }
@@ -2830,7 +2865,7 @@ function renderConsignments(){
   const totalOwed = state.consignments.filter(function(c){ return c.status!=='Settled' && c.status!=='Returned'; })
     .reduce(function(a,c){ return a+consignmentBalance(c); },0);
   return '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">' +
-      '<div><h1 class="page-title">Owed to you</h1><p class="page-sub">Phones colleagues collected from you on credit, and what they still owe. Total outstanding: <strong style="color:var(--accent)">'+naira(totalOwed)+'</strong></p></div>' +
+      '<div><h1 class="page-title">Owed to you</h1><p class="page-sub">Phones colleagues collected from you on credit, and what they still owe. Tap a row to see the full payment log. Total outstanding: <strong style="color:var(--accent)">'+naira(totalOwed)+'</strong></p></div>' +
       '<button class="btn btn-accent" data-open-modal="addConsignment">'+ICONS.plus+' Log phone given out</button>' +
     '</div>' +
     '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
@@ -2838,7 +2873,7 @@ function renderConsignments(){
         rows.map(function(c){
           const balance = consignmentBalance(c);
           const canSettle = c.status!=='Settled' && c.status!=='Returned';
-          return '<tr>' +
+          return '<tr data-view-consignment="'+c.id+'" style="cursor:pointer;">' +
           '<td class="strong">'+escapeHtml(c.contact_name)+(c.contact_phone?('<br><span class="mono" style="color:var(--text-faint);font-size:11px">'+escapeHtml(c.contact_phone)+'</span>'):'')+'</td>' +
           '<td>'+escapeHtml(c.model)+(c.storage?(' · '+escapeHtml(c.storage)):'')+(c.color?(' · '+escapeHtml(c.color)):'')+(c.imei?('<br><span class="mono" style="color:var(--text-faint);font-size:11px">IMEI '+escapeHtml(c.imei)+'</span>'):'')+'</td>' +
           '<td class="mono">'+(c.quantity||1)+'</td>' +
@@ -3080,6 +3115,7 @@ function renderModal(){
   if(m.name==='bulkImport') return renderBulkImportModal();
   if(m.name==='notifSettings') return renderNotifModal();
   if(m.name==='addConsignment' || m.name==='editConsignment') return renderConsignmentModal(m);
+  if(m.name==='viewConsignment') return renderConsignmentDetailModal(m);
   if(m.name==='logConsignmentPayment') return renderConsignmentPaymentModal(m);
   if(m.name==='sendBroadcastAdvert') return renderBroadcastComposerModal(m);
   if(m.name==='viewStockItem') return renderStockItemModal(m);
@@ -3095,8 +3131,7 @@ function renderNetworkItemModal(m){
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
     '<div class="modal-head"><h3>'+escapeHtml(d.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body">' +
-      (d.image_url ? ('<img src="'+escapeAttr(d.image_url)+'" style="width:100%;max-height:320px;object-fit:cover;border-radius:10px;margin-bottom:16px;"/>') :
-        ('<div class="thumb-placeholder" style="width:100%;height:200px;border-radius:10px;margin-bottom:16px;">'+ICONS.inventory+'</div>')) +
+      renderImageGallery(imagesFor(d), state.galleryIndex) +
       row('Storage', escapeHtml(d.storage||'—')) +
       row('Color', escapeHtml(d.color||'—')) +
       row('Condition', escapeHtml(d.condition||'—')+(d.condition==='Used' && d.battery!=null?(' · '+d.battery+'% battery'):'')) +
@@ -3120,8 +3155,7 @@ function renderStockItemModal(m){
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
     '<div class="modal-head"><h3>'+escapeHtml(it.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body">' +
-      (it.image_url ? ('<img src="'+escapeAttr(it.image_url)+'" style="width:100%;max-height:320px;object-fit:cover;border-radius:10px;margin-bottom:16px;"/>') :
-        ('<div class="thumb-placeholder" style="width:100%;height:200px;border-radius:10px;margin-bottom:16px;">'+ICONS.inventory+'</div>')) +
+      renderImageGallery(imagesFor(it), state.galleryIndex) +
       row('Storage', escapeHtml(it.storage||'—')) +
       row('Color', escapeHtml(it.color||'—')) +
       row('Condition', escapeHtml(it.condition||'—')) +
@@ -3155,16 +3189,25 @@ function renderNotifModal(){
 function renderPhoneModal(m){
   const editing = m.name==='editPhone';
   const p = editing ? (state.inventory.find(function(x){ return x.id===m.payload.id; }) || {}) : {};
+  const existingImages = imagesFor(p);
+  const removedUrls = state.photoModalRemovedUrls || [];
+  const visibleExisting = existingImages.filter(function(u){ return removedUrls.indexOf(u)===-1; });
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>'+(editing?'Edit phone':'Add phone')+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body"><div class="form-grid">' +
-      '<div class="field full"><label>Photo</label><div class="photo-upload">' +
-        (p.image_url ? ('<img class="photo-preview" id="f-image-preview" src="'+escapeAttr(p.image_url)+'"/>') : ('<div class="photo-preview-empty" id="f-image-preview">No photo yet</div>')) +
-        '<div style="display:flex;flex-direction:column;gap:8px;">' +
-          '<input type="file" id="f-image" accept="image/*" capture="environment"/>' +
-          (p.image_url ? '<label style="font-size:11.5px;color:var(--text-dim);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="f-image-remove"/> Remove current photo</label>' : '<span style="font-size:11px;color:var(--text-faint);">Snap it with your camera or pick from gallery — resized automatically before upload.</span>') +
+      '<div class="field full"><label>Photos (add at least 2 if you can — you can add just one, but buyers trust listings with more)</label>' +
+        '<div id="photo-gallery-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;">' +
+          (visibleExisting.length ? visibleExisting.map(function(url){
+            return '<div style="position:relative;">' +
+              '<img class="photo-preview" src="'+escapeAttr(url)+'" style="width:72px;height:72px;"/>' +
+              '<button type="button" data-remove-existing-image="'+escapeAttr(url)+'" title="Remove this photo" style="position:absolute;top:-6px;right:-6px;background:var(--danger);color:#fff;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;line-height:1;">×</button>' +
+            '</div>';
+          }).join('') : '<span style="font-size:11.5px;color:var(--text-faint);">No photos yet</span>') +
         '</div>' +
-      '</div></div>' +
+        '<input type="file" id="f-images" accept="image/*" multiple capture="environment"/>' +
+        '<div id="new-photo-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;"></div>' +
+        '<span style="font-size:11px;color:var(--text-faint);display:block;margin-top:6px;">Snap with your camera or pick from gallery — you can select several at once. Resized automatically before upload.</span>' +
+      '</div>' +
       '<div class="field mono"><label>IMEI 1 (optional)</label><input id="f-imei" value="'+escapeAttr(p.imei)+'"/></div>' +
       '<div class="field mono"><label>IMEI 2 (optional)</label><input id="f-imei2" value="'+escapeAttr(p.imei2)+'"/></div>' +
       '<div class="field"><label>Phone model</label><input id="f-model" value="'+escapeAttr(p.model)+'" placeholder="e.g. iPhone 14 Pro"/></div>' +
@@ -3308,6 +3351,42 @@ function renderConsignmentModal(m){
     '</div></div></div>';
 }
 
+function renderConsignmentDetailModal(m){
+  const c = state.consignments.find(function(x){ return x.id === m.payload.id; });
+  if(!c) return '';
+  const balance = consignmentBalance(c);
+  const payments = (state.consignmentPayments||[]).filter(function(p){ return p.consignment_id===c.id; })
+    .sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
+  const canSettle = c.status!=='Settled' && c.status!=='Returned';
+  const row = function(k,v){ return '<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="color:var(--text-dim);">'+k+'</span><span class="strong">'+v+'</span></div>'; };
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:520px;">' +
+    '<div class="modal-head"><h3>'+escapeHtml(c.contact_name)+' — '+escapeHtml(c.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      row('Phone', escapeHtml(c.model)+(c.storage?(' · '+escapeHtml(c.storage)):'')+(c.color?(' · '+escapeHtml(c.color)):'')) +
+      (c.imei ? row('IMEI', escapeHtml(c.imei)) : '') +
+      row('Colleague', escapeHtml(c.contact_name)+(c.contact_phone?(' · <a class="linklike" href="tel:'+escapeAttr(c.contact_phone)+'">'+escapeHtml(c.contact_phone)+'</a>'):'')) +
+      row('Quantity', c.quantity||1) +
+      row('Unit price', naira(c.unit_price)) +
+      row('Total owed', naira((Number(c.unit_price)||0)*(Number(c.quantity)||1))) +
+      row('Amount paid', naira(c.amount_paid)) +
+      row('Balance', '<span style="color:'+(balance>0?'var(--danger)':'var(--success)')+'">'+naira(balance)+'</span>') +
+      row('Status', badge(c.status)) +
+      row('Date given', escapeHtml(c.date_given)) +
+      (c.due_date ? row('Due date', escapeHtml(c.due_date)) : '') +
+      (c.notes ? row('Notes', escapeHtml(c.notes)) : '') +
+      '<div style="margin-top:18px;"><h4 style="font-family:var(--font-display);font-size:13.5px;margin:0 0 10px;color:var(--text);">Payment log</h4>' +
+      (payments.length ? ('<table><thead><tr><th>Date</th><th>Amount</th><th>Note</th></tr></thead><tbody>' +
+        payments.map(function(p){ return '<tr><td class="mono" style="font-size:11.5px;">'+new Date(p.created_at).toLocaleString()+'</td><td class="mono">'+naira(p.amount)+'</td><td style="color:var(--text-faint);font-size:12px;">'+escapeHtml(p.note||'—')+'</td></tr>'; }).join('') +
+      '</tbody></table>') : '<div class="empty" style="padding:16px;">No payments logged yet.</div>') +
+      '</div>' +
+    '</div>' +
+    '<div class="modal-foot">' +
+      (canSettle ? ('<button class="btn btn-danger" data-mark-consignment="Returned" data-id="'+c.id+'">Mark returned</button>') : '') +
+      '<button class="btn" data-close-modal="1">Close</button>' +
+      (canSettle ? ('<button class="btn btn-accent" data-open-modal="logConsignmentPayment" data-id="'+c.id+'">Log payment</button>') : '') +
+    '</div></div></div>';
+}
+
 function renderConsignmentPaymentModal(m){
   const c = state.consignments.find(function(x){ return x.id === m.payload.id; });
   if(!c) return '';
@@ -3317,6 +3396,7 @@ function renderConsignmentPaymentModal(m){
     '<div class="modal-body">' +
       '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">'+escapeHtml(c.model)+' — currently owes <strong style="color:var(--accent)">'+naira(balance)+'</strong>.</p>' +
       '<div class="field mono"><label>Amount received now (₦)</label><input type="number" id="cnp-amount" value=""/></div>' +
+      '<div class="field"><label>Note (optional)</label><input id="cnp-note" placeholder="e.g. Cash handed at shop"/></div>' +
     '</div>' +
     '<div class="modal-foot">' +
       '<button class="btn btn-danger" data-mark-consignment="Returned" data-id="'+c.id+'">Mark returned (no sale)</button>' +
@@ -3452,6 +3532,41 @@ function attachHandlers(){
     openModal('viewStockItem', { broadcastId: el.getAttribute('data-view-stock-item'), itemIndex: Number(el.getAttribute('data-item-index')) });
   }); });
 
+  /* ---- Image gallery navigation (network item / stock item detail modals) ---- */
+  app.querySelectorAll('[data-gallery-prev]').forEach(function(el){ el.addEventListener('click', function(e){
+    e.stopPropagation();
+    const total = Number(el.getAttribute('data-gallery-total'))||1;
+    state.galleryIndex = ((state.galleryIndex||0) - 1 + total) % total;
+    render();
+  }); });
+  app.querySelectorAll('[data-gallery-next]').forEach(function(el){ el.addEventListener('click', function(e){
+    e.stopPropagation();
+    const total = Number(el.getAttribute('data-gallery-total'))||1;
+    state.galleryIndex = ((state.galleryIndex||0) + 1) % total;
+    render();
+  }); });
+  const galleryWrap = document.getElementById('galleryWrap');
+  if(galleryWrap){
+    let touchStartX = null;
+    galleryWrap.addEventListener('touchstart', function(e){ touchStartX = e.touches[0].clientX; }, {passive:true});
+    galleryWrap.addEventListener('touchend', function(e){
+      if(touchStartX==null) return;
+      const dx = e.changedTouches[0].clientX - touchStartX;
+      const total = Number(galleryWrap.getAttribute('data-gallery-total'))||1;
+      if(Math.abs(dx) > 40 && total>1){
+        state.galleryIndex = dx<0 ? ((state.galleryIndex||0)+1)%total : ((state.galleryIndex||0)-1+total)%total;
+        render();
+      }
+      touchStartX = null;
+    });
+  }
+
+  /* ---- "Owed to you" row click -> detail dialog ---- */
+  app.querySelectorAll('[data-view-consignment]').forEach(function(el){ el.addEventListener('click', function(e){
+    if(e.target.closest('button')) return;
+    openModal('viewConsignment', { id: el.getAttribute('data-view-consignment') });
+  }); });
+
   /* ---- Inventory selection + "send as broadcast" ---- */
   app.querySelectorAll('[data-select-inventory]').forEach(function(el){ el.addEventListener('change', function(){
     const id = el.getAttribute('data-select-inventory');
@@ -3492,7 +3607,10 @@ function attachHandlers(){
     const ids = state.broadcastComposer.ids;
     const items = state.inventory.filter(function(p){ return ids.indexOf(p.id)>-1; });
     if(!items.length){ showToast('Nothing to broadcast', true); return; }
-    const itemsPayload = items.map(function(p){ return { inventory_id:p.id, model:p.model, storage:p.storage, color:p.color, condition:p.condition, price:p.price, image_url:p.image_url }; });
+    const itemsPayload = items.map(function(p){ return {
+      inventory_id:p.id, model:p.model, storage:p.storage, color:p.color, condition:p.condition, price:p.price,
+      image_url:p.image_url, image_urls: imagesFor(p)
+    }; });
     const data = {
       dealer_id: state.profile.id, type:'Stock', status:'Open',
       model: items.length===1 ? items[0].model : (items.length+' phones'),
@@ -3513,7 +3631,10 @@ function attachHandlers(){
     const contactIds = state.broadcastComposer.selectedContactIds;
     if(!contactIds.length){ showToast('Select at least one saved contact', true); return; }
     const names = contactIds.map(function(id){ const s = state.suppliers.find(function(x){ return x.id===id; }); return s?s.name:''; }).filter(Boolean);
-    const itemsPayload = items.map(function(p){ return { inventory_id:p.id, model:p.model, storage:p.storage, color:p.color, condition:p.condition, price:p.price, image_url:p.image_url }; });
+    const itemsPayload = items.map(function(p){ return {
+      inventory_id:p.id, model:p.model, storage:p.storage, color:p.color, condition:p.condition, price:p.price,
+      image_url:p.image_url, image_urls: imagesFor(p)
+    }; });
     try{
       const { error } = await sb.from('stock_broadcast_log').insert({
         dealer_id: state.profile.id, contact_names: names.join(', '), items: itemsPayload, message: state.broadcastComposer.message || null
@@ -3580,19 +3701,23 @@ function attachHandlers(){
     if(s && fSupplier) fSupplier.value = s.name;
   });
 
-  const fImage = document.getElementById('f-image');
-  if(fImage) fImage.addEventListener('change', function(){
-    const file = fImage.files && fImage.files[0];
-    if(!file) return;
-    const url = URL.createObjectURL(file);
-    const preview = document.getElementById('f-image-preview');
-    if(preview){
+  app.querySelectorAll('[data-remove-existing-image]').forEach(function(el){ el.addEventListener('click', function(){
+    const url = el.getAttribute('data-remove-existing-image');
+    state.photoModalRemovedUrls = state.photoModalRemovedUrls || [];
+    state.photoModalRemovedUrls.push(url);
+    render();
+  }); });
+  const fImages = document.getElementById('f-images');
+  if(fImages) fImages.addEventListener('change', function(){
+    const preview = document.getElementById('new-photo-preview');
+    if(!preview) return;
+    preview.innerHTML = '';
+    Array.from(fImages.files||[]).forEach(function(file){
       const img = document.createElement('img');
-      img.className = 'photo-preview'; img.id = 'f-image-preview'; img.src = url;
-      preview.replaceWith(img);
-    }
-    const removeBox = document.getElementById('f-image-remove');
-    if(removeBox) removeBox.checked = false;
+      img.className = 'photo-preview'; img.style.width='72px'; img.style.height='72px';
+      img.src = URL.createObjectURL(file);
+      preview.appendChild(img);
+    });
   });
 
   app.querySelectorAll('[data-save-phone]').forEach(function(el){ el.addEventListener('click', async function(){
@@ -3604,19 +3729,26 @@ function attachHandlers(){
       status: val('f-status'), shelf: val('f-shelf'), notes: val('f-notes')
     };
     if(!data.model){ showToast('Phone model is required', true); return; }
-    const imageFileEl = document.getElementById('f-image');
-    const imageFile = imageFileEl && imageFileEl.files && imageFileEl.files[0];
-    const removeChecked = document.getElementById('f-image-remove');
+    const existingPhone = id ? state.inventory.find(function(x){ return x.id===id; }) : null;
+    const existingImages = imagesFor(existingPhone);
+    const removed = state.photoModalRemovedUrls || [];
+    let keptImages = existingImages.filter(function(u){ return removed.indexOf(u)===-1; });
+    const fImagesEl = document.getElementById('f-images');
+    const newFiles = fImagesEl && fImagesEl.files ? Array.from(fImagesEl.files) : [];
     try{
-      if(imageFile){
-        showToast('Uploading photo…');
-        data.image_url = await uploadPhoneImage(imageFile);
-      } else if(removeChecked && removeChecked.checked){
-        data.image_url = null;
+      if(newFiles.length){
+        showToast('Uploading '+newFiles.length+' photo'+(newFiles.length===1?'':'s')+'…');
+        for(let i=0;i<newFiles.length;i++){
+          const url = await uploadPhoneImage(newFiles[i]);
+          keptImages.push(url);
+        }
       }
+      data.image_urls = keptImages;
+      data.image_url = keptImages.length ? keptImages[0] : null;
       if(id){ const { error } = await sb.from('inventory').update(data).eq('id', id); if(error) throw error; }
       else{ data.dealer_id = state.profile.id; const { error } = await sb.from('inventory').insert(data); if(error) throw error; }
       await refreshAll();
+      state.photoModalRemovedUrls = [];
       closeModal(); showToast(id?'Phone updated':'Phone added to inventory');
     } catch(e){ showToast('Save failed: '+(e.message||e), true); render(); }
   }); });
@@ -3760,6 +3892,10 @@ function attachHandlers(){
     try{
       const { error } = await sb.from('consignments').update({ amount_paid:newPaid, status:newStatus }).eq('id', id);
       if(error) throw error;
+      const { error: payErr } = await sb.from('consignment_payments').insert({
+        consignment_id: id, dealer_id: state.profile.id, amount: amount, note: val('cnp-note')||null
+      });
+      if(payErr) throw payErr;
       await refreshAll();
       closeModal(); showToast(newStatus==='Settled' ? 'Fully paid — marked as settled' : 'Payment logged');
     } catch(e){ showToast('Failed: '+(e.message||e), true); render(); }
@@ -5897,7 +6033,7 @@ let state = {
   configError:null, configuring:false, urlInput:'', keyInput:'',
   authMode:'login', authError:null, authBusy:false,
   profile:null, isAdmin:false,
-  tab:'dashboard', inventory:[], sales:[], requests:[], suppliers:[], dealerNetwork:[], broadcasts:[], broadcastResponses:[], dealerReputation:{}, consignments:[],
+  tab:'dashboard', inventory:[], sales:[], requests:[], suppliers:[], dealerNetwork:[], broadcasts:[], broadcastResponses:[], dealerReputation:{}, consignments:[], consignmentPayments:[],
   adminDealers:[], adminInventory:[], adminSales:[],
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
   networkView:'search', dealerSearchQuery:'', networkOrder:[], networkVisibleCount:20,
@@ -5908,7 +6044,9 @@ let state = {
   inventorySupplierFilter:null, supplierFilterName:'',
   selectedInventoryIds:[], // checked rows in Inventory, used by the "Broadcast selected" flow
   broadcastComposer:{ids:[], target:'network', message:'', selectedContactIds:[]},
-  networkBroadcastTypeFilter:'All' // All | Need | Stock — filter for the Network > Broadcasts view
+  networkBroadcastTypeFilter:'All', // All | Need | Stock — filter for the Network > Broadcasts view
+  photoModalRemovedUrls:[], // urls marked for removal while editing a phone's photos (until Save)
+  galleryIndex:0 // current slide index for the image gallery inside view modals
 };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -5938,6 +6076,33 @@ function slugify(s){ return (s||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'
 function thumbHTML(url){
   if(url) return '<img class="thumb" src="'+escapeAttr(url)+'" loading="lazy" alt=""/>';
   return '<div class="thumb-placeholder">'+ICONS.inventory+'</div>';
+}
+// Returns the ordered list of image URLs for a phone/network-item/stock-item
+// record, falling back to the legacy single image_url when image_urls is empty.
+function imagesFor(obj){
+  if(!obj) return [];
+  if(Array.isArray(obj.image_urls) && obj.image_urls.length) return obj.image_urls;
+  if(obj.image_url) return [obj.image_url];
+  return [];
+}
+// Renders a swipeable/clickable image gallery for use inside view-detail modals.
+// `images` is an ordered array of URLs; `idx` is the currently shown slide.
+function renderImageGallery(images, idx){
+  if(!images || !images.length){
+    return '<div class="thumb-placeholder" style="width:100%;height:200px;border-radius:10px;margin-bottom:16px;">'+ICONS.inventory+'</div>';
+  }
+  idx = Math.max(0, Math.min(idx||0, images.length-1));
+  return '<div id="galleryWrap" data-gallery-total="'+images.length+'" style="position:relative;margin-bottom:16px;">' +
+    '<img src="'+escapeAttr(images[idx])+'" style="width:100%;max-height:320px;object-fit:cover;border-radius:10px;display:block;"/>' +
+    (images.length>1 ? (
+      '<button type="button" data-gallery-prev="1" data-gallery-total="'+images.length+'" aria-label="Previous photo" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.55);color:#fff;border:none;border-radius:50%;width:32px;height:32px;cursor:pointer;font-size:16px;">‹</button>' +
+      '<button type="button" data-gallery-next="1" data-gallery-total="'+images.length+'" aria-label="Next photo" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.55);color:#fff;border:none;border-radius:50%;width:32px;height:32px;cursor:pointer;font-size:16px;">›</button>' +
+      '<div style="position:absolute;bottom:8px;left:0;right:0;text-align:center;display:flex;justify-content:center;gap:5px;">' +
+        images.map(function(_,i){ return '<span style="width:6px;height:6px;border-radius:50%;background:'+(i===idx?'#fff':'rgba(255,255,255,.45)')+';display:inline-block;"></span>'; }).join('') +
+      '</div>' +
+      '<div style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;">'+(idx+1)+' / '+images.length+'</div>'
+    ) : '') +
+  '</div>';
 }
 // Shrinks a photo client-side before upload — most Computer Village connections
 // are slow/data-capped, so a 12MB camera photo becomes a ~150-200KB JPEG here.
@@ -6062,7 +6227,7 @@ function renderIosInstallBanner(){
   return '<div id="iosInstallBanner" style="position:fixed;left:0;right:0;bottom:0;z-index:150;background:var(--panel-2);border-top:1px solid var(--accent);padding:12px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 -8px 24px rgba(0,0,0,.4);">' +
     '<div style="flex:1;font-size:12.5px;color:var(--text);">' +
       '<strong>Install PhoneHub on this iPhone</strong><br>' +
-      '<span style="color:var(--text-dim);">Tap the Share icon <span style="display:inline-block;transform:translateY(2px)">'+ICONS_SHARE+'</span> below, then "Add to Home Screen". This also turns on notifications.</span>' +
+      '<span style="color:var(--text-dim);">Tap the Share icon <span style="display:inline-block;transform:translateY(2px)">'+ICONS_SHARE+'</span> below, then "Add to Home Screen" to receive phone and order requests. This also turns on notifications.</span>' +
     '</div>' +
   '</div>';
 }
@@ -6414,7 +6579,7 @@ async function loadAfterAuth(){
 }
 
 async function refreshAll(){
-  const [inv, sales, reqs, sups, dn, bc, rep, cons] = await Promise.all([
+  const [inv, sales, reqs, sups, dn, bc, rep, cons, cnp] = await Promise.all([
     sb.from('inventory').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
     sb.from('sales').select('*').eq('dealer_id', state.profile.id).order('date',{ascending:false}),
     sb.from('requests').select('*').eq('dealer_id', state.profile.id).order('date',{ascending:false}),
@@ -6423,10 +6588,12 @@ async function refreshAll(){
     sb.from('broadcasts').select('*').order('created_at',{ascending:false}),
     sb.from('dealer_reputation_view').select('*'),
     sb.from('consignments').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
+    sb.from('consignment_payments').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
   ]);
   state.inventory = inv.data || []; state.sales = sales.data || []; state.requests = reqs.data || [];
   state.suppliers = sups.data || []; state.dealerNetwork = dn.data || []; state.broadcasts = bc.data || [];
   state.consignments = cons.data || [];
+  state.consignmentPayments = cnp.data || [];
   syncNetworkOrder();
   const repMap = {};
   (rep.data || []).forEach(function(r){ repMap[r.dealer_id] = r; });
@@ -6484,7 +6651,11 @@ function applyHashTab(){
     }
   }
 }
-function openModal(name, payload){ state.modal = {name:name, payload: payload||{}}; render(); }
+function openModal(name, payload){
+  if(name==='addPhone' || name==='editPhone') state.photoModalRemovedUrls = [];
+  if(name==='viewNetworkItem' || name==='viewStockItem') state.galleryIndex = 0;
+  state.modal = {name:name, payload: payload||{}}; render();
+}
 function closeModal(){ state.modal = null; render(); }
 function openBroadcastComposer(ids){
   if(!ids || !ids.length){ showToast('Select at least one phone first', true); return; }
@@ -6921,7 +7092,7 @@ function renderConsignments(){
   const totalOwed = state.consignments.filter(function(c){ return c.status!=='Settled' && c.status!=='Returned'; })
     .reduce(function(a,c){ return a+consignmentBalance(c); },0);
   return '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">' +
-      '<div><h1 class="page-title">Owed to you</h1><p class="page-sub">Phones colleagues collected from you on credit, and what they still owe. Total outstanding: <strong style="color:var(--accent)">'+naira(totalOwed)+'</strong></p></div>' +
+      '<div><h1 class="page-title">Owed to you</h1><p class="page-sub">Phones colleagues collected from you on credit, and what they still owe. Tap a row to see the full payment log. Total outstanding: <strong style="color:var(--accent)">'+naira(totalOwed)+'</strong></p></div>' +
       '<button class="btn btn-accent" data-open-modal="addConsignment">'+ICONS.plus+' Log phone given out</button>' +
     '</div>' +
     '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
@@ -6929,7 +7100,7 @@ function renderConsignments(){
         rows.map(function(c){
           const balance = consignmentBalance(c);
           const canSettle = c.status!=='Settled' && c.status!=='Returned';
-          return '<tr>' +
+          return '<tr data-view-consignment="'+c.id+'" style="cursor:pointer;">' +
           '<td class="strong">'+escapeHtml(c.contact_name)+(c.contact_phone?('<br><span class="mono" style="color:var(--text-faint);font-size:11px">'+escapeHtml(c.contact_phone)+'</span>'):'')+'</td>' +
           '<td>'+escapeHtml(c.model)+(c.storage?(' · '+escapeHtml(c.storage)):'')+(c.color?(' · '+escapeHtml(c.color)):'')+(c.imei?('<br><span class="mono" style="color:var(--text-faint);font-size:11px">IMEI '+escapeHtml(c.imei)+'</span>'):'')+'</td>' +
           '<td class="mono">'+(c.quantity||1)+'</td>' +
@@ -7171,6 +7342,7 @@ function renderModal(){
   if(m.name==='bulkImport') return renderBulkImportModal();
   if(m.name==='notifSettings') return renderNotifModal();
   if(m.name==='addConsignment' || m.name==='editConsignment') return renderConsignmentModal(m);
+  if(m.name==='viewConsignment') return renderConsignmentDetailModal(m);
   if(m.name==='logConsignmentPayment') return renderConsignmentPaymentModal(m);
   if(m.name==='sendBroadcastAdvert') return renderBroadcastComposerModal(m);
   if(m.name==='viewStockItem') return renderStockItemModal(m);
@@ -7186,8 +7358,7 @@ function renderNetworkItemModal(m){
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
     '<div class="modal-head"><h3>'+escapeHtml(d.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body">' +
-      (d.image_url ? ('<img src="'+escapeAttr(d.image_url)+'" style="width:100%;max-height:320px;object-fit:cover;border-radius:10px;margin-bottom:16px;"/>') :
-        ('<div class="thumb-placeholder" style="width:100%;height:200px;border-radius:10px;margin-bottom:16px;">'+ICONS.inventory+'</div>')) +
+      renderImageGallery(imagesFor(d), state.galleryIndex) +
       row('Storage', escapeHtml(d.storage||'—')) +
       row('Color', escapeHtml(d.color||'—')) +
       row('Condition', escapeHtml(d.condition||'—')+(d.condition==='Used' && d.battery!=null?(' · '+d.battery+'% battery'):'')) +
@@ -7211,8 +7382,7 @@ function renderStockItemModal(m){
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
     '<div class="modal-head"><h3>'+escapeHtml(it.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body">' +
-      (it.image_url ? ('<img src="'+escapeAttr(it.image_url)+'" style="width:100%;max-height:320px;object-fit:cover;border-radius:10px;margin-bottom:16px;"/>') :
-        ('<div class="thumb-placeholder" style="width:100%;height:200px;border-radius:10px;margin-bottom:16px;">'+ICONS.inventory+'</div>')) +
+      renderImageGallery(imagesFor(it), state.galleryIndex) +
       row('Storage', escapeHtml(it.storage||'—')) +
       row('Color', escapeHtml(it.color||'—')) +
       row('Condition', escapeHtml(it.condition||'—')) +
@@ -7246,16 +7416,25 @@ function renderNotifModal(){
 function renderPhoneModal(m){
   const editing = m.name==='editPhone';
   const p = editing ? (state.inventory.find(function(x){ return x.id===m.payload.id; }) || {}) : {};
+  const existingImages = imagesFor(p);
+  const removedUrls = state.photoModalRemovedUrls || [];
+  const visibleExisting = existingImages.filter(function(u){ return removedUrls.indexOf(u)===-1; });
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>'+(editing?'Edit phone':'Add phone')+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body"><div class="form-grid">' +
-      '<div class="field full"><label>Photo</label><div class="photo-upload">' +
-        (p.image_url ? ('<img class="photo-preview" id="f-image-preview" src="'+escapeAttr(p.image_url)+'"/>') : ('<div class="photo-preview-empty" id="f-image-preview">No photo yet</div>')) +
-        '<div style="display:flex;flex-direction:column;gap:8px;">' +
-          '<input type="file" id="f-image" accept="image/*" capture="environment"/>' +
-          (p.image_url ? '<label style="font-size:11.5px;color:var(--text-dim);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="f-image-remove"/> Remove current photo</label>' : '<span style="font-size:11px;color:var(--text-faint);">Snap it with your camera or pick from gallery — resized automatically before upload.</span>') +
+      '<div class="field full"><label>Photos (add at least 2 if you can — you can add just one, but buyers trust listings with more)</label>' +
+        '<div id="photo-gallery-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;">' +
+          (visibleExisting.length ? visibleExisting.map(function(url){
+            return '<div style="position:relative;">' +
+              '<img class="photo-preview" src="'+escapeAttr(url)+'" style="width:72px;height:72px;"/>' +
+              '<button type="button" data-remove-existing-image="'+escapeAttr(url)+'" title="Remove this photo" style="position:absolute;top:-6px;right:-6px;background:var(--danger);color:#fff;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;line-height:1;">×</button>' +
+            '</div>';
+          }).join('') : '<span style="font-size:11.5px;color:var(--text-faint);">No photos yet</span>') +
         '</div>' +
-      '</div></div>' +
+        '<input type="file" id="f-images" accept="image/*" multiple capture="environment"/>' +
+        '<div id="new-photo-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;"></div>' +
+        '<span style="font-size:11px;color:var(--text-faint);display:block;margin-top:6px;">Snap with your camera or pick from gallery — you can select several at once. Resized automatically before upload.</span>' +
+      '</div>' +
       '<div class="field mono"><label>IMEI 1 (optional)</label><input id="f-imei" value="'+escapeAttr(p.imei)+'"/></div>' +
       '<div class="field mono"><label>IMEI 2 (optional)</label><input id="f-imei2" value="'+escapeAttr(p.imei2)+'"/></div>' +
       '<div class="field"><label>Phone model</label><input id="f-model" value="'+escapeAttr(p.model)+'" placeholder="e.g. iPhone 14 Pro"/></div>' +
@@ -7399,6 +7578,42 @@ function renderConsignmentModal(m){
     '</div></div></div>';
 }
 
+function renderConsignmentDetailModal(m){
+  const c = state.consignments.find(function(x){ return x.id === m.payload.id; });
+  if(!c) return '';
+  const balance = consignmentBalance(c);
+  const payments = (state.consignmentPayments||[]).filter(function(p){ return p.consignment_id===c.id; })
+    .sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
+  const canSettle = c.status!=='Settled' && c.status!=='Returned';
+  const row = function(k,v){ return '<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="color:var(--text-dim);">'+k+'</span><span class="strong">'+v+'</span></div>'; };
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:520px;">' +
+    '<div class="modal-head"><h3>'+escapeHtml(c.contact_name)+' — '+escapeHtml(c.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      row('Phone', escapeHtml(c.model)+(c.storage?(' · '+escapeHtml(c.storage)):'')+(c.color?(' · '+escapeHtml(c.color)):'')) +
+      (c.imei ? row('IMEI', escapeHtml(c.imei)) : '') +
+      row('Colleague', escapeHtml(c.contact_name)+(c.contact_phone?(' · <a class="linklike" href="tel:'+escapeAttr(c.contact_phone)+'">'+escapeHtml(c.contact_phone)+'</a>'):'')) +
+      row('Quantity', c.quantity||1) +
+      row('Unit price', naira(c.unit_price)) +
+      row('Total owed', naira((Number(c.unit_price)||0)*(Number(c.quantity)||1))) +
+      row('Amount paid', naira(c.amount_paid)) +
+      row('Balance', '<span style="color:'+(balance>0?'var(--danger)':'var(--success)')+'">'+naira(balance)+'</span>') +
+      row('Status', badge(c.status)) +
+      row('Date given', escapeHtml(c.date_given)) +
+      (c.due_date ? row('Due date', escapeHtml(c.due_date)) : '') +
+      (c.notes ? row('Notes', escapeHtml(c.notes)) : '') +
+      '<div style="margin-top:18px;"><h4 style="font-family:var(--font-display);font-size:13.5px;margin:0 0 10px;color:var(--text);">Payment log</h4>' +
+      (payments.length ? ('<table><thead><tr><th>Date</th><th>Amount</th><th>Note</th></tr></thead><tbody>' +
+        payments.map(function(p){ return '<tr><td class="mono" style="font-size:11.5px;">'+new Date(p.created_at).toLocaleString()+'</td><td class="mono">'+naira(p.amount)+'</td><td style="color:var(--text-faint);font-size:12px;">'+escapeHtml(p.note||'—')+'</td></tr>'; }).join('') +
+      '</tbody></table>') : '<div class="empty" style="padding:16px;">No payments logged yet.</div>') +
+      '</div>' +
+    '</div>' +
+    '<div class="modal-foot">' +
+      (canSettle ? ('<button class="btn btn-danger" data-mark-consignment="Returned" data-id="'+c.id+'">Mark returned</button>') : '') +
+      '<button class="btn" data-close-modal="1">Close</button>' +
+      (canSettle ? ('<button class="btn btn-accent" data-open-modal="logConsignmentPayment" data-id="'+c.id+'">Log payment</button>') : '') +
+    '</div></div></div>';
+}
+
 function renderConsignmentPaymentModal(m){
   const c = state.consignments.find(function(x){ return x.id === m.payload.id; });
   if(!c) return '';
@@ -7408,6 +7623,7 @@ function renderConsignmentPaymentModal(m){
     '<div class="modal-body">' +
       '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">'+escapeHtml(c.model)+' — currently owes <strong style="color:var(--accent)">'+naira(balance)+'</strong>.</p>' +
       '<div class="field mono"><label>Amount received now (₦)</label><input type="number" id="cnp-amount" value=""/></div>' +
+      '<div class="field"><label>Note (optional)</label><input id="cnp-note" placeholder="e.g. Cash handed at shop"/></div>' +
     '</div>' +
     '<div class="modal-foot">' +
       '<button class="btn btn-danger" data-mark-consignment="Returned" data-id="'+c.id+'">Mark returned (no sale)</button>' +
@@ -7543,6 +7759,41 @@ function attachHandlers(){
     openModal('viewStockItem', { broadcastId: el.getAttribute('data-view-stock-item'), itemIndex: Number(el.getAttribute('data-item-index')) });
   }); });
 
+  /* ---- Image gallery navigation (network item / stock item detail modals) ---- */
+  app.querySelectorAll('[data-gallery-prev]').forEach(function(el){ el.addEventListener('click', function(e){
+    e.stopPropagation();
+    const total = Number(el.getAttribute('data-gallery-total'))||1;
+    state.galleryIndex = ((state.galleryIndex||0) - 1 + total) % total;
+    render();
+  }); });
+  app.querySelectorAll('[data-gallery-next]').forEach(function(el){ el.addEventListener('click', function(e){
+    e.stopPropagation();
+    const total = Number(el.getAttribute('data-gallery-total'))||1;
+    state.galleryIndex = ((state.galleryIndex||0) + 1) % total;
+    render();
+  }); });
+  const galleryWrap = document.getElementById('galleryWrap');
+  if(galleryWrap){
+    let touchStartX = null;
+    galleryWrap.addEventListener('touchstart', function(e){ touchStartX = e.touches[0].clientX; }, {passive:true});
+    galleryWrap.addEventListener('touchend', function(e){
+      if(touchStartX==null) return;
+      const dx = e.changedTouches[0].clientX - touchStartX;
+      const total = Number(galleryWrap.getAttribute('data-gallery-total'))||1;
+      if(Math.abs(dx) > 40 && total>1){
+        state.galleryIndex = dx<0 ? ((state.galleryIndex||0)+1)%total : ((state.galleryIndex||0)-1+total)%total;
+        render();
+      }
+      touchStartX = null;
+    });
+  }
+
+  /* ---- "Owed to you" row click -> detail dialog ---- */
+  app.querySelectorAll('[data-view-consignment]').forEach(function(el){ el.addEventListener('click', function(e){
+    if(e.target.closest('button')) return;
+    openModal('viewConsignment', { id: el.getAttribute('data-view-consignment') });
+  }); });
+
   /* ---- Inventory selection + "send as broadcast" ---- */
   app.querySelectorAll('[data-select-inventory]').forEach(function(el){ el.addEventListener('change', function(){
     const id = el.getAttribute('data-select-inventory');
@@ -7583,7 +7834,10 @@ function attachHandlers(){
     const ids = state.broadcastComposer.ids;
     const items = state.inventory.filter(function(p){ return ids.indexOf(p.id)>-1; });
     if(!items.length){ showToast('Nothing to broadcast', true); return; }
-    const itemsPayload = items.map(function(p){ return { inventory_id:p.id, model:p.model, storage:p.storage, color:p.color, condition:p.condition, price:p.price, image_url:p.image_url }; });
+    const itemsPayload = items.map(function(p){ return {
+      inventory_id:p.id, model:p.model, storage:p.storage, color:p.color, condition:p.condition, price:p.price,
+      image_url:p.image_url, image_urls: imagesFor(p)
+    }; });
     const data = {
       dealer_id: state.profile.id, type:'Stock', status:'Open',
       model: items.length===1 ? items[0].model : (items.length+' phones'),
@@ -7604,7 +7858,10 @@ function attachHandlers(){
     const contactIds = state.broadcastComposer.selectedContactIds;
     if(!contactIds.length){ showToast('Select at least one saved contact', true); return; }
     const names = contactIds.map(function(id){ const s = state.suppliers.find(function(x){ return x.id===id; }); return s?s.name:''; }).filter(Boolean);
-    const itemsPayload = items.map(function(p){ return { inventory_id:p.id, model:p.model, storage:p.storage, color:p.color, condition:p.condition, price:p.price, image_url:p.image_url }; });
+    const itemsPayload = items.map(function(p){ return {
+      inventory_id:p.id, model:p.model, storage:p.storage, color:p.color, condition:p.condition, price:p.price,
+      image_url:p.image_url, image_urls: imagesFor(p)
+    }; });
     try{
       const { error } = await sb.from('stock_broadcast_log').insert({
         dealer_id: state.profile.id, contact_names: names.join(', '), items: itemsPayload, message: state.broadcastComposer.message || null
@@ -7671,19 +7928,23 @@ function attachHandlers(){
     if(s && fSupplier) fSupplier.value = s.name;
   });
 
-  const fImage = document.getElementById('f-image');
-  if(fImage) fImage.addEventListener('change', function(){
-    const file = fImage.files && fImage.files[0];
-    if(!file) return;
-    const url = URL.createObjectURL(file);
-    const preview = document.getElementById('f-image-preview');
-    if(preview){
+  app.querySelectorAll('[data-remove-existing-image]').forEach(function(el){ el.addEventListener('click', function(){
+    const url = el.getAttribute('data-remove-existing-image');
+    state.photoModalRemovedUrls = state.photoModalRemovedUrls || [];
+    state.photoModalRemovedUrls.push(url);
+    render();
+  }); });
+  const fImages = document.getElementById('f-images');
+  if(fImages) fImages.addEventListener('change', function(){
+    const preview = document.getElementById('new-photo-preview');
+    if(!preview) return;
+    preview.innerHTML = '';
+    Array.from(fImages.files||[]).forEach(function(file){
       const img = document.createElement('img');
-      img.className = 'photo-preview'; img.id = 'f-image-preview'; img.src = url;
-      preview.replaceWith(img);
-    }
-    const removeBox = document.getElementById('f-image-remove');
-    if(removeBox) removeBox.checked = false;
+      img.className = 'photo-preview'; img.style.width='72px'; img.style.height='72px';
+      img.src = URL.createObjectURL(file);
+      preview.appendChild(img);
+    });
   });
 
   app.querySelectorAll('[data-save-phone]').forEach(function(el){ el.addEventListener('click', async function(){
@@ -7695,19 +7956,26 @@ function attachHandlers(){
       status: val('f-status'), shelf: val('f-shelf'), notes: val('f-notes')
     };
     if(!data.model){ showToast('Phone model is required', true); return; }
-    const imageFileEl = document.getElementById('f-image');
-    const imageFile = imageFileEl && imageFileEl.files && imageFileEl.files[0];
-    const removeChecked = document.getElementById('f-image-remove');
+    const existingPhone = id ? state.inventory.find(function(x){ return x.id===id; }) : null;
+    const existingImages = imagesFor(existingPhone);
+    const removed = state.photoModalRemovedUrls || [];
+    let keptImages = existingImages.filter(function(u){ return removed.indexOf(u)===-1; });
+    const fImagesEl = document.getElementById('f-images');
+    const newFiles = fImagesEl && fImagesEl.files ? Array.from(fImagesEl.files) : [];
     try{
-      if(imageFile){
-        showToast('Uploading photo…');
-        data.image_url = await uploadPhoneImage(imageFile);
-      } else if(removeChecked && removeChecked.checked){
-        data.image_url = null;
+      if(newFiles.length){
+        showToast('Uploading '+newFiles.length+' photo'+(newFiles.length===1?'':'s')+'…');
+        for(let i=0;i<newFiles.length;i++){
+          const url = await uploadPhoneImage(newFiles[i]);
+          keptImages.push(url);
+        }
       }
+      data.image_urls = keptImages;
+      data.image_url = keptImages.length ? keptImages[0] : null;
       if(id){ const { error } = await sb.from('inventory').update(data).eq('id', id); if(error) throw error; }
       else{ data.dealer_id = state.profile.id; const { error } = await sb.from('inventory').insert(data); if(error) throw error; }
       await refreshAll();
+      state.photoModalRemovedUrls = [];
       closeModal(); showToast(id?'Phone updated':'Phone added to inventory');
     } catch(e){ showToast('Save failed: '+(e.message||e), true); render(); }
   }); });
@@ -7851,6 +8119,10 @@ function attachHandlers(){
     try{
       const { error } = await sb.from('consignments').update({ amount_paid:newPaid, status:newStatus }).eq('id', id);
       if(error) throw error;
+      const { error: payErr } = await sb.from('consignment_payments').insert({
+        consignment_id: id, dealer_id: state.profile.id, amount: amount, note: val('cnp-note')||null
+      });
+      if(payErr) throw payErr;
       await refreshAll();
       closeModal(); showToast(newStatus==='Settled' ? 'Fully paid — marked as settled' : 'Payment logged');
     } catch(e){ showToast('Failed: '+(e.message||e), true); render(); }
@@ -8033,8 +8305,6 @@ Both apps are single static HTML files. To ship a change: edit the file, commit,
 
 schema.sql
 
-schema.sql
-
 -- ============================================================
 -- PhoneHub Pro — Supabase Schema (Phase 2, multi-tenant)
 -- ============================================================
@@ -8143,6 +8413,14 @@ create table if not exists inventory (
   updated_at timestamptz not null default now()
 );
 alter table inventory add column if not exists image_url text;
+
+-- Multi-image support: image_urls holds every photo for a phone (in display
+-- order); image_url is kept in sync as the first photo, for any older code
+-- path that still reads the single-image column.
+alter table inventory add column if not exists image_urls jsonb not null default '[]'::jsonb;
+update inventory set image_urls = jsonb_build_array(image_url)
+  where image_url is not null and jsonb_array_length(image_urls) = 0;
+
 create index if not exists idx_inventory_dealer on inventory(dealer_id);
 create index if not exists idx_inventory_model on inventory using gin (to_tsvector('simple', model));
 
@@ -8162,7 +8440,8 @@ create or replace view dealer_network_view
   with (security_invoker = false) as
   select
     i.id, i.dealer_id, d.shop_name as dealer_name, d.phone as dealer_phone,
-    i.model, i.storage, i.color, i.condition, i.battery, i.price, i.updated_at, i.image_url
+    i.model, i.storage, i.color, i.condition, i.battery, i.price, i.updated_at,
+    i.image_url, i.image_urls
   from inventory i
   join dealers d on d.id = i.dealer_id
   where i.status = 'In Stock';
@@ -8173,7 +8452,7 @@ grant select on dealer_network_view to authenticated;
 drop view if exists public_catalog;
 create or replace view public_catalog
   with (security_invoker = false) as
-  select id, dealer_id, model, storage, color, condition, battery, price, status, image_url
+  select id, dealer_id, model, storage, color, condition, battery, price, status, image_url, image_urls
   from inventory
   where status = 'In Stock';
 grant select on public_catalog to anon, authenticated;
@@ -8364,7 +8643,7 @@ create table if not exists broadcasts (
   storage text,
   color text,
   urgency text,
-  items jsonb not null default '[]'::jsonb,   -- type='Stock': [{inventory_id, model, storage, color, condition, price, image_url}, ...]
+  items jsonb not null default '[]'::jsonb,   -- type='Stock': [{inventory_id, model, storage, color, condition, price, image_url, image_urls}, ...]
   message text,                                -- optional free-text note shown with a Stock advert
   status text not null default 'Open' check (status in ('Open','Closed')),
   created_at timestamptz not null default now()
@@ -8430,7 +8709,28 @@ create policy "consignments_select_admin" on consignments for select
   using (is_admin());
 
 -- ------------------------------------------------------------
--- 6c. STOCK BROADCAST LOG  (private record of stock adverts sent straight to
+-- 6c. CONSIGNMENT PAYMENTS  (payment log behind each "Owed to you" entry —
+--     powers the detail dialog opened by clicking a row)
+-- ------------------------------------------------------------
+create table if not exists consignment_payments (
+  id uuid primary key default gen_random_uuid(),
+  consignment_id uuid not null references consignments(id) on delete cascade,
+  dealer_id uuid not null references dealers(id) on delete cascade,
+  amount numeric not null,
+  note text,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_consignment_payments_consignment on consignment_payments(consignment_id);
+alter table consignment_payments enable row level security;
+
+create policy "consignment_payments_all_own" on consignment_payments for all
+  using (dealer_id = auth.uid())
+  with check (dealer_id = auth.uid());
+create policy "consignment_payments_select_admin" on consignment_payments for select
+  using (is_admin());
+
+-- ------------------------------------------------------------
+-- 6d. STOCK BROADCAST LOG  (private record of stock adverts sent straight to
 --     saved contacts via WhatsApp — never visible to other dealers)
 -- ------------------------------------------------------------
 create table if not exists stock_broadcast_log (
