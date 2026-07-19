@@ -1985,7 +1985,13 @@ function attachHandlers(){
 
   const dealerFilterInput = document.getElementById('dealerFilterInput');
   if(dealerFilterInput){
-    dealerFilterInput.addEventListener('focus', function(){ state.dealerFilterOpen = true; render(); });
+    dealerFilterInput.addEventListener('focus', function(){
+      if(!state.dealerFilterOpen){
+        state.dealerFilterOpen = true; render();
+        const el = document.getElementById('dealerFilterInput');
+        if(el){ el.focus(); el.selectionStart = el.selectionEnd = el.value.length; }
+      }
+    });
     dealerFilterInput.addEventListener('input', function(e){
       state.dealerFilterQuery = e.target.value; state.dealerFilterOpen = true; render();
       const el = document.getElementById('dealerFilterInput'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = state.dealerFilterQuery.length; }
