@@ -1592,6 +1592,31 @@ html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font
 .rail-item svg{width:19px;height:19px;}
 .rail-item span{font-size:9.5px;font-weight:600;letter-spacing:.02em;}
 .rail-bottom{margin-top:auto;}
+.rail-close-btn{display:none;}
+.hamburger-btn{display:none;background:none;border:none;color:var(--text-dim);cursor:pointer;padding:6px;border-radius:var(--radius-sm);flex-shrink:0;}
+.hamburger-btn:hover{background:var(--panel-2);color:var(--text);}
+.hamburger-btn svg{width:20px;height:20px;display:block;}
+.rail-backdrop{display:none;}
+
+@media (max-width: 860px){
+  .hamburger-btn{display:flex;align-items:center;justify-content:center;}
+  .rail{
+    position:fixed;top:0;left:0;bottom:0;z-index:210;width:230px;
+    flex-direction:column;align-items:stretch;padding:56px 10px 18px;
+    transform:translateX(-100%);transition:transform .22s ease;box-shadow:8px 0 30px rgba(0,0,0,.45);
+  }
+  .rail.open{transform:translateX(0);}
+  .rail-logo{margin:0 6px 14px;}
+  .rail-item{width:auto;height:auto;flex-direction:row;justify-content:flex-start;gap:12px;padding:11px 12px;}
+  .rail-item.active::before{left:0;top:6px;bottom:6px;}
+  .rail-item span{font-size:13px;}
+  .rail-close-btn{display:block;position:absolute;top:12px;right:12px;background:none;border:none;
+    color:var(--text-faint);font-size:22px;line-height:1;cursor:pointer;}
+  .rail-close-btn:hover{color:var(--text);}
+  .rail-backdrop{display:block;position:fixed;inset:0;z-index:200;background:rgba(5,7,11,.6);
+    opacity:0;pointer-events:none;transition:opacity .22s ease;}
+  .rail-backdrop.open{opacity:1;pointer-events:auto;}
+}
 
 .main{flex:1;display:flex;flex-direction:column;min-width:0;}
 .topbar{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--border);background:var(--panel);}
@@ -1757,7 +1782,8 @@ const ICONS = {
   empty:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg>',
   bell:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>',
   consign:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="8" r="3"/><path d="M2.5 21v-1.5A4 4 0 016.5 15.5h1"/><path d="M21.5 21v-1.5a4 4 0 00-4-3.5h-1"/><path d="M9.5 17h5"/></svg>',
-  broadcast:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 10v4a1 1 0 001 1h1.5l5 4v-14l-5 4H5a1 1 0 00-1 1z"/><path d="M15 9a3.5 3.5 0 010 6"/><path d="M17.5 6.5a7 7 0 010 11"/></svg>'
+  broadcast:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 10v4a1 1 0 001 1h1.5l5 4v-14l-5 4H5a1 1 0 00-1 1z"/><path d="M15 9a3.5 3.5 0 010 6"/><path d="M17.5 6.5a7 7 0 010 11"/></svg>',
+  hamburger:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'
 };
 
 const CONFIG_KEY = 'phonehub-supabase-config';
@@ -1773,6 +1799,7 @@ const HARDCODED_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3
 const VAPID_PUBLIC_KEY = 'BBaI8oRyneg29btIHbptXiW5JA8oAXDk5V3MehmsvJXHvsQXn97QVCLTvwiKJI4QOIvp8S31krRlw0exiAJ-KWg';
 
 let sb = null;
+let dealerFilterBlurTimer = null;
 
 let state = {
   stage:'loading', // loading -> configure -> auth -> app
@@ -1783,8 +1810,10 @@ let state = {
   adminDealers:[], adminInventory:[], adminSales:[],
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
   networkView:'search', dealerSearchQuery:'', networkOrder:[], networkVisibleCount:20,
+  networkDealerFilter:null, dealerFilterQuery:'', dealerFilterOpen:false,
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'', bulkImportSupplierId:'',
   pushStatus:'unsupported', // unsupported | off | prompting | on | denied
+  mobileMenuOpen:false,
   inventorySupplierFilter:null, supplierFilterName:'',
   selectedInventoryIds:[], // checked rows in Inventory, used by the "Broadcast selected" flow
   broadcastComposer:{ids:[], target:'network', message:'', selectedContactIds:[]},
@@ -2446,7 +2475,9 @@ function render(){
   if(state.stage==='auth'){ app.innerHTML = renderAuthScreen() + renderIosInstallBanner(); attachAuthHandlers(); return; }
 
   app.innerHTML =
-    '<div class="rail">' +
+    '<div class="rail-backdrop '+(state.mobileMenuOpen?'open':'')+'" id="railBackdrop"></div>' +
+    '<div class="rail '+(state.mobileMenuOpen?'open':'')+'">' +
+      '<button class="rail-close-btn" id="railCloseBtn" aria-label="Close menu">×</button>' +
       '<div class="rail-logo">PH</div>' +
       railItem('dashboard','Home') + railItem('inventory','Stock') + railItem('sales','Sales') +
       railItem('calc','Price') + railItem('requests','Asks', badgeCount(state.requests.filter(function(r){return r.status==='Pending';}).length)) +
@@ -2456,6 +2487,7 @@ function render(){
     '</div>' +
     '<div class="main">' +
       '<div class="topbar" style="position:relative;">' +
+        '<button class="hamburger-btn" id="hamburgerBtn" aria-label="Open menu">'+ICONS.hamburger+'</button>' +
         '<div class="search-wrap"><span class="prompt">›</span>' +
         '<input id="globalSearch" placeholder="Search IMEI, model, or customer…" value="'+escapeAttr(state.searchQuery)+'"/></div>' +
         (state.searchQuery ? renderSearchDropdown() : '') +
@@ -2838,15 +2870,48 @@ function renderNetwork(){
     (state.networkView==='suppliers' ? renderSuppliers() : '');
 }
 
+function uniqueNetworkDealers(){
+  const seen = {}; const list = [];
+  state.dealerNetwork.forEach(function(d){
+    if(!seen[d.dealer_id]){ seen[d.dealer_id]=true; list.push({id:d.dealer_id, name:d.dealer_name}); }
+  });
+  return list.sort(function(a,b){ return String(a.name).localeCompare(String(b.name)); });
+}
+
+function renderDealerFilterDropdown(){
+  const dealers = uniqueNetworkDealers();
+  const q = state.dealerFilterQuery.toLowerCase();
+  const selected = state.networkDealerFilter ? dealers.find(function(d){ return d.id===state.networkDealerFilter; }) : null;
+  const filtered = q ? dealers.filter(function(d){ return String(d.name||'').toLowerCase().includes(q); }) : dealers;
+  return '<div style="position:relative;max-width:280px;margin-bottom:12px;">' +
+    '<input id="dealerFilterInput" autocomplete="off" placeholder="Filter by dealer…" value="'+escapeAttr(selected?selected.name:state.dealerFilterQuery)+'" '+(selected?'readonly':'')+' ' +
+      'style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 30px 9px 12px;color:var(--text);font-family:var(--font-body);font-size:13px;outline:none;"/>' +
+    (selected ? ('<button id="clearDealerFilterBtn" title="Clear dealer filter" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:17px;line-height:1;">×</button>') :
+      '<span style="position:absolute;right:10px;top:50%;transform:translateY(-50%);color:var(--text-faint);pointer-events:none;font-size:12px;">▾</span>') +
+    (state.dealerFilterOpen && !selected ? (
+      '<div style="position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:220px;overflow-y:auto;z-index:60;box-shadow:0 12px 28px rgba(0,0,0,.45);">' +
+        (filtered.length ? filtered.map(function(d){ return '<div class="search-row" data-select-dealer-filter="'+d.id+'">'+
+            '<span class="sr-main">'+escapeHtml(d.name)+(d.id===state.profile.id?' <span style="color:var(--text-faint);font-weight:400;">(you)</span>':'')+'</span>' +
+          '</div>'; }).join('') :
+          '<div style="padding:12px 14px;color:var(--text-faint);font-size:12.5px;">No dealers match</div>') +
+      '</div>'
+    ) : '') +
+  '</div>';
+}
+
 function renderNetworkSearch(){
   const q = state.dealerSearchQuery.toLowerCase();
-  let list, isSearching = !!q, showLoadMore = false, totalCount = 0;
+  const dealerFilterId = state.networkDealerFilter;
+  const isFiltered = !!q || !!dealerFilterId;
+  let list, showLoadMore = false, totalCount = 0;
 
-  if(isSearching){
-    list = state.dealerNetwork.filter(function(d){ return String(d.model||'').toLowerCase().includes(q); })
+  let base = dealerFilterId ? state.dealerNetwork.filter(function(d){ return d.dealer_id===dealerFilterId; }) : state.dealerNetwork;
+
+  if(isFiltered){
+    list = base.filter(function(d){ return !q || String(d.model||'').toLowerCase().includes(q); })
       .slice().sort(function(a,b){ return (Number(a.price)||0)-(Number(b.price)||0); });
   } else {
-    const byId = {}; state.dealerNetwork.forEach(function(d){ byId[d.id] = d; });
+    const byId = {}; base.forEach(function(d){ byId[d.id] = d; });
     const ordered = state.networkOrder.map(function(id){ return byId[id]; }).filter(Boolean);
     totalCount = ordered.length;
     list = ordered.slice(0, state.networkVisibleCount);
@@ -2854,16 +2919,17 @@ function renderNetworkSearch(){
   }
 
   return '<div class="section"><div class="section-body">' +
+      renderDealerFilterDropdown() +
       '<input id="dealerSearch" placeholder="e.g. S24 Ultra, iPhone 15…" value="'+escapeAttr(state.dealerSearchQuery)+'" ' +
       'style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;color:var(--text);font-family:var(--font-mono);font-size:13px;outline:none;margin-bottom:10px;"/>' +
-      (!isSearching && totalCount>0 ? ('<div style="font-size:11.5px;color:var(--text-faint);margin-bottom:14px;">Showing '+list.length+' of '+totalCount+' network listings, in random order — search above to find something specific.</div>') : '') +
+      (!isFiltered && totalCount>0 ? ('<div style="font-size:11.5px;color:var(--text-faint);margin-bottom:14px;">Showing '+list.length+' of '+totalCount+' network listings, in random order — search above to find something specific.</div>') : '') +
       '<div class="table-scroll">' +
       (list.length ? ('<table><thead><tr><th>Img</th><th>Model</th><th>Dealer</th><th>Price</th><th>Updated</th><th></th></tr></thead><tbody>' +
-        list.map(function(d,i){ return '<tr>' +
+        list.map(function(d,i){ return '<tr data-view-network-item="'+d.id+'" style="cursor:pointer;">' +
           '<td>'+thumbHTML(d.image_url)+'</td>' +
           '<td class="strong">'+escapeHtml(d.model)+(d.storage?(' · '+escapeHtml(d.storage)):'')+(d.color?(' · '+escapeHtml(d.color)):'')+(d.condition==='Used'?(' · '+d.battery+'% batt'):'')+'</td>' +
           '<td>'+escapeHtml(d.dealer_name)+(d.dealer_id===state.profile.id?' <span style="font-size:10px;color:var(--text-faint)">(you)</span>':'')+'<br>'+reputationBadgeHTML(d.dealer_id)+'</td>' +
-          '<td class="mono" style="color:'+(isSearching && i===0?'var(--success)':'var(--text)')+'">'+naira(d.price)+(isSearching && i===0?' <span style="font-size:10px">· lowest</span>':'')+'</td>' +
+          '<td class="mono" style="color:'+(isFiltered && i===0?'var(--success)':'var(--text)')+'">'+naira(d.price)+(isFiltered && i===0?' <span style="font-size:10px">· lowest</span>':'')+'</td>' +
           '<td class="mono" style="font-size:11px;color:var(--text-faint)">'+new Date(d.updated_at).toLocaleDateString()+'</td>' +
           '<td><a class="linklike" href="tel:'+escapeAttr(d.dealer_phone)+'">'+escapeHtml(d.dealer_phone||'—')+'</a></td>' +
         '</tr>'; }).join('') +
@@ -2898,7 +2964,7 @@ function renderStockAdvertCard(b){
     '<div class="section-body">' +
       (b.message ? ('<div style="color:var(--text-dim);font-size:13px;margin-bottom:12px;">'+escapeHtml(b.message)+'</div>') : '') +
       '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;">' +
-        items.map(function(it){ return '<div style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:10px;">' +
+        items.map(function(it,idx){ return '<div data-view-stock-item="'+b.id+'" data-item-index="'+idx+'" style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;">' +
           (it.image_url ? ('<img src="'+escapeAttr(it.image_url)+'" style="width:100%;height:84px;object-fit:cover;border-radius:6px;margin-bottom:6px;"/>') : '') +
           '<div class="strong" style="font-size:12.5px;">'+escapeHtml(it.model)+'</div>' +
           '<div style="font-size:11px;color:var(--text-faint);">'+escapeHtml(it.storage||'')+' '+escapeHtml(it.color||'')+'</div>' +
@@ -2941,9 +3007,13 @@ function renderBroadcasts(){
       '</div></div>';
   }).join('');
 
+  const openNeedCount = state.broadcasts.filter(function(b){ return b.status==='Open' && (b.type||'Need')==='Need'; }).length;
+  const openStockCount = state.broadcasts.filter(function(b){ return b.status==='Open' && (b.type||'Need')==='Stock'; }).length;
+  const pillCounts = { All: openNeedCount+openStockCount, Need: openNeedCount, Stock: openStockCount };
+
   return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">' +
       '<div class="pill-tabs" style="margin:0;">' +
-        ['All','Need','Stock'].map(function(f){ return '<div class="pill-tab '+(filter===f?'active':'')+'" data-broadcast-type-filter="'+f+'">'+(f==='All'?'All':(f==='Need'?'Need it':'For sale'))+'</div>'; }).join('') +
+        ['All','Need','Stock'].map(function(f){ return '<div class="pill-tab '+(filter===f?'active':'')+'" data-broadcast-type-filter="'+f+'">'+(f==='All'?'All':(f==='Need'?'Need it':'For sale'))+pillBadge(pillCounts[f])+'</div>'; }).join('') +
       '</div>' +
       '<button class="btn btn-accent" data-open-modal="newBroadcast">'+ICONS.plus+' New request</button>' +
     '</div>' +
@@ -3012,7 +3082,54 @@ function renderModal(){
   if(m.name==='addConsignment' || m.name==='editConsignment') return renderConsignmentModal(m);
   if(m.name==='logConsignmentPayment') return renderConsignmentPaymentModal(m);
   if(m.name==='sendBroadcastAdvert') return renderBroadcastComposerModal(m);
+  if(m.name==='viewStockItem') return renderStockItemModal(m);
+  if(m.name==='viewNetworkItem') return renderNetworkItemModal(m);
   return '';
+}
+
+function renderNetworkItemModal(m){
+  const d = state.dealerNetwork.find(function(x){ return x.id === m.payload.id; });
+  if(!d) return '';
+  const isMine = d.dealer_id === state.profile.id;
+  const row = function(k,v){ return '<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="color:var(--text-dim);">'+k+'</span><span class="strong">'+v+'</span></div>'; };
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
+    '<div class="modal-head"><h3>'+escapeHtml(d.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      (d.image_url ? ('<img src="'+escapeAttr(d.image_url)+'" style="width:100%;max-height:320px;object-fit:cover;border-radius:10px;margin-bottom:16px;"/>') :
+        ('<div class="thumb-placeholder" style="width:100%;height:200px;border-radius:10px;margin-bottom:16px;">'+ICONS.inventory+'</div>')) +
+      row('Storage', escapeHtml(d.storage||'—')) +
+      row('Color', escapeHtml(d.color||'—')) +
+      row('Condition', escapeHtml(d.condition||'—')+(d.condition==='Used' && d.battery!=null?(' · '+d.battery+'% battery'):'')) +
+      row('Price', '<span style="color:var(--accent);font-size:16px;">'+naira(d.price)+'</span>') +
+      row('Dealer', escapeHtml(d.dealer_name)+(isMine?' <span style="color:var(--text-faint);">(you)</span>':'')) +
+      row('Last updated', new Date(d.updated_at).toLocaleDateString()) +
+    '</div>' +
+    (!isMine && d.dealer_phone ? ('<div class="modal-foot"><a class="btn btn-accent" href="tel:'+escapeAttr(d.dealer_phone)+'" style="width:100%;justify-content:center;">📞 Contact '+escapeHtml(d.dealer_name)+'</a></div>') : '') +
+  '</div></div>';
+}
+
+function renderStockItemModal(m){
+  const b = state.broadcasts.find(function(x){ return x.id === m.payload.broadcastId; });
+  if(!b) return '';
+  const items = Array.isArray(b.items) ? b.items : (b.items ? (function(){ try{ return JSON.parse(b.items); }catch(e){ return []; } })() : []);
+  const it = items[m.payload.itemIndex];
+  if(!it) return '';
+  const isMine = b.dealer_id === state.profile.id;
+  const phone = dealerPhone(b.dealer_id);
+  const row = function(k,v){ return '<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="color:var(--text-dim);">'+k+'</span><span class="strong">'+v+'</span></div>'; };
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
+    '<div class="modal-head"><h3>'+escapeHtml(it.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      (it.image_url ? ('<img src="'+escapeAttr(it.image_url)+'" style="width:100%;max-height:320px;object-fit:cover;border-radius:10px;margin-bottom:16px;"/>') :
+        ('<div class="thumb-placeholder" style="width:100%;height:200px;border-radius:10px;margin-bottom:16px;">'+ICONS.inventory+'</div>')) +
+      row('Storage', escapeHtml(it.storage||'—')) +
+      row('Color', escapeHtml(it.color||'—')) +
+      row('Condition', escapeHtml(it.condition||'—')) +
+      row('Price', '<span style="color:var(--accent);font-size:16px;">'+(it.price?naira(it.price):'—')+'</span>') +
+      (!isMine ? ('<div style="margin-top:14px;font-size:12px;color:var(--text-faint);">Listed by '+escapeHtml(dealerName(b.dealer_id))+'</div>') : '') +
+    '</div>' +
+    (!isMine && phone ? ('<div class="modal-foot"><a class="btn btn-accent" href="tel:'+escapeAttr(phone)+'" style="width:100%;justify-content:center;">📞 Contact '+escapeHtml(dealerName(b.dealer_id))+'</a></div>') : '') +
+  '</div></div>';
 }
 
 function renderNotifModal(){
@@ -3295,8 +3412,15 @@ function attachHandlers(){
   const app = document.getElementById('app');
   app.querySelectorAll('[data-tab]').forEach(function(el){ el.addEventListener('click', function(){
     state.inventorySupplierFilter = null; state.supplierFilterName = '';
+    state.mobileMenuOpen = false;
     setTab(el.getAttribute('data-tab'));
   }); });
+  const hamburgerBtn = document.getElementById('hamburgerBtn');
+  if(hamburgerBtn) hamburgerBtn.addEventListener('click', function(){ state.mobileMenuOpen = true; render(); });
+  const railCloseBtn = document.getElementById('railCloseBtn');
+  if(railCloseBtn) railCloseBtn.addEventListener('click', function(){ state.mobileMenuOpen = false; render(); });
+  const railBackdrop = document.getElementById('railBackdrop');
+  if(railBackdrop) railBackdrop.addEventListener('click', function(){ state.mobileMenuOpen = false; render(); });
   const logoutBtn = document.getElementById('logoutBtn');
   if(logoutBtn) logoutBtn.addEventListener('click', async function(){ await sb.auth.signOut(); state.stage='auth'; state.profile=null; render(); });
 
@@ -3324,6 +3448,9 @@ function attachHandlers(){
   app.querySelectorAll('[data-network-view]').forEach(function(el){ el.addEventListener('click', function(){ state.networkView = el.getAttribute('data-network-view'); render(); }); });
   app.querySelectorAll('[data-broadcast-type-filter]').forEach(function(el){ el.addEventListener('click', function(){ state.networkBroadcastTypeFilter = el.getAttribute('data-broadcast-type-filter'); render(); }); });
   app.querySelectorAll('[data-toggle-status]').forEach(function(el){ el.addEventListener('click', function(){ toggleStatus(el.getAttribute('data-toggle-status')); }); });
+  app.querySelectorAll('[data-view-stock-item]').forEach(function(el){ el.addEventListener('click', function(){
+    openModal('viewStockItem', { broadcastId: el.getAttribute('data-view-stock-item'), itemIndex: Number(el.getAttribute('data-item-index')) });
+  }); });
 
   /* ---- Inventory selection + "send as broadcast" ---- */
   app.querySelectorAll('[data-select-inventory]').forEach(function(el){ el.addEventListener('change', function(){
@@ -3401,6 +3528,45 @@ function attachHandlers(){
     state.dealerSearchQuery = e.target.value; render();
     const el = document.getElementById('dealerSearch'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = state.dealerSearchQuery.length; }
   });
+
+  const dealerFilterInput = document.getElementById('dealerFilterInput');
+  if(dealerFilterInput){
+    dealerFilterInput.addEventListener('focus', function(){
+      if(dealerFilterBlurTimer){ clearTimeout(dealerFilterBlurTimer); dealerFilterBlurTimer = null; }
+      if(!state.dealerFilterOpen){
+        state.dealerFilterOpen = true; render();
+        const el = document.getElementById('dealerFilterInput');
+        if(el){ el.focus(); el.selectionStart = el.selectionEnd = el.value.length; }
+      }
+    });
+    dealerFilterInput.addEventListener('input', function(e){
+      if(dealerFilterBlurTimer){ clearTimeout(dealerFilterBlurTimer); dealerFilterBlurTimer = null; }
+      state.dealerFilterQuery = e.target.value; state.dealerFilterOpen = true; render();
+      const el = document.getElementById('dealerFilterInput'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = state.dealerFilterQuery.length; }
+    });
+    dealerFilterInput.addEventListener('blur', function(){
+      if(dealerFilterBlurTimer) clearTimeout(dealerFilterBlurTimer);
+      dealerFilterBlurTimer = setTimeout(function(){ dealerFilterBlurTimer = null; state.dealerFilterOpen = false; render(); }, 150);
+    });
+  }
+  app.querySelectorAll('[data-select-dealer-filter]').forEach(function(el){
+    el.addEventListener('mousedown', function(e){ e.preventDefault(); });
+    el.addEventListener('click', function(){
+      if(dealerFilterBlurTimer){ clearTimeout(dealerFilterBlurTimer); dealerFilterBlurTimer = null; }
+      state.networkDealerFilter = el.getAttribute('data-select-dealer-filter');
+      state.dealerFilterQuery = ''; state.dealerFilterOpen = false; render();
+    });
+  });
+  const clearDealerFilterBtn = document.getElementById('clearDealerFilterBtn');
+  if(clearDealerFilterBtn) clearDealerFilterBtn.addEventListener('click', function(){
+    if(dealerFilterBlurTimer){ clearTimeout(dealerFilterBlurTimer); dealerFilterBlurTimer = null; }
+    state.networkDealerFilter = null; state.dealerFilterQuery = ''; render();
+  });
+
+  app.querySelectorAll('[data-view-network-item]').forEach(function(el){ el.addEventListener('click', function(e){
+    if(e.target.closest('a')) return;
+    openModal('viewNetworkItem', { id: el.getAttribute('data-view-network-item') });
+  }); });
 
   const networkLoadMoreBtn = document.getElementById('networkLoadMoreBtn');
   if(networkLoadMoreBtn) networkLoadMoreBtn.addEventListener('click', function(){
@@ -5517,6 +5683,31 @@ html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font
 .rail-item svg{width:19px;height:19px;}
 .rail-item span{font-size:9.5px;font-weight:600;letter-spacing:.02em;}
 .rail-bottom{margin-top:auto;}
+.rail-close-btn{display:none;}
+.hamburger-btn{display:none;background:none;border:none;color:var(--text-dim);cursor:pointer;padding:6px;border-radius:var(--radius-sm);flex-shrink:0;}
+.hamburger-btn:hover{background:var(--panel-2);color:var(--text);}
+.hamburger-btn svg{width:20px;height:20px;display:block;}
+.rail-backdrop{display:none;}
+
+@media (max-width: 860px){
+  .hamburger-btn{display:flex;align-items:center;justify-content:center;}
+  .rail{
+    position:fixed;top:0;left:0;bottom:0;z-index:210;width:230px;
+    flex-direction:column;align-items:stretch;padding:56px 10px 18px;
+    transform:translateX(-100%);transition:transform .22s ease;box-shadow:8px 0 30px rgba(0,0,0,.45);
+  }
+  .rail.open{transform:translateX(0);}
+  .rail-logo{margin:0 6px 14px;}
+  .rail-item{width:auto;height:auto;flex-direction:row;justify-content:flex-start;gap:12px;padding:11px 12px;}
+  .rail-item.active::before{left:0;top:6px;bottom:6px;}
+  .rail-item span{font-size:13px;}
+  .rail-close-btn{display:block;position:absolute;top:12px;right:12px;background:none;border:none;
+    color:var(--text-faint);font-size:22px;line-height:1;cursor:pointer;}
+  .rail-close-btn:hover{color:var(--text);}
+  .rail-backdrop{display:block;position:fixed;inset:0;z-index:200;background:rgba(5,7,11,.6);
+    opacity:0;pointer-events:none;transition:opacity .22s ease;}
+  .rail-backdrop.open{opacity:1;pointer-events:auto;}
+}
 
 .main{flex:1;display:flex;flex-direction:column;min-width:0;}
 .topbar{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--border);background:var(--panel);}
@@ -5682,7 +5873,8 @@ const ICONS = {
   empty:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg>',
   bell:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>',
   consign:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="8" r="3"/><path d="M2.5 21v-1.5A4 4 0 016.5 15.5h1"/><path d="M21.5 21v-1.5a4 4 0 00-4-3.5h-1"/><path d="M9.5 17h5"/></svg>',
-  broadcast:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 10v4a1 1 0 001 1h1.5l5 4v-14l-5 4H5a1 1 0 00-1 1z"/><path d="M15 9a3.5 3.5 0 010 6"/><path d="M17.5 6.5a7 7 0 010 11"/></svg>'
+  broadcast:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 10v4a1 1 0 001 1h1.5l5 4v-14l-5 4H5a1 1 0 00-1 1z"/><path d="M15 9a3.5 3.5 0 010 6"/><path d="M17.5 6.5a7 7 0 010 11"/></svg>',
+  hamburger:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'
 };
 
 const CONFIG_KEY = 'phonehub-supabase-config';
@@ -5698,6 +5890,7 @@ const HARDCODED_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3
 const VAPID_PUBLIC_KEY = 'BBaI8oRyneg29btIHbptXiW5JA8oAXDk5V3MehmsvJXHvsQXn97QVCLTvwiKJI4QOIvp8S31krRlw0exiAJ-KWg';
 
 let sb = null;
+let dealerFilterBlurTimer = null;
 
 let state = {
   stage:'loading', // loading -> configure -> auth -> app
@@ -5708,8 +5901,10 @@ let state = {
   adminDealers:[], adminInventory:[], adminSales:[],
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
   networkView:'search', dealerSearchQuery:'', networkOrder:[], networkVisibleCount:20,
+  networkDealerFilter:null, dealerFilterQuery:'', dealerFilterOpen:false,
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'', bulkImportSupplierId:'',
   pushStatus:'unsupported', // unsupported | off | prompting | on | denied
+  mobileMenuOpen:false,
   inventorySupplierFilter:null, supplierFilterName:'',
   selectedInventoryIds:[], // checked rows in Inventory, used by the "Broadcast selected" flow
   broadcastComposer:{ids:[], target:'network', message:'', selectedContactIds:[]},
@@ -6371,7 +6566,9 @@ function render(){
   if(state.stage==='auth'){ app.innerHTML = renderAuthScreen() + renderIosInstallBanner(); attachAuthHandlers(); return; }
 
   app.innerHTML =
-    '<div class="rail">' +
+    '<div class="rail-backdrop '+(state.mobileMenuOpen?'open':'')+'" id="railBackdrop"></div>' +
+    '<div class="rail '+(state.mobileMenuOpen?'open':'')+'">' +
+      '<button class="rail-close-btn" id="railCloseBtn" aria-label="Close menu">×</button>' +
       '<div class="rail-logo">PH</div>' +
       railItem('dashboard','Home') + railItem('inventory','Stock') + railItem('sales','Sales') +
       railItem('calc','Price') + railItem('requests','Asks', badgeCount(state.requests.filter(function(r){return r.status==='Pending';}).length)) +
@@ -6381,6 +6578,7 @@ function render(){
     '</div>' +
     '<div class="main">' +
       '<div class="topbar" style="position:relative;">' +
+        '<button class="hamburger-btn" id="hamburgerBtn" aria-label="Open menu">'+ICONS.hamburger+'</button>' +
         '<div class="search-wrap"><span class="prompt">›</span>' +
         '<input id="globalSearch" placeholder="Search IMEI, model, or customer…" value="'+escapeAttr(state.searchQuery)+'"/></div>' +
         (state.searchQuery ? renderSearchDropdown() : '') +
@@ -6763,15 +6961,48 @@ function renderNetwork(){
     (state.networkView==='suppliers' ? renderSuppliers() : '');
 }
 
+function uniqueNetworkDealers(){
+  const seen = {}; const list = [];
+  state.dealerNetwork.forEach(function(d){
+    if(!seen[d.dealer_id]){ seen[d.dealer_id]=true; list.push({id:d.dealer_id, name:d.dealer_name}); }
+  });
+  return list.sort(function(a,b){ return String(a.name).localeCompare(String(b.name)); });
+}
+
+function renderDealerFilterDropdown(){
+  const dealers = uniqueNetworkDealers();
+  const q = state.dealerFilterQuery.toLowerCase();
+  const selected = state.networkDealerFilter ? dealers.find(function(d){ return d.id===state.networkDealerFilter; }) : null;
+  const filtered = q ? dealers.filter(function(d){ return String(d.name||'').toLowerCase().includes(q); }) : dealers;
+  return '<div style="position:relative;max-width:280px;margin-bottom:12px;">' +
+    '<input id="dealerFilterInput" autocomplete="off" placeholder="Filter by dealer…" value="'+escapeAttr(selected?selected.name:state.dealerFilterQuery)+'" '+(selected?'readonly':'')+' ' +
+      'style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 30px 9px 12px;color:var(--text);font-family:var(--font-body);font-size:13px;outline:none;"/>' +
+    (selected ? ('<button id="clearDealerFilterBtn" title="Clear dealer filter" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:17px;line-height:1;">×</button>') :
+      '<span style="position:absolute;right:10px;top:50%;transform:translateY(-50%);color:var(--text-faint);pointer-events:none;font-size:12px;">▾</span>') +
+    (state.dealerFilterOpen && !selected ? (
+      '<div style="position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:220px;overflow-y:auto;z-index:60;box-shadow:0 12px 28px rgba(0,0,0,.45);">' +
+        (filtered.length ? filtered.map(function(d){ return '<div class="search-row" data-select-dealer-filter="'+d.id+'">'+
+            '<span class="sr-main">'+escapeHtml(d.name)+(d.id===state.profile.id?' <span style="color:var(--text-faint);font-weight:400;">(you)</span>':'')+'</span>' +
+          '</div>'; }).join('') :
+          '<div style="padding:12px 14px;color:var(--text-faint);font-size:12.5px;">No dealers match</div>') +
+      '</div>'
+    ) : '') +
+  '</div>';
+}
+
 function renderNetworkSearch(){
   const q = state.dealerSearchQuery.toLowerCase();
-  let list, isSearching = !!q, showLoadMore = false, totalCount = 0;
+  const dealerFilterId = state.networkDealerFilter;
+  const isFiltered = !!q || !!dealerFilterId;
+  let list, showLoadMore = false, totalCount = 0;
 
-  if(isSearching){
-    list = state.dealerNetwork.filter(function(d){ return String(d.model||'').toLowerCase().includes(q); })
+  let base = dealerFilterId ? state.dealerNetwork.filter(function(d){ return d.dealer_id===dealerFilterId; }) : state.dealerNetwork;
+
+  if(isFiltered){
+    list = base.filter(function(d){ return !q || String(d.model||'').toLowerCase().includes(q); })
       .slice().sort(function(a,b){ return (Number(a.price)||0)-(Number(b.price)||0); });
   } else {
-    const byId = {}; state.dealerNetwork.forEach(function(d){ byId[d.id] = d; });
+    const byId = {}; base.forEach(function(d){ byId[d.id] = d; });
     const ordered = state.networkOrder.map(function(id){ return byId[id]; }).filter(Boolean);
     totalCount = ordered.length;
     list = ordered.slice(0, state.networkVisibleCount);
@@ -6779,16 +7010,17 @@ function renderNetworkSearch(){
   }
 
   return '<div class="section"><div class="section-body">' +
+      renderDealerFilterDropdown() +
       '<input id="dealerSearch" placeholder="e.g. S24 Ultra, iPhone 15…" value="'+escapeAttr(state.dealerSearchQuery)+'" ' +
       'style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;color:var(--text);font-family:var(--font-mono);font-size:13px;outline:none;margin-bottom:10px;"/>' +
-      (!isSearching && totalCount>0 ? ('<div style="font-size:11.5px;color:var(--text-faint);margin-bottom:14px;">Showing '+list.length+' of '+totalCount+' network listings, in random order — search above to find something specific.</div>') : '') +
+      (!isFiltered && totalCount>0 ? ('<div style="font-size:11.5px;color:var(--text-faint);margin-bottom:14px;">Showing '+list.length+' of '+totalCount+' network listings, in random order — search above to find something specific.</div>') : '') +
       '<div class="table-scroll">' +
       (list.length ? ('<table><thead><tr><th>Img</th><th>Model</th><th>Dealer</th><th>Price</th><th>Updated</th><th></th></tr></thead><tbody>' +
-        list.map(function(d,i){ return '<tr>' +
+        list.map(function(d,i){ return '<tr data-view-network-item="'+d.id+'" style="cursor:pointer;">' +
           '<td>'+thumbHTML(d.image_url)+'</td>' +
           '<td class="strong">'+escapeHtml(d.model)+(d.storage?(' · '+escapeHtml(d.storage)):'')+(d.color?(' · '+escapeHtml(d.color)):'')+(d.condition==='Used'?(' · '+d.battery+'% batt'):'')+'</td>' +
           '<td>'+escapeHtml(d.dealer_name)+(d.dealer_id===state.profile.id?' <span style="font-size:10px;color:var(--text-faint)">(you)</span>':'')+'<br>'+reputationBadgeHTML(d.dealer_id)+'</td>' +
-          '<td class="mono" style="color:'+(isSearching && i===0?'var(--success)':'var(--text)')+'">'+naira(d.price)+(isSearching && i===0?' <span style="font-size:10px">· lowest</span>':'')+'</td>' +
+          '<td class="mono" style="color:'+(isFiltered && i===0?'var(--success)':'var(--text)')+'">'+naira(d.price)+(isFiltered && i===0?' <span style="font-size:10px">· lowest</span>':'')+'</td>' +
           '<td class="mono" style="font-size:11px;color:var(--text-faint)">'+new Date(d.updated_at).toLocaleDateString()+'</td>' +
           '<td><a class="linklike" href="tel:'+escapeAttr(d.dealer_phone)+'">'+escapeHtml(d.dealer_phone||'—')+'</a></td>' +
         '</tr>'; }).join('') +
@@ -6823,7 +7055,7 @@ function renderStockAdvertCard(b){
     '<div class="section-body">' +
       (b.message ? ('<div style="color:var(--text-dim);font-size:13px;margin-bottom:12px;">'+escapeHtml(b.message)+'</div>') : '') +
       '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;">' +
-        items.map(function(it){ return '<div style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:10px;">' +
+        items.map(function(it,idx){ return '<div data-view-stock-item="'+b.id+'" data-item-index="'+idx+'" style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;">' +
           (it.image_url ? ('<img src="'+escapeAttr(it.image_url)+'" style="width:100%;height:84px;object-fit:cover;border-radius:6px;margin-bottom:6px;"/>') : '') +
           '<div class="strong" style="font-size:12.5px;">'+escapeHtml(it.model)+'</div>' +
           '<div style="font-size:11px;color:var(--text-faint);">'+escapeHtml(it.storage||'')+' '+escapeHtml(it.color||'')+'</div>' +
@@ -6866,9 +7098,13 @@ function renderBroadcasts(){
       '</div></div>';
   }).join('');
 
+  const openNeedCount = state.broadcasts.filter(function(b){ return b.status==='Open' && (b.type||'Need')==='Need'; }).length;
+  const openStockCount = state.broadcasts.filter(function(b){ return b.status==='Open' && (b.type||'Need')==='Stock'; }).length;
+  const pillCounts = { All: openNeedCount+openStockCount, Need: openNeedCount, Stock: openStockCount };
+
   return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">' +
       '<div class="pill-tabs" style="margin:0;">' +
-        ['All','Need','Stock'].map(function(f){ return '<div class="pill-tab '+(filter===f?'active':'')+'" data-broadcast-type-filter="'+f+'">'+(f==='All'?'All':(f==='Need'?'Need it':'For sale'))+'</div>'; }).join('') +
+        ['All','Need','Stock'].map(function(f){ return '<div class="pill-tab '+(filter===f?'active':'')+'" data-broadcast-type-filter="'+f+'">'+(f==='All'?'All':(f==='Need'?'Need it':'For sale'))+pillBadge(pillCounts[f])+'</div>'; }).join('') +
       '</div>' +
       '<button class="btn btn-accent" data-open-modal="newBroadcast">'+ICONS.plus+' New request</button>' +
     '</div>' +
@@ -6937,7 +7173,54 @@ function renderModal(){
   if(m.name==='addConsignment' || m.name==='editConsignment') return renderConsignmentModal(m);
   if(m.name==='logConsignmentPayment') return renderConsignmentPaymentModal(m);
   if(m.name==='sendBroadcastAdvert') return renderBroadcastComposerModal(m);
+  if(m.name==='viewStockItem') return renderStockItemModal(m);
+  if(m.name==='viewNetworkItem') return renderNetworkItemModal(m);
   return '';
+}
+
+function renderNetworkItemModal(m){
+  const d = state.dealerNetwork.find(function(x){ return x.id === m.payload.id; });
+  if(!d) return '';
+  const isMine = d.dealer_id === state.profile.id;
+  const row = function(k,v){ return '<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="color:var(--text-dim);">'+k+'</span><span class="strong">'+v+'</span></div>'; };
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
+    '<div class="modal-head"><h3>'+escapeHtml(d.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      (d.image_url ? ('<img src="'+escapeAttr(d.image_url)+'" style="width:100%;max-height:320px;object-fit:cover;border-radius:10px;margin-bottom:16px;"/>') :
+        ('<div class="thumb-placeholder" style="width:100%;height:200px;border-radius:10px;margin-bottom:16px;">'+ICONS.inventory+'</div>')) +
+      row('Storage', escapeHtml(d.storage||'—')) +
+      row('Color', escapeHtml(d.color||'—')) +
+      row('Condition', escapeHtml(d.condition||'—')+(d.condition==='Used' && d.battery!=null?(' · '+d.battery+'% battery'):'')) +
+      row('Price', '<span style="color:var(--accent);font-size:16px;">'+naira(d.price)+'</span>') +
+      row('Dealer', escapeHtml(d.dealer_name)+(isMine?' <span style="color:var(--text-faint);">(you)</span>':'')) +
+      row('Last updated', new Date(d.updated_at).toLocaleDateString()) +
+    '</div>' +
+    (!isMine && d.dealer_phone ? ('<div class="modal-foot"><a class="btn btn-accent" href="tel:'+escapeAttr(d.dealer_phone)+'" style="width:100%;justify-content:center;">📞 Contact '+escapeHtml(d.dealer_name)+'</a></div>') : '') +
+  '</div></div>';
+}
+
+function renderStockItemModal(m){
+  const b = state.broadcasts.find(function(x){ return x.id === m.payload.broadcastId; });
+  if(!b) return '';
+  const items = Array.isArray(b.items) ? b.items : (b.items ? (function(){ try{ return JSON.parse(b.items); }catch(e){ return []; } })() : []);
+  const it = items[m.payload.itemIndex];
+  if(!it) return '';
+  const isMine = b.dealer_id === state.profile.id;
+  const phone = dealerPhone(b.dealer_id);
+  const row = function(k,v){ return '<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="color:var(--text-dim);">'+k+'</span><span class="strong">'+v+'</span></div>'; };
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
+    '<div class="modal-head"><h3>'+escapeHtml(it.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      (it.image_url ? ('<img src="'+escapeAttr(it.image_url)+'" style="width:100%;max-height:320px;object-fit:cover;border-radius:10px;margin-bottom:16px;"/>') :
+        ('<div class="thumb-placeholder" style="width:100%;height:200px;border-radius:10px;margin-bottom:16px;">'+ICONS.inventory+'</div>')) +
+      row('Storage', escapeHtml(it.storage||'—')) +
+      row('Color', escapeHtml(it.color||'—')) +
+      row('Condition', escapeHtml(it.condition||'—')) +
+      row('Price', '<span style="color:var(--accent);font-size:16px;">'+(it.price?naira(it.price):'—')+'</span>') +
+      (!isMine ? ('<div style="margin-top:14px;font-size:12px;color:var(--text-faint);">Listed by '+escapeHtml(dealerName(b.dealer_id))+'</div>') : '') +
+    '</div>' +
+    (!isMine && phone ? ('<div class="modal-foot"><a class="btn btn-accent" href="tel:'+escapeAttr(phone)+'" style="width:100%;justify-content:center;">📞 Contact '+escapeHtml(dealerName(b.dealer_id))+'</a></div>') : '') +
+  '</div></div>';
 }
 
 function renderNotifModal(){
@@ -7220,8 +7503,15 @@ function attachHandlers(){
   const app = document.getElementById('app');
   app.querySelectorAll('[data-tab]').forEach(function(el){ el.addEventListener('click', function(){
     state.inventorySupplierFilter = null; state.supplierFilterName = '';
+    state.mobileMenuOpen = false;
     setTab(el.getAttribute('data-tab'));
   }); });
+  const hamburgerBtn = document.getElementById('hamburgerBtn');
+  if(hamburgerBtn) hamburgerBtn.addEventListener('click', function(){ state.mobileMenuOpen = true; render(); });
+  const railCloseBtn = document.getElementById('railCloseBtn');
+  if(railCloseBtn) railCloseBtn.addEventListener('click', function(){ state.mobileMenuOpen = false; render(); });
+  const railBackdrop = document.getElementById('railBackdrop');
+  if(railBackdrop) railBackdrop.addEventListener('click', function(){ state.mobileMenuOpen = false; render(); });
   const logoutBtn = document.getElementById('logoutBtn');
   if(logoutBtn) logoutBtn.addEventListener('click', async function(){ await sb.auth.signOut(); state.stage='auth'; state.profile=null; render(); });
 
@@ -7249,6 +7539,9 @@ function attachHandlers(){
   app.querySelectorAll('[data-network-view]').forEach(function(el){ el.addEventListener('click', function(){ state.networkView = el.getAttribute('data-network-view'); render(); }); });
   app.querySelectorAll('[data-broadcast-type-filter]').forEach(function(el){ el.addEventListener('click', function(){ state.networkBroadcastTypeFilter = el.getAttribute('data-broadcast-type-filter'); render(); }); });
   app.querySelectorAll('[data-toggle-status]').forEach(function(el){ el.addEventListener('click', function(){ toggleStatus(el.getAttribute('data-toggle-status')); }); });
+  app.querySelectorAll('[data-view-stock-item]').forEach(function(el){ el.addEventListener('click', function(){
+    openModal('viewStockItem', { broadcastId: el.getAttribute('data-view-stock-item'), itemIndex: Number(el.getAttribute('data-item-index')) });
+  }); });
 
   /* ---- Inventory selection + "send as broadcast" ---- */
   app.querySelectorAll('[data-select-inventory]').forEach(function(el){ el.addEventListener('change', function(){
@@ -7326,6 +7619,45 @@ function attachHandlers(){
     state.dealerSearchQuery = e.target.value; render();
     const el = document.getElementById('dealerSearch'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = state.dealerSearchQuery.length; }
   });
+
+  const dealerFilterInput = document.getElementById('dealerFilterInput');
+  if(dealerFilterInput){
+    dealerFilterInput.addEventListener('focus', function(){
+      if(dealerFilterBlurTimer){ clearTimeout(dealerFilterBlurTimer); dealerFilterBlurTimer = null; }
+      if(!state.dealerFilterOpen){
+        state.dealerFilterOpen = true; render();
+        const el = document.getElementById('dealerFilterInput');
+        if(el){ el.focus(); el.selectionStart = el.selectionEnd = el.value.length; }
+      }
+    });
+    dealerFilterInput.addEventListener('input', function(e){
+      if(dealerFilterBlurTimer){ clearTimeout(dealerFilterBlurTimer); dealerFilterBlurTimer = null; }
+      state.dealerFilterQuery = e.target.value; state.dealerFilterOpen = true; render();
+      const el = document.getElementById('dealerFilterInput'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = state.dealerFilterQuery.length; }
+    });
+    dealerFilterInput.addEventListener('blur', function(){
+      if(dealerFilterBlurTimer) clearTimeout(dealerFilterBlurTimer);
+      dealerFilterBlurTimer = setTimeout(function(){ dealerFilterBlurTimer = null; state.dealerFilterOpen = false; render(); }, 150);
+    });
+  }
+  app.querySelectorAll('[data-select-dealer-filter]').forEach(function(el){
+    el.addEventListener('mousedown', function(e){ e.preventDefault(); });
+    el.addEventListener('click', function(){
+      if(dealerFilterBlurTimer){ clearTimeout(dealerFilterBlurTimer); dealerFilterBlurTimer = null; }
+      state.networkDealerFilter = el.getAttribute('data-select-dealer-filter');
+      state.dealerFilterQuery = ''; state.dealerFilterOpen = false; render();
+    });
+  });
+  const clearDealerFilterBtn = document.getElementById('clearDealerFilterBtn');
+  if(clearDealerFilterBtn) clearDealerFilterBtn.addEventListener('click', function(){
+    if(dealerFilterBlurTimer){ clearTimeout(dealerFilterBlurTimer); dealerFilterBlurTimer = null; }
+    state.networkDealerFilter = null; state.dealerFilterQuery = ''; render();
+  });
+
+  app.querySelectorAll('[data-view-network-item]').forEach(function(el){ el.addEventListener('click', function(e){
+    if(e.target.closest('a')) return;
+    openModal('viewNetworkItem', { id: el.getAttribute('data-view-network-item') });
+  }); });
 
   const networkLoadMoreBtn = document.getElementById('networkLoadMoreBtn');
   if(networkLoadMoreBtn) networkLoadMoreBtn.addEventListener('click', function(){

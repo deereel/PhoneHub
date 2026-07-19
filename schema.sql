@@ -1,5 +1,3 @@
-schema.sql
-
 -- ============================================================
 -- PhoneHub Pro — Supabase Schema (Phase 2, multi-tenant)
 -- ============================================================
@@ -108,6 +106,14 @@ create table if not exists inventory (
   updated_at timestamptz not null default now()
 );
 alter table inventory add column if not exists image_url text;
+
+-- Multi-image support: image_urls holds every photo for a phone (in display
+-- order); image_url is kept in sync as the first photo, for any older code
+-- path that still reads the single-image column.
+alter table inventory add column if not exists image_urls jsonb not null default '[]'::jsonb;
+update inventory set image_urls = jsonb_build_array(image_url)
+  where image_url is not null and jsonb_array_length(image_urls) = 0;
+
 create index if not exists idx_inventory_dealer on inventory(dealer_id);
 create index if not exists idx_inventory_model on inventory using gin (to_tsvector('simple', model));
 
@@ -127,7 +133,8 @@ create or replace view dealer_network_view
   with (security_invoker = false) as
   select
     i.id, i.dealer_id, d.shop_name as dealer_name, d.phone as dealer_phone,
-    i.model, i.storage, i.color, i.condition, i.battery, i.price, i.updated_at, i.image_url
+    i.model, i.storage, i.color, i.condition, i.battery, i.price, i.updated_at,
+    i.image_url, i.image_urls
   from inventory i
   join dealers d on d.id = i.dealer_id
   where i.status = 'In Stock';
@@ -138,7 +145,7 @@ grant select on dealer_network_view to authenticated;
 drop view if exists public_catalog;
 create or replace view public_catalog
   with (security_invoker = false) as
-  select id, dealer_id, model, storage, color, condition, battery, price, status, image_url
+  select id, dealer_id, model, storage, color, condition, battery, price, status, image_url, image_urls
   from inventory
   where status = 'In Stock';
 grant select on public_catalog to anon, authenticated;
@@ -329,7 +336,7 @@ create table if not exists broadcasts (
   storage text,
   color text,
   urgency text,
-  items jsonb not null default '[]'::jsonb,   -- type='Stock': [{inventory_id, model, storage, color, condition, price, image_url}, ...]
+  items jsonb not null default '[]'::jsonb,   -- type='Stock': [{inventory_id, model, storage, color, condition, price, image_url, image_urls}, ...]
   message text,                                -- optional free-text note shown with a Stock advert
   status text not null default 'Open' check (status in ('Open','Closed')),
   created_at timestamptz not null default now()
@@ -395,7 +402,28 @@ create policy "consignments_select_admin" on consignments for select
   using (is_admin());
 
 -- ------------------------------------------------------------
--- 6c. STOCK BROADCAST LOG  (private record of stock adverts sent straight to
+-- 6c. CONSIGNMENT PAYMENTS  (payment log behind each "Owed to you" entry —
+--     powers the detail dialog opened by clicking a row)
+-- ------------------------------------------------------------
+create table if not exists consignment_payments (
+  id uuid primary key default gen_random_uuid(),
+  consignment_id uuid not null references consignments(id) on delete cascade,
+  dealer_id uuid not null references dealers(id) on delete cascade,
+  amount numeric not null,
+  note text,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_consignment_payments_consignment on consignment_payments(consignment_id);
+alter table consignment_payments enable row level security;
+
+create policy "consignment_payments_all_own" on consignment_payments for all
+  using (dealer_id = auth.uid())
+  with check (dealer_id = auth.uid());
+create policy "consignment_payments_select_admin" on consignment_payments for select
+  using (is_admin());
+
+-- ------------------------------------------------------------
+-- 6d. STOCK BROADCAST LOG  (private record of stock adverts sent straight to
 --     saved contacts via WhatsApp — never visible to other dealers)
 -- ------------------------------------------------------------
 create table if not exists stock_broadcast_log (
