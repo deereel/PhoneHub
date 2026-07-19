@@ -47,6 +47,31 @@ html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font
 .rail-item svg{width:19px;height:19px;}
 .rail-item span{font-size:9.5px;font-weight:600;letter-spacing:.02em;}
 .rail-bottom{margin-top:auto;}
+.rail-close-btn{display:none;}
+.hamburger-btn{display:none;background:none;border:none;color:var(--text-dim);cursor:pointer;padding:6px;border-radius:var(--radius-sm);flex-shrink:0;}
+.hamburger-btn:hover{background:var(--panel-2);color:var(--text);}
+.hamburger-btn svg{width:20px;height:20px;display:block;}
+.rail-backdrop{display:none;}
+
+@media (max-width: 860px){
+  .hamburger-btn{display:flex;align-items:center;justify-content:center;}
+  .rail{
+    position:fixed;top:0;left:0;bottom:0;z-index:210;width:230px;
+    flex-direction:column;align-items:stretch;padding:56px 10px 18px;
+    transform:translateX(-100%);transition:transform .22s ease;box-shadow:8px 0 30px rgba(0,0,0,.45);
+  }
+  .rail.open{transform:translateX(0);}
+  .rail-logo{margin:0 6px 14px;}
+  .rail-item{width:auto;height:auto;flex-direction:row;justify-content:flex-start;gap:12px;padding:11px 12px;}
+  .rail-item.active::before{left:0;top:6px;bottom:6px;}
+  .rail-item span{font-size:13px;}
+  .rail-close-btn{display:block;position:absolute;top:12px;right:12px;background:none;border:none;
+    color:var(--text-faint);font-size:22px;line-height:1;cursor:pointer;}
+  .rail-close-btn:hover{color:var(--text);}
+  .rail-backdrop{display:block;position:fixed;inset:0;z-index:200;background:rgba(5,7,11,.6);
+    opacity:0;pointer-events:none;transition:opacity .22s ease;}
+  .rail-backdrop.open{opacity:1;pointer-events:auto;}
+}
 
 .main{flex:1;display:flex;flex-direction:column;min-width:0;}
 .topbar{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--border);background:var(--panel);}
@@ -212,7 +237,8 @@ const ICONS = {
   empty:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg>',
   bell:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>',
   consign:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="8" r="3"/><path d="M2.5 21v-1.5A4 4 0 016.5 15.5h1"/><path d="M21.5 21v-1.5a4 4 0 00-4-3.5h-1"/><path d="M9.5 17h5"/></svg>',
-  broadcast:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 10v4a1 1 0 001 1h1.5l5 4v-14l-5 4H5a1 1 0 00-1 1z"/><path d="M15 9a3.5 3.5 0 010 6"/><path d="M17.5 6.5a7 7 0 010 11"/></svg>'
+  broadcast:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 10v4a1 1 0 001 1h1.5l5 4v-14l-5 4H5a1 1 0 00-1 1z"/><path d="M15 9a3.5 3.5 0 010 6"/><path d="M17.5 6.5a7 7 0 010 11"/></svg>',
+  hamburger:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'
 };
 
 const CONFIG_KEY = 'phonehub-supabase-config';
@@ -240,6 +266,7 @@ let state = {
   networkView:'search', dealerSearchQuery:'', networkOrder:[], networkVisibleCount:20,
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'', bulkImportSupplierId:'',
   pushStatus:'unsupported', // unsupported | off | prompting | on | denied
+  mobileMenuOpen:false,
   inventorySupplierFilter:null, supplierFilterName:'',
   selectedInventoryIds:[], // checked rows in Inventory, used by the "Broadcast selected" flow
   broadcastComposer:{ids:[], target:'network', message:'', selectedContactIds:[]},
@@ -901,7 +928,9 @@ function render(){
   if(state.stage==='auth'){ app.innerHTML = renderAuthScreen() + renderIosInstallBanner(); attachAuthHandlers(); return; }
 
   app.innerHTML =
-    '<div class="rail">' +
+    '<div class="rail-backdrop '+(state.mobileMenuOpen?'open':'')+'" id="railBackdrop"></div>' +
+    '<div class="rail '+(state.mobileMenuOpen?'open':'')+'">' +
+      '<button class="rail-close-btn" id="railCloseBtn" aria-label="Close menu">×</button>' +
       '<div class="rail-logo">PH</div>' +
       railItem('dashboard','Home') + railItem('inventory','Stock') + railItem('sales','Sales') +
       railItem('calc','Price') + railItem('requests','Asks', badgeCount(state.requests.filter(function(r){return r.status==='Pending';}).length)) +
@@ -911,6 +940,7 @@ function render(){
     '</div>' +
     '<div class="main">' +
       '<div class="topbar" style="position:relative;">' +
+        '<button class="hamburger-btn" id="hamburgerBtn" aria-label="Open menu">'+ICONS.hamburger+'</button>' +
         '<div class="search-wrap"><span class="prompt">›</span>' +
         '<input id="globalSearch" placeholder="Search IMEI, model, or customer…" value="'+escapeAttr(state.searchQuery)+'"/></div>' +
         (state.searchQuery ? renderSearchDropdown() : '') +
@@ -1353,7 +1383,7 @@ function renderStockAdvertCard(b){
     '<div class="section-body">' +
       (b.message ? ('<div style="color:var(--text-dim);font-size:13px;margin-bottom:12px;">'+escapeHtml(b.message)+'</div>') : '') +
       '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;">' +
-        items.map(function(it){ return '<div style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:10px;">' +
+        items.map(function(it,idx){ return '<div data-view-stock-item="'+b.id+'" data-item-index="'+idx+'" style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;">' +
           (it.image_url ? ('<img src="'+escapeAttr(it.image_url)+'" style="width:100%;height:84px;object-fit:cover;border-radius:6px;margin-bottom:6px;"/>') : '') +
           '<div class="strong" style="font-size:12.5px;">'+escapeHtml(it.model)+'</div>' +
           '<div style="font-size:11px;color:var(--text-faint);">'+escapeHtml(it.storage||'')+' '+escapeHtml(it.color||'')+'</div>' +
@@ -1467,7 +1497,32 @@ function renderModal(){
   if(m.name==='addConsignment' || m.name==='editConsignment') return renderConsignmentModal(m);
   if(m.name==='logConsignmentPayment') return renderConsignmentPaymentModal(m);
   if(m.name==='sendBroadcastAdvert') return renderBroadcastComposerModal(m);
+  if(m.name==='viewStockItem') return renderStockItemModal(m);
   return '';
+}
+
+function renderStockItemModal(m){
+  const b = state.broadcasts.find(function(x){ return x.id === m.payload.broadcastId; });
+  if(!b) return '';
+  const items = Array.isArray(b.items) ? b.items : (b.items ? (function(){ try{ return JSON.parse(b.items); }catch(e){ return []; } })() : []);
+  const it = items[m.payload.itemIndex];
+  if(!it) return '';
+  const isMine = b.dealer_id === state.profile.id;
+  const phone = dealerPhone(b.dealer_id);
+  const row = function(k,v){ return '<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="color:var(--text-dim);">'+k+'</span><span class="strong">'+v+'</span></div>'; };
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
+    '<div class="modal-head"><h3>'+escapeHtml(it.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      (it.image_url ? ('<img src="'+escapeAttr(it.image_url)+'" style="width:100%;max-height:320px;object-fit:cover;border-radius:10px;margin-bottom:16px;"/>') :
+        ('<div class="thumb-placeholder" style="width:100%;height:200px;border-radius:10px;margin-bottom:16px;">'+ICONS.inventory+'</div>')) +
+      row('Storage', escapeHtml(it.storage||'—')) +
+      row('Color', escapeHtml(it.color||'—')) +
+      row('Condition', escapeHtml(it.condition||'—')) +
+      row('Price', '<span style="color:var(--accent);font-size:16px;">'+(it.price?naira(it.price):'—')+'</span>') +
+      (!isMine ? ('<div style="margin-top:14px;font-size:12px;color:var(--text-faint);">Listed by '+escapeHtml(dealerName(b.dealer_id))+'</div>') : '') +
+    '</div>' +
+    (!isMine && phone ? ('<div class="modal-foot"><a class="btn btn-accent" href="tel:'+escapeAttr(phone)+'" style="width:100%;justify-content:center;">📞 Contact '+escapeHtml(dealerName(b.dealer_id))+'</a></div>') : '') +
+  '</div></div>';
 }
 
 function renderNotifModal(){
@@ -1750,8 +1805,15 @@ function attachHandlers(){
   const app = document.getElementById('app');
   app.querySelectorAll('[data-tab]').forEach(function(el){ el.addEventListener('click', function(){
     state.inventorySupplierFilter = null; state.supplierFilterName = '';
+    state.mobileMenuOpen = false;
     setTab(el.getAttribute('data-tab'));
   }); });
+  const hamburgerBtn = document.getElementById('hamburgerBtn');
+  if(hamburgerBtn) hamburgerBtn.addEventListener('click', function(){ state.mobileMenuOpen = true; render(); });
+  const railCloseBtn = document.getElementById('railCloseBtn');
+  if(railCloseBtn) railCloseBtn.addEventListener('click', function(){ state.mobileMenuOpen = false; render(); });
+  const railBackdrop = document.getElementById('railBackdrop');
+  if(railBackdrop) railBackdrop.addEventListener('click', function(){ state.mobileMenuOpen = false; render(); });
   const logoutBtn = document.getElementById('logoutBtn');
   if(logoutBtn) logoutBtn.addEventListener('click', async function(){ await sb.auth.signOut(); state.stage='auth'; state.profile=null; render(); });
 
@@ -1779,6 +1841,9 @@ function attachHandlers(){
   app.querySelectorAll('[data-network-view]').forEach(function(el){ el.addEventListener('click', function(){ state.networkView = el.getAttribute('data-network-view'); render(); }); });
   app.querySelectorAll('[data-broadcast-type-filter]').forEach(function(el){ el.addEventListener('click', function(){ state.networkBroadcastTypeFilter = el.getAttribute('data-broadcast-type-filter'); render(); }); });
   app.querySelectorAll('[data-toggle-status]').forEach(function(el){ el.addEventListener('click', function(){ toggleStatus(el.getAttribute('data-toggle-status')); }); });
+  app.querySelectorAll('[data-view-stock-item]').forEach(function(el){ el.addEventListener('click', function(){
+    openModal('viewStockItem', { broadcastId: el.getAttribute('data-view-stock-item'), itemIndex: Number(el.getAttribute('data-item-index')) });
+  }); });
 
   /* ---- Inventory selection + "send as broadcast" ---- */
   app.querySelectorAll('[data-select-inventory]').forEach(function(el){ el.addEventListener('change', function(){
