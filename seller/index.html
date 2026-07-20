@@ -514,25 +514,75 @@ function generateInvoicePDF(sale){
 }
 
 /* ---------- push notifications ---------- */
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', function(e){
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  render();
+});
+window.addEventListener('appinstalled', function(){
+  deferredInstallPrompt = null;
+  render();
+});
+
+function checkInstallBannerVisibility(){
+  if(state.stage === 'app' || state.stage === 'auth'){
+    render();
+  }
+}
+window.addEventListener('visibilitychange', function(){
+  if(document.visibilityState === 'visible') checkInstallBannerVisibility();
+});
+window.addEventListener('focus', checkInstallBannerVisibility);
+
 function isIOSDevice(){
   return /iP(hone|od|ad)/.test(navigator.userAgent) ||
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPadOS reports as Mac
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 }
 function isStandaloneDisplay(){
   return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
 }
-function shouldShowIosInstallBanner(){
-  return isIOSDevice() && !isStandaloneDisplay();
+function shouldShowInstallBanner(){
+  return !isStandaloneDisplay();
 }
-function renderIosInstallBanner(){
-  if(!shouldShowIosInstallBanner()) return '';
-  return '<div id="iosInstallBanner" style="position:fixed;left:0;right:0;bottom:0;z-index:150;background:var(--panel-2);border-top:1px solid var(--accent);padding:12px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 -8px 24px rgba(0,0,0,.4);">' +
+function renderInstallBanner(){
+  if(!shouldShowInstallBanner()) return '';
+  const wrapStyle = 'position:fixed;left:0;right:0;bottom:0;z-index:150;background:var(--panel-2);border-top:1px solid var(--accent);padding:12px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 -8px 24px rgba(0,0,0,.4);';
+  if(isIOSDevice()){
+    return '<div id="installBanner" style="'+wrapStyle+'">' +
+      '<div style="flex:1;font-size:12.5px;color:var(--text);">' +
+        '<strong>Install PhoneHub on this iPhone</strong><br>' +
+        '<span style="color:var(--text-dim);">Tap the Share icon <span style="display:inline-block;transform:translateY(2px)">'+ICONS_SHARE+'</span> below, then "Add to Home Screen" to receive phone and order requests. This also turns on notifications.</span>' +
+      '</div>' +
+    '</div>';
+  }
+  return '<div id="installBanner" style="'+wrapStyle+'">' +
     '<div style="flex:1;font-size:12.5px;color:var(--text);">' +
-      '<strong>Install PhoneHub on this iPhone</strong><br>' +
-      '<span style="color:var(--text-dim);">Tap the Share icon <span style="display:inline-block;transform:translateY(2px)">'+ICONS_SHARE+'</span> below, then "Add to Home Screen" to receive phone and order requests. This also turns on notifications.</span>' +
+      '<strong>Install PhoneHub on this device</strong><br>' +
+      '<span style="color:var(--text-dim);">Install the app to get phone and order alerts even when your browser is closed.</span>' +
     '</div>' +
+    (deferredInstallPrompt
+      ? '<button class="btn btn-accent btn-sm" id="installAppBtn">Install</button>'
+      : '<span style="font-size:11px;color:var(--text-faint);white-space:nowrap;">Use browser menu → "Install app"</span>') +
   '</div>';
 }
+
+async function forceCacheUpdate(){
+  showToast('Clearing cache and updating…');
+  try{
+    if(window.caches && caches.keys){
+      const keys = await caches.keys();
+      await Promise.all(keys.map(function(k){ return caches.delete(k); }));
+    }
+    if('serviceWorker' in navigator){
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(function(r){ return r.unregister(); }));
+    }
+  } catch(e){ /* ignore — reload regardless */ }
+  const url = window.location.href.split('?')[0].split('#')[0];
+  window.location.href = url + '?_cb=' + Date.now();
+}
+
 const ICONS_SHARE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/></svg>';
 function urlBase64ToUint8Array(base64String){
   const padding = '='.repeat((4 - base64String.length % 4) % 4);
@@ -1037,7 +1087,7 @@ function render(){
   const app = document.getElementById('app');
   if(state.stage==='loading'){ app.innerHTML = '<div class="loading-screen"><div class="spinner"></div>booting dealer console…</div>'; return; }
   if(state.stage==='configure'){ app.innerHTML = renderConfigureScreen(); attachConfigureHandlers(); return; }
-  if(state.stage==='auth'){ app.innerHTML = renderAuthScreen() + renderIosInstallBanner(); attachAuthHandlers(); return; }
+  if(state.stage==='auth'){ app.innerHTML = renderAuthScreen() + renderInstallBanner(); attachAuthHandlers(); return; }
 
   app.innerHTML =
     '<div class="rail-backdrop '+(state.mobileMenuOpen?'open':'')+'" id="railBackdrop"></div>' +
@@ -1066,7 +1116,7 @@ function render(){
       '<div class="content">'+renderTab()+'</div>' +
     '</div>' +
     (state.modal ? renderModal() : '') +
-    renderIosInstallBanner() +
+    renderInstallBanner() +
     (state.toast ? ('<div class="toast '+(state.toastErr?'err':'')+'">'+escapeHtml(state.toast)+'</div>') : '');
   attachHandlers();
 }
@@ -1682,6 +1732,10 @@ function renderAdmin(){
       '<div class="kpi"><div class="kpi-label">Total phones tracked</div><div class="kpi-value">'+totalPhones+'</div></div>' +
       '<div class="kpi"><div class="kpi-label">Total platform revenue</div><div class="kpi-value accent">'+naira(totalRevenue)+'</div></div>' +
     '</div>' +
+    '<div class="section"><div class="section-body" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;">' +
+      '<div style="font-size:12.5px;color:var(--text-dim);">Force every device to fetch the latest deployed version — clears cached files, unregisters the old service worker, and reloads. Use this right after you push a change.</div>' +
+      '<button class="btn btn-accent" id="forceCacheUpdateBtn">🔄 Force cache update</button>' +
+    '</div></div>' +
     '<div class="section"><div class="section-head"><h3>Dealers</h3></div><div class="section-body table-scroll" style="padding:0;">' +
       '<table><thead><tr><th>Shop</th><th>Location</th><th>Phone</th><th>Phones tracked</th><th>Sales</th><th>Revenue</th><th>Joined</th></tr></thead><tbody>' +
       dealers.map(function(d){
@@ -2167,6 +2221,9 @@ function attachHandlers(){
     state.mobileMenuOpen = false;
     setTab(el.getAttribute('data-tab'));
   }); });
+
+  const forceCacheUpdateBtn = document.getElementById('forceCacheUpdateBtn');
+  if(forceCacheUpdateBtn) forceCacheUpdateBtn.addEventListener('click', forceCacheUpdate);
   const hamburgerBtn = document.getElementById('hamburgerBtn');
   if(hamburgerBtn) hamburgerBtn.addEventListener('click', function(){ state.mobileMenuOpen = true; render(); });
   const railCloseBtn = document.getElementById('railCloseBtn');
@@ -2189,6 +2246,15 @@ function attachHandlers(){
   if(enablePushBtn) enablePushBtn.addEventListener('click', enablePush);
   const disablePushBtn = document.getElementById('disablePushBtn');
   if(disablePushBtn) disablePushBtn.addEventListener('click', disablePush);
+
+  const installAppBtn = document.getElementById('installAppBtn');
+  if(installAppBtn) installAppBtn.addEventListener('click', async function(){
+    if(!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    render();
+  });
 
   const gs = document.getElementById('globalSearch');
   if(gs){
