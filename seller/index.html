@@ -1081,6 +1081,7 @@ function parseBulkLaptop(text){
   });
   return { rows: rows, skipped: skipped };
 }
+function loadConfig(){
   if(HARDCODED_SUPABASE_URL && HARDCODED_SUPABASE_ANON_KEY){
     return { url: HARDCODED_SUPABASE_URL, key: HARDCODED_SUPABASE_ANON_KEY };
   }
@@ -2274,6 +2275,8 @@ function renderLaptopBulkImportPreview(){
       'Couldn\'t confidently recognize the brand on '+unparsed.length+' line'+(unparsed.length===1?'':'s')+' (added as-is from the original text — rename or uncheck after review): ' +
       unparsed.map(function(u){ return escapeHtml(u.raw); }).join(', ') + '</div>') : '');
 }
+
+function renderSaleModal(){
   const available = state.inventory.filter(function(p){ return p.status==='In Stock'; });
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>Log a sale</h3><button class="close-x" data-close-modal="1">×</button></div>' +

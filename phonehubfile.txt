@@ -1720,7 +1720,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-famil
 .rail-item.active::before{content:'';position:absolute;left:-18px;top:8px;bottom:8px;width:3px;background:var(--accent);border-radius:2px;}
 .rail-item svg{width:19px;height:19px;}
 .rail-item span{font-size:9.5px;font-weight:600;letter-spacing:.02em;}
-.rail-bottom{margin-top:auto;}
+.rail-bottom{margin-top:auto;display:none;}
 .rail-close-btn{display:none;}
 .hamburger-btn{display:none;background:none;border:none;color:var(--text-dim);cursor:pointer;padding:6px;border-radius:var(--radius-sm);flex-shrink:0;}
 .hamburger-btn:hover{background:var(--panel-2);color:var(--text);}
@@ -1745,6 +1745,10 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-famil
   .rail-backdrop{display:block;position:fixed;inset:0;z-index:200;background:rgba(5,7,11,.6);
     opacity:0;pointer-events:none;transition:opacity .22s ease;}
   .rail-backdrop.open{opacity:1;pointer-events:auto;}
+  .topbar-right{display:none;}
+  .rail-bottom{display:flex;flex-direction:column;gap:4px;margin-top:auto;padding-top:10px;border-top:1px solid var(--border);}
+  .rail-bottom-item{width:auto;height:auto;flex-direction:row;justify-content:flex-start;gap:12px;padding:11px 12px;}
+  .rail-bottom-item span{font-size:13px;}
 }
 
 .main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;}
@@ -1757,6 +1761,13 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-famil
 .search-wrap input::placeholder{color:var(--text-faint);}
 .topbar-right{margin-left:auto;display:flex;align-items:center;gap:14px;color:var(--text-dim);font-size:12.5px;}
 .topbar-right svg{ width:18px; height:18px; display:block; }
+
+.rail-bottom-item{width:56px;height:52px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:4px;border-radius:var(--radius-sm);cursor:pointer;color:var(--text-faint);transition:.15s;position:relative;}
+.rail-bottom-item:hover{background:var(--panel-2);color:var(--text-dim);}
+.rail-bottom-item.on{color:var(--success);}
+.rail-bottom-item svg{width:19px;height:19px;}
+.rail-bottom-item span{font-size:9.5px;font-weight:600;letter-spacing:.02em;}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--success);box-shadow:0 0 0 3px var(--success-dim);}
 .bell{cursor:pointer;color:var(--text-faint);position:relative;}
 .bell:hover{color:var(--accent);}
@@ -1828,6 +1839,7 @@ tr:hover td{background:var(--panel-2);}
 .badge-open{background:var(--accent-dim2);color:var(--accent);}
 .badge-closed{background:var(--panel-3);color:var(--text-faint);}
 .badge-admin{background:linear-gradient(90deg,var(--admin-grad-1),var(--admin-grad-2));color:var(--accent);}
+.badge-duplicate{background:#3A3320;color:var(--accent);}
 
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
 .field{display:flex;flex-direction:column;gap:6px;}
@@ -1977,6 +1989,7 @@ let state = {
   networkCategoryFilter:'All', // All | Phone | Laptop — filter for the Network > Search stock view
   networkDealerFilter:null, dealerFilterQuery:'', dealerFilterOpen:false,
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'', bulkImportSupplierId:'',
+  bulkImportLaptopText:'', bulkImportLaptopRows:[], bulkImportLaptopSkipped:[], bulkImportLaptopCondition:'Used', bulkImportLaptopSupplier:'', bulkImportLaptopSupplierId:'',
   pushStatus:'unsupported', // unsupported | off | prompting | on | denied
   mobileMenuOpen:false,
   inventorySupplierFilter:null, supplierFilterName:'',
@@ -2160,25 +2173,75 @@ function generateInvoicePDF(sale){
 }
 
 /* ---------- push notifications ---------- */
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', function(e){
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  render();
+});
+window.addEventListener('appinstalled', function(){
+  deferredInstallPrompt = null;
+  render();
+});
+
+function checkInstallBannerVisibility(){
+  if(state.stage === 'app' || state.stage === 'auth'){
+    render();
+  }
+}
+window.addEventListener('visibilitychange', function(){
+  if(document.visibilityState === 'visible') checkInstallBannerVisibility();
+});
+window.addEventListener('focus', checkInstallBannerVisibility);
+
 function isIOSDevice(){
   return /iP(hone|od|ad)/.test(navigator.userAgent) ||
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPadOS reports as Mac
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 }
 function isStandaloneDisplay(){
   return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
 }
-function shouldShowIosInstallBanner(){
-  return isIOSDevice() && !isStandaloneDisplay();
+function shouldShowInstallBanner(){
+  return !isStandaloneDisplay();
 }
-function renderIosInstallBanner(){
-  if(!shouldShowIosInstallBanner()) return '';
-  return '<div id="iosInstallBanner" style="position:fixed;left:0;right:0;bottom:0;z-index:150;background:var(--panel-2);border-top:1px solid var(--accent);padding:12px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 -8px 24px rgba(0,0,0,.4);">' +
+function renderInstallBanner(){
+  if(!shouldShowInstallBanner()) return '';
+  const wrapStyle = 'position:fixed;left:0;right:0;bottom:0;z-index:150;background:var(--panel-2);border-top:1px solid var(--accent);padding:12px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 -8px 24px rgba(0,0,0,.4);';
+  if(isIOSDevice()){
+    return '<div id="installBanner" style="'+wrapStyle+'">' +
+      '<div style="flex:1;font-size:12.5px;color:var(--text);">' +
+        '<strong>Install PhoneHub on this iPhone</strong><br>' +
+        '<span style="color:var(--text-dim);">Tap the Share icon <span style="display:inline-block;transform:translateY(2px)">'+ICONS_SHARE+'</span> below, then "Add to Home Screen" to receive phone and order requests. This also turns on notifications.</span>' +
+      '</div>' +
+    '</div>';
+  }
+  return '<div id="installBanner" style="'+wrapStyle+'">' +
     '<div style="flex:1;font-size:12.5px;color:var(--text);">' +
-      '<strong>Install PhoneHub on this iPhone</strong><br>' +
-      '<span style="color:var(--text-dim);">Tap the Share icon <span style="display:inline-block;transform:translateY(2px)">'+ICONS_SHARE+'</span> below, then "Add to Home Screen" to receive phone and order requests. This also turns on notifications.</span>' +
+      '<strong>Install PhoneHub on this device</strong><br>' +
+      '<span style="color:var(--text-dim);">Install the app to get phone and order alerts even when your browser is closed.</span>' +
     '</div>' +
+    (deferredInstallPrompt
+      ? '<button class="btn btn-accent btn-sm" id="installAppBtn">Install</button>'
+      : '<span style="font-size:11px;color:var(--text-faint);white-space:nowrap;">Use browser menu → "Install app"</span>') +
   '</div>';
 }
+
+async function forceCacheUpdate(){
+  showToast('Clearing cache and updating…');
+  try{
+    if(window.caches && caches.keys){
+      const keys = await caches.keys();
+      await Promise.all(keys.map(function(k){ return caches.delete(k); }));
+    }
+    if('serviceWorker' in navigator){
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(function(r){ return r.unregister(); }));
+    }
+  } catch(e){ /* ignore — reload regardless */ }
+  const url = window.location.href.split('?')[0].split('#')[0];
+  window.location.href = url + '?_cb=' + Date.now();
+}
+
 const ICONS_SHARE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/></svg>';
 function urlBase64ToUint8Array(base64String){
   const padding = '='.repeat((4 - base64String.length % 4) % 4);
@@ -2410,7 +2473,10 @@ function parseBulkStockLine(raw){
   var connTag = connFirst.tag;
 
   var priceInfo = extractPrice(line);
-  if(!priceInfo){ return null; }
+  var hasPrice = !!priceInfo;
+  if(!priceInfo){
+    priceInfo = { value: 0, start: line.length, end: line.length };
+  }
 
   var leadingText = cleanSeparators(line.slice(0, priceInfo.start));
   var trailingText = line.slice(priceInfo.end);
@@ -2451,9 +2517,20 @@ function parseBulkStockLine(raw){
   if(connTag) model = model + ' ('+connTag+')';
 
   return {
-    raw: raw, model: model, storage: storage, price: priceInfo.value,
+    raw: raw, model: model, storage: storage, price: priceInfo.value, hasPrice: hasPrice,
     include: !unavailable, flagged: unavailable, quantity: 1, recognized: !!result
   };
+}
+
+function isDuplicatePhone(row, inventory){
+  if(!inventory || !inventory.length) return null;
+  return inventory.find(function(p){
+    return p.model === row.model &&
+      (p.storage||'') === (row.storage||'') &&
+      (p.color||'') === (row.color||'') &&
+      (p.condition||'') === (row.condition||'') &&
+      (p.supplier||'') === (row.supplier||'');
+  }) || null;
 }
 
 function parseBulkStock(text){
@@ -2468,14 +2545,188 @@ function parseBulkStock(text){
       return;
     }
     if(!parsed.recognized) skipped.push({raw:raw});
-    rows.push({
-      raw: parsed.raw, model: parsed.model, storage: parsed.storage, price: parsed.price,
-      include: parsed.include, flagged: parsed.flagged, quantity: parsed.quantity, sectionLabel: sectionLabel
-    });
+    const row = {
+      raw: parsed.raw, model: parsed.model, storage: parsed.storage, price: parsed.price, hasPrice: parsed.hasPrice,
+      include: parsed.include, flagged: parsed.flagged, quantity: parsed.quantity, sectionLabel: sectionLabel, duplicate: null
+    };
+    const dup = isDuplicatePhone(row, state.inventory);
+    if(dup) row.duplicate = dup.id;
+    rows.push(row);
   });
   return { rows: rows, skipped: skipped };
 }
 
+const LAPTOP_BRANDS = [
+  ['hp','HP'],['dell','Dell'],['lenovo','Lenovo'],['apple','Apple'],['macbook','MacBook'],
+  ['asus','ASUS'],['acer','Acer'],['toshiba','Toshiba'],['samsung','Samsung'],['microsoft','Microsoft'],
+  ['surface','Surface'],['razer','Razer'],['msi','MSI'],['huawei','Huawei'],['xiaomi','Xiaomi'],
+  ['alienware','Alienware'],['lg','LG'],['panasonic','Panasonic'],['vaio','VAIO'],['chromebook','Chromebook']
+];
+
+function tryLaptopBrand(compact){
+  var body = compact;
+  var brand = null;
+  for(var i=0;i<LAPTOP_BRANDS.length;i++){
+    if(body.indexOf(LAPTOP_BRANDS[i][0])===0){
+      brand = LAPTOP_BRANDS[i][1];
+      body = body.slice(LAPTOP_BRANDS[i][0].length);
+      break;
+    }
+  }
+  if(!brand){
+    var yr = body.match(/^(\d{4})/);
+    if(yr){
+      var rest = body.slice(yr[1].length);
+      for(var j=0;j<LAPTOP_BRANDS.length;j++){
+        if(rest.indexOf(LAPTOP_BRANDS[j][0])===0){
+          brand = LAPTOP_BRANDS[j][1];
+          body = rest.slice(LAPTOP_BRANDS[j][0].length);
+          break;
+        }
+      }
+    }
+  }
+  if(!brand) return null;
+  var model = body.replace(/^[\s\-_.:]+|[\s\-_.:]+$/g,'').replace(/\s+/g,' ');
+  if(!model) model = '(unknown model)';
+  return { brand: brand, model: model };
+}
+
+function parseBulkLaptopLine(raw){
+  var flagged = /[\u274c\u2716\u2717]/.test(raw);
+  var line = raw.replace(/[\u274c\u2716\u2717]/g, '');
+
+  line = line.replace(/^[\u{1F1FA}\u{1F1F8}]/u, '').trim();
+  line = line.replace(/-{2,}.*$/, '').trim();
+
+  var priceInfo = extractPrice(line);
+  var hasPrice = !!priceInfo;
+  if(!priceInfo){
+    priceInfo = { value: 0, start: line.length, end: line.length };
+  }
+
+  var leadingText = cleanSeparators(line.slice(0, priceInfo.start));
+  var trailingText = line.slice(priceInfo.end);
+
+  var unavailable = flagged || /\bna\b/i.test(trailingText.replace(/[^a-zA-Z]/g,' '));
+
+  var storage = '', ram = '', cpu = '', screen_size = '', gpu = '';
+  var pipeParts = leadingText.split('|').map(function(s){ return s.trim(); }).filter(Boolean);
+  if(pipeParts.length >= 3){
+    var firstPart = pipeParts[0];
+    var compact = firstPart.toLowerCase().replace(/[\s\-\u2013\u2014_.:]+/g,'');
+    var brandResult = tryLaptopBrand(compact);
+    var brand = '', model = '';
+    if(brandResult){
+      brand = brandResult.brand;
+      model = brandResult.model;
+    } else {
+      model = firstPart || '(unrecognized)';
+    }
+
+    for(var i = 1; i < pipeParts.length; i++){
+      var part = pipeParts[i];
+      var lowerPart = part.toLowerCase();
+      if(!cpu){
+        var cpuM = lowerPart.match(/(core|i[3579]\-|ryzen|athlon|celeron|pentium)[\s\S]*?(\d{1,2}\s*inch|$)/i);
+        if(cpuM) cpu = part.match(/(core|i[3579]\-|ryzen|athlon|celeron|pentium)[\s\S]*?(?=\d{1,2}\s*inch|$)/i)[0].trim();
+        if(!cpu && /(core|i[3579]|ryzen|athlon|celeron|pentium)/i.test(lowerPart)){
+          cpu = part.replace(/\s*\d{1,2}\s*(inch|in|")[\s\S]*$/i, '').trim();
+        }
+      }
+      if(!ram && /\d+\s*(gb|g)\b/i.test(part)){ ram = part.match(/\d+\s*(gb|g)\b/i)[0].toUpperCase().replace(/\s+/g,''); }
+      if(!storage && /\d+\s*(gb|tb|t)\b/i.test(part)){ storage = part.match(/\d+\s*(gb|tb|t)\b/i)[0].toUpperCase().replace(/\s+/g,''); }
+      if(!screen_size){
+        var scr = part.match(/(\d{2,3}(?:\.\d)?)\s*(inch|in|")/i);
+        if(scr) screen_size = scr[1]+'"';
+      }
+      if(!gpu && /(nvidia|geforce|rtx|radeon|graphics)/i.test(part)){
+        gpu = part.split(/[,|]/)[0].trim();
+      }
+    }
+
+    return {
+      raw: raw, brand: brand, model: model, cpu: cpu, ram: ram, storage: storage, screen_size: screen_size, gpu: gpu,
+      price: priceInfo.value, hasPrice: hasPrice,
+      include: !unavailable, flagged: unavailable, quantity: 1, recognized: !!brandResult
+    };
+  }
+
+  var text = leadingText;
+  var cpuMatch = text.match(/\b(i[3579]|i[3579]\-|celeron|pentium|ryzen|athlon|core)\b/i);
+  if(cpuMatch) cpu = cpuMatch[0];
+  var ramMatch = text.match(/\b(\d{1,2}gb|\d{1,2}\s*gb)\b/i);
+  if(!ramMatch) ramMatch = text.match(/\b(\d{1,2}gb)\b/i);
+  if(ramMatch) ram = ramMatch[1].toUpperCase().replace(/\s+/g,'');
+  var screenMatch = text.match(/(\d{2})["']?\s*(inch|in|")/i);
+  if(screenMatch) screen_size = screenMatch[1]+'"';
+
+  var brandResult = tryLaptopBrand(compact);
+  var brand = '', model;
+  if(brandResult){
+    brand = brandResult.brand;
+    model = brandResult.model;
+  } else {
+    model = text || '(unrecognized)';
+  }
+
+  return {
+    raw: raw, brand: brand, model: model, cpu: cpu, ram: ram, storage: storage, screen_size: screen_size, gpu: gpu,
+    price: priceInfo.value, hasPrice: hasPrice,
+    include: !unavailable, flagged: unavailable, quantity: 1, recognized: !!brandResult
+  };
+}
+
+function isDuplicateLaptop(row, inventory){
+  if(!inventory || !inventory.length) return null;
+  return inventory.find(function(p){
+    return p.item_type === 'Laptop' &&
+      (p.brand||'') === (row.brand||'') &&
+      (p.model||'') === (row.model||'') &&
+      (p.cpu||'') === (row.cpu||'') &&
+      (p.ram||'') === (row.ram||'') &&
+      (p.storage||'') === (row.storage||'') &&
+      (p.screen_size||'') === (row.screen_size||'') &&
+      (p.color||'') === (row.color||'') &&
+      (p.condition||'') === (row.condition||'') &&
+      (p.supplier||'') === (row.supplier||'');
+  }) || null;
+}
+
+function parseBulkLaptop(text){
+  const lines = text.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+  const rows = [], skipped = [];
+  let sectionLabel = '';
+
+  lines.forEach(function(raw){
+    if(raw === '.' || raw === '-') return;
+
+    if(/^\./.test(raw)){
+      var alpha = raw.replace(/^\./,'').replace(/[^a-zA-Z]/g,'');
+      if(alpha.length >= 3) sectionLabel = raw.replace(/^\./,'').trim();
+      return;
+    }
+
+    var line = raw.replace(/^[\u{1F1FA}\u{1F1F8}]/u, '').trim();
+
+    const parsed = parseBulkLaptopLine(line);
+    if(!parsed){
+      if(line.replace(/[^a-zA-Z]/g,'').length >= 3) sectionLabel = line.trim();
+      return;
+    }
+    if(!parsed.recognized) skipped.push({raw:raw});
+    const row = {
+      raw: parsed.raw, brand: parsed.brand, model: parsed.model, cpu: parsed.cpu, ram: parsed.ram,
+      storage: parsed.storage, screen_size: parsed.screen_size, gpu: parsed.gpu,
+      price: parsed.price, hasPrice: parsed.hasPrice,
+      include: parsed.include, flagged: parsed.flagged, quantity: parsed.quantity, sectionLabel: sectionLabel, duplicate: null
+    };
+    const dup = isDuplicateLaptop(row, state.inventory);
+    if(dup) row.duplicate = dup.id;
+    rows.push(row);
+  });
+  return { rows: rows, skipped: skipped };
+}
 function loadConfig(){
   if(HARDCODED_SUPABASE_URL && HARDCODED_SUPABASE_ANON_KEY){
     return { url: HARDCODED_SUPABASE_URL, key: HARDCODED_SUPABASE_ANON_KEY };
@@ -2683,7 +2934,7 @@ function render(){
   const app = document.getElementById('app');
   if(state.stage==='loading'){ app.innerHTML = '<div class="loading-screen"><div class="spinner"></div>booting dealer console…</div>'; return; }
   if(state.stage==='configure'){ app.innerHTML = renderConfigureScreen(); attachConfigureHandlers(); return; }
-  if(state.stage==='auth'){ app.innerHTML = renderAuthScreen() + renderIosInstallBanner(); attachAuthHandlers(); return; }
+  if(state.stage==='auth'){ app.innerHTML = renderAuthScreen() + renderInstallBanner(); attachAuthHandlers(); return; }
 
   app.innerHTML =
     '<div class="rail-backdrop '+(state.mobileMenuOpen?'open':'')+'" id="railBackdrop"></div>' +
@@ -2695,6 +2946,11 @@ function render(){
       railItem('consign','Owed', badgeCount(state.consignments.filter(function(c){return c.status!=='Settled' && c.status!=='Returned';}).length)) +
       railItem('network','Network', badgeCount(state.broadcasts.filter(function(b){return b.status==='Open';}).length)) +
       (state.isAdmin ? railItem('admin','Admin') : '') +
+      '<div class="rail-bottom">' +
+        '<div class="rail-bottom-item '+(state.pushStatus==='on'?'on':'')+'" id="notifBellBtn" title="Notification settings">'+ICONS.bell+'<span>Alerts</span></div>' +
+        '<div class="rail-bottom-item" id="themeSettingsBtn" title="Display theme">'+ICONS.theme+'<span>Theme</span></div>' +
+        '<div class="rail-bottom-item" id="logoutBtn" title="Log out">'+ICONS.gear+'<span>Logout</span></div>' +
+      '</div>' +
     '</div>' +
     '<div class="main">' +
       '<div class="topbar" style="position:relative;">' +
@@ -2704,15 +2960,15 @@ function render(){
         (state.searchQuery ? renderSearchDropdown() : '') +
         '<div class="topbar-right">' +
           '<span class="dot"></span> '+escapeHtml(state.profile.shop_name)+(state.isAdmin?' <span class="badge badge-admin">admin</span>':'') +
-          '<span class="bell '+(state.pushStatus==='on'?'on':'')+'" id="notifBellBtn" title="Notification settings">'+ICONS.bell+'</span>' +
-          '<span class="theme-toggle" id="themeSettingsBtn" title="Display theme">'+ICONS.theme+'</span>' +
-          '<span class="gear" id="logoutBtn" title="Log out">'+ICONS.gear+'</span>' +
+          '<span class="bell '+(state.pushStatus==='on'?'on':'')+' notifBellBtn" title="Notification settings">'+ICONS.bell+'</span>' +
+          '<span class="theme-toggle themeSettingsBtn" title="Display theme">'+ICONS.theme+'</span>' +
+          '<span class="gear logoutBtn" title="Log out">'+ICONS.gear+'</span>' +
         '</div>' +
       '</div>' +
       '<div class="content">'+renderTab()+'</div>' +
     '</div>' +
     (state.modal ? renderModal() : '') +
-    renderIosInstallBanner() +
+    renderInstallBanner() +
     (state.toast ? ('<div class="toast '+(state.toastErr?'err':'')+'">'+escapeHtml(state.toast)+'</div>') : '');
   attachHandlers();
 }
@@ -2941,7 +3197,7 @@ function renderInventory(){
       '<div><h1 class="page-title">Inventory</h1><p class="page-sub">'+allOfType.length+' '+noun+'s tracked · '+allOfType.filter(function(p){return p.status==='In Stock';}).length+' in stock</p></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
         (items.some(function(p){return p.status==='In Stock';}) ? '<button class="btn" id="selectAllInStockBtn">Select all in stock</button>' : '') +
-        (itemTab==='Phone' ? '<button class="btn" data-open-modal="bulkImport">📋 Paste stock list</button>' : '') +
+        '<button class="btn" data-open-modal="'+(itemTab==='Phone'?'bulkImport':'bulkImportLaptop')+'">📋 Paste stock list</button>' +
         (itemTab==='Phone'
           ? '<button class="btn btn-accent" data-open-modal="addPhone">'+ICONS.plus+' Add phone</button>'
           : '<button class="btn btn-accent" data-open-modal="addLaptop">'+ICONS.plus+' Add laptop</button>') +
@@ -3328,6 +3584,10 @@ function renderAdmin(){
       '<div class="kpi"><div class="kpi-label">Total phones tracked</div><div class="kpi-value">'+totalPhones+'</div></div>' +
       '<div class="kpi"><div class="kpi-label">Total platform revenue</div><div class="kpi-value accent">'+naira(totalRevenue)+'</div></div>' +
     '</div>' +
+    '<div class="section"><div class="section-body" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;">' +
+      '<div style="font-size:12.5px;color:var(--text-dim);">Force every device to fetch the latest deployed version — clears cached files, unregisters the old service worker, and reloads. Use this right after you push a change.</div>' +
+      '<button class="btn btn-accent" id="forceCacheUpdateBtn">🔄 Force cache update</button>' +
+    '</div></div>' +
     '<div class="section"><div class="section-head"><h3>Dealers</h3></div><div class="section-body table-scroll" style="padding:0;">' +
       '<table><thead><tr><th>Shop</th><th>Location</th><th>Phone</th><th>Phones tracked</th><th>Sales</th><th>Revenue</th><th>Joined</th></tr></thead><tbody>' +
       dealers.map(function(d){
@@ -3351,7 +3611,7 @@ function renderModal(){
   if(m.name==='addSupplier' || m.name==='editSupplier') return renderSupplierModal(m);
   if(m.name==='newBroadcast') return renderBroadcastModal();
   if(m.name==='respondBroadcast') return renderRespondModal(m);
-  if(m.name==='bulkImport') return renderBulkImportModal();
+  if(m.name==='bulkImport' || m.name==='bulkImportLaptop') return m.name==='bulkImportLaptop' ? renderLaptopBulkImportModal() : renderBulkImportModal();
   if(m.name==='notifSettings') return renderNotifModal();
   if(m.name==='themeSettings') return renderThemeModal();
   if(m.name==='addConsignment' || m.name==='editConsignment') return renderConsignmentModal(m);
@@ -3569,7 +3829,7 @@ function renderBulkImportModal(){
     '<div class="modal-foot">' +
       (!state.bulkImportRows.length ?
         ('<button class="btn" data-close-modal="1">Cancel</button><button class="btn btn-accent" id="bi-parse-btn">Parse list</button>') :
-        ('<button class="btn" id="bi-back-btn">← Back to edit paste</button><button class="btn btn-accent" id="bi-import-btn">Import '+state.bulkImportRows.filter(function(r){return r.include;}).length+' phones</button>')
+        ('<button class="btn" id="bi-back-btn">← Back to edit paste</button><button class="btn btn-accent" id="bi-import-btn">Import '+state.bulkImportRows.filter(function(r){return r.include && !r.duplicate;}).length+' phones</button>')
       ) +
     '</div></div></div>';
 }
@@ -3577,9 +3837,11 @@ function renderBulkImportModal(){
 function renderBulkImportPreview(){
   const rows = state.bulkImportRows;
   const unparsed = state.bulkImportSkipped;
+  const uniqueRows = rows.filter(function(r){ return !r.duplicate; });
+  const dupRows = rows.filter(function(r){ return r.duplicate; });
   return '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">Review before importing — uncheck any row you don\'t want, or fix a value directly. The "Cost" column is what you\'ll set your selling price against later.</p>' +
     '<table><thead><tr><th></th><th>Model</th><th>Storage</th><th>Cost</th><th>Qty</th><th>Original line</th></tr></thead><tbody>' +
-    rows.map(function(r,i){ return '<tr style="'+(r.flagged?'opacity:.55;':'')+'">' +
+    uniqueRows.map(function(r,i){ return '<tr style="'+(r.flagged?'opacity:.55;':'')+'">' +
       '<td><input type="checkbox" data-bi-include="'+i+'" '+(r.include?'checked':'')+'/></td>' +
       '<td><input data-bi-field="model" data-bi-row="'+i+'" value="'+escapeAttr(r.model)+'" style="width:150px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
       '<td><input data-bi-field="storage" data-bi-row="'+i+'" value="'+escapeAttr(r.storage)+'" style="width:70px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
@@ -3587,13 +3849,78 @@ function renderBulkImportPreview(){
       '<td><input type="number" min="1" data-bi-field="quantity" data-bi-row="'+i+'" value="'+(r.quantity||1)+'" style="width:55px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
       '<td class="mono" style="font-size:11px;color:var(--text-faint);">'+escapeHtml(r.raw)+(r.flagged?' <span class="badge badge-danger">❌ flagged</span>':'')+'</td>' +
     '</tr>'; }).join('') +
+    (dupRows.length ? ('<tr><td colspan="6" style="padding:10px 0;border-top:1px solid var(--border);"><strong style="color:var(--accent);font-size:12px;">Duplicate phones (already in inventory — will be skipped)</strong></td></tr>') : '') +
+    dupRows.map(function(r){ return '<tr style="opacity:.5;background:var(--panel-2);">' +
+      '<td><input type="checkbox" disabled/></td>' +
+      '<td>'+escapeHtml(r.model)+' <span class="badge badge-duplicate">duplicate</span></td>' +
+      '<td>'+escapeHtml(r.storage||'—')+'</td>' +
+      '<td>'+naira(r.price||0)+'</td>' +
+      '<td>'+(r.quantity||1)+'</td>' +
+      '<td class="mono" style="font-size:11px;color:var(--text-faint);">'+escapeHtml(r.raw)+'</td>' +
+    '</tr>'; }).join('') +
     '</tbody></table>' +
     (unparsed.length ? ('<div style="margin-top:14px;padding:10px 12px;background:var(--panel-2);border-radius:var(--radius-sm);font-size:12px;color:var(--text-faint);">' +
       'Couldn\'t confidently recognize the model on '+unparsed.length+' line'+(unparsed.length===1?'':'s')+' (added as-is from the original text — rename or uncheck after review): ' +
       unparsed.map(function(u){ return escapeHtml(u.raw); }).join(', ') + '</div>') : '');
 }
 
-function renderSaleModal(){
+function renderLaptopBulkImportModal(){
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:760px;">' +
+    '<div class="modal-head"><h3>Paste laptop stock list</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      (!state.bulkImportLaptopRows.length ? (
+        '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">Paste your laptop list — any format works. We\'ll match brand, model, CPU, RAM, storage, screen size, and cost price automatically. Selling price is left blank since these lists show what you paid — set your selling price per laptop after import.</p>' +
+        '<div class="form-grid">' +
+          '<div class="field"><label>Condition (applies to this whole batch)</label><select id="bli-condition"><option value="Used" '+(state.bulkImportLaptopCondition==='Used'?'selected':'')+'>Used</option><option value="New" '+(state.bulkImportLaptopCondition==='New'?'selected':'')+'>New</option></select></div>' +
+          '<div class="field"><label>Supplier contact (optional)</label><select id="bli-supplier-id"><option value="">— none / type freeform below —</option>' +
+            state.suppliers.map(function(s){ return '<option value="'+s.id+'" '+(state.bulkImportLaptopSupplierId===s.id?'selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('') +
+          '</select></div>' +
+          '<div class="field"><label>Supplier / source label</label><input id="bli-supplier" placeholder="e.g. UK import batch" value="'+escapeAttr(state.bulkImportLaptopSupplier)+'"/></div>' +
+        '</div>' +
+        '<div class="field full" style="margin-top:14px;"><label>Paste here</label><textarea id="bli-text" rows="14" style="font-family:var(--font-mono);font-size:12.5px;" placeholder="HP EliteBook 840 G7 i7 16GB 512GB SSD 14" — 450k&#10;Dell Latitude 5520 8GB 256GB — 320k&#10;...">'+escapeHtml(state.bulkImportLaptopText)+'</textarea></div>'
+      ) : renderLaptopBulkImportPreview()) +
+    '</div>' +
+    '<div class="modal-foot">' +
+      (!state.bulkImportLaptopRows.length ?
+        ('<button class="btn" data-close-modal="1">Cancel</button><button class="btn btn-accent" id="bli-parse-btn">Parse list</button>') :
+        ('<button class="btn" id="bli-back-btn">← Back to edit paste</button><button class="btn btn-accent" id="bli-import-btn">Import '+state.bulkImportLaptopRows.filter(function(r){return r.include && !r.duplicate;}).length+' laptops</button>')
+      ) +
+    '</div></div></div>';
+}
+
+function renderLaptopBulkImportPreview(){
+  const rows = state.bulkImportLaptopRows;
+  const unparsed = state.bulkImportLaptopSkipped;
+  const uniqueRows = rows.filter(function(r){ return !r.duplicate; });
+  const dupRows = rows.filter(function(r){ return r.duplicate; });
+  return '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">Review before importing — uncheck any row you don\'t want, or fix a value directly. The "Cost" column is what you\'ll set your selling price against later.</p>' +
+    '<table><thead><tr><th></th><th>Brand</th><th>Model</th><th>CPU / RAM</th><th>Storage / Screen</th><th>Cost</th><th>Qty</th><th>Original line</th></tr></thead><tbody>' +
+    uniqueRows.map(function(r,i){ return '<tr style="'+(r.flagged?'opacity:.55;':'')+'">' +
+      '<td><input type="checkbox" data-bli-include="'+i+'" '+(r.include?'checked':'')+'/></td>' +
+      '<td><input data-bli-field="brand" data-bli-row="'+i+'" value="'+escapeAttr(r.brand)+'" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input data-bli-field="model" data-bli-row="'+i+'" value="'+escapeAttr(r.model)+'" style="width:150px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input data-bli-field="cpu" data-bli-row="'+i+'" value="'+escapeAttr(r.cpu)+'" style="width:100px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/><input data-bli-field="ram" data-bli-row="'+i+'" value="'+escapeAttr(r.ram)+'" style="width:60px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input data-bli-field="storage" data-bli-row="'+i+'" value="'+escapeAttr(r.storage)+'" style="width:90px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/><input data-bli-field="screen_size" data-bli-row="'+i+'" value="'+escapeAttr(r.screen_size)+'" style="width:50px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input type="number" data-bli-field="price" data-bli-row="'+i+'" value="'+r.price+'" style="width:90px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input type="number" min="1" data-bli-field="quantity" data-bli-row="'+i+'" value="'+(r.quantity||1)+'" style="width:55px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td class="mono" style="font-size:11px;color:var(--text-faint);">'+escapeHtml(r.raw)+(r.flagged?' <span class="badge badge-danger">❌ flagged</span>':'')+'</td>' +
+    '</tr>'; }).join('') +
+    (dupRows.length ? ('<tr><td colspan="8" style="padding:10px 0;border-top:1px solid var(--border);"><strong style="color:var(--accent);font-size:12px;">Duplicate laptops (already in inventory — will be skipped)</strong></td></tr>') : '') +
+    dupRows.map(function(r){ return '<tr style="opacity:.5;background:var(--panel-2);">' +
+      '<td><input type="checkbox" disabled/></td>' +
+      '<td>'+escapeHtml(r.brand||'—')+'</td>' +
+      '<td>'+escapeHtml(r.model)+' <span class="badge badge-duplicate">duplicate</span></td>' +
+      '<td>'+escapeHtml(r.cpu||'—')+'<div style="font-size:11px;color:var(--text-faint);">'+escapeHtml(r.ram||'')+'</div></td>' +
+      '<td>'+escapeHtml(r.storage||'—')+(r.screen_size?(' · '+escapeHtml(r.screen_size)):'')+'</td>' +
+      '<td>'+naira(r.price||0)+'</td>' +
+      '<td>'+(r.quantity||1)+'</td>' +
+      '<td class="mono" style="font-size:11px;color:var(--text-faint);">'+escapeHtml(r.raw)+'</td>' +
+    '</tr>'; }).join('') +
+    '</tbody></table>' +
+    (unparsed.length ? ('<div style="margin-top:14px;padding:10px 12px;background:var(--panel-2);border-radius:var(--radius-sm);font-size:12px;color:var(--text-faint);">' +
+      'Couldn\'t confidently recognize the brand on '+unparsed.length+' line'+(unparsed.length===1?'':'s')+' (added as-is from the original text — rename or uncheck after review): ' +
+      unparsed.map(function(u){ return escapeHtml(u.raw); }).join(', ') + '</div>') : '');
+}
   const available = state.inventory.filter(function(p){ return p.status==='In Stock'; });
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>Log a sale</h3><button class="close-x" data-close-modal="1">×</button></div>' +
@@ -3813,20 +4140,20 @@ function attachHandlers(){
     state.mobileMenuOpen = false;
     setTab(el.getAttribute('data-tab'));
   }); });
+
+  const forceCacheUpdateBtn = document.getElementById('forceCacheUpdateBtn');
+  if(forceCacheUpdateBtn) forceCacheUpdateBtn.addEventListener('click', forceCacheUpdate);
   const hamburgerBtn = document.getElementById('hamburgerBtn');
   if(hamburgerBtn) hamburgerBtn.addEventListener('click', function(){ state.mobileMenuOpen = true; render(); });
   const railCloseBtn = document.getElementById('railCloseBtn');
   if(railCloseBtn) railCloseBtn.addEventListener('click', function(){ state.mobileMenuOpen = false; render(); });
   const railBackdrop = document.getElementById('railBackdrop');
   if(railBackdrop) railBackdrop.addEventListener('click', function(){ state.mobileMenuOpen = false; render(); });
-  const logoutBtn = document.getElementById('logoutBtn');
-  if(logoutBtn) logoutBtn.addEventListener('click', async function(){ await sb.auth.signOut(); state.stage='auth'; state.profile=null; render(); });
+  document.querySelectorAll('.logoutBtn, #logoutBtn').forEach(function(el){ el.addEventListener('click', async function(){ state.mobileMenuOpen = false; await sb.auth.signOut(); state.stage='auth'; state.profile=null; render(); }); });
 
-  const notifBellBtn = document.getElementById('notifBellBtn');
-  if(notifBellBtn) notifBellBtn.addEventListener('click', function(){ openModal('notifSettings'); });
+  document.querySelectorAll('.notifBellBtn, #notifBellBtn').forEach(function(el){ el.addEventListener('click', function(){ state.mobileMenuOpen = false; openModal('notifSettings'); }); });
 
-  const themeSettingsBtn = document.getElementById('themeSettingsBtn');
-  if(themeSettingsBtn) themeSettingsBtn.addEventListener('click', function(){ openModal('themeSettings'); });
+  document.querySelectorAll('.themeSettingsBtn, #themeSettingsBtn').forEach(function(el){ el.addEventListener('click', function(){ state.mobileMenuOpen = false; openModal('themeSettings'); }); });
   app.querySelectorAll('[data-set-theme]').forEach(function(el){ el.addEventListener('click', function(){ setTheme(el.getAttribute('data-set-theme')); }); });
   
   const enablePushInline = document.getElementById('enablePushInline');
@@ -3835,6 +4162,15 @@ function attachHandlers(){
   if(enablePushBtn) enablePushBtn.addEventListener('click', enablePush);
   const disablePushBtn = document.getElementById('disablePushBtn');
   if(disablePushBtn) disablePushBtn.addEventListener('click', disablePush);
+
+  const installAppBtn = document.getElementById('installAppBtn');
+  if(installAppBtn) installAppBtn.addEventListener('click', async function(){
+    if(!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    render();
+  });
 
   const gs = document.getElementById('globalSearch');
   if(gs){
@@ -4077,6 +4413,10 @@ function attachHandlers(){
       status: val('f-status'), shelf: val('f-shelf'), notes: val('f-notes')
     };
     if(!data.model){ showToast('Phone model is required', true); return; }
+    if(!id){
+      const dup = isDuplicatePhone({model:data.model, storage:data.storage, color:data.color, condition:data.condition, supplier:data.supplier}, state.inventory);
+      if(dup){ showToast('This exact phone already exists in inventory (ID: '+dup.id+')', true); return; }
+    }
     const existingPhone = id ? state.inventory.find(function(x){ return x.id===id; }) : null;
     const existingImages = imagesFor(existingPhone);
     const removed = state.photoModalRemovedUrls || [];
@@ -4112,6 +4452,10 @@ function attachHandlers(){
       status: val('l-status'), shelf: val('l-shelf'), notes: val('l-notes')
     };
     if(!data.model){ showToast('Laptop model is required', true); return; }
+    if(!id){
+      const dup = isDuplicateLaptop({brand:data.brand, model:data.model, cpu:data.cpu, ram:data.ram, storage:data.storage, screen_size:data.screen_size, gpu:data.gpu, color:data.color, condition:data.condition, supplier:data.supplier}, state.inventory);
+      if(dup){ showToast('This exact laptop already exists in inventory (ID: '+dup.id+')', true); return; }
+    }
     const existingLaptop = id ? state.inventory.find(function(x){ return x.id===id; }) : null;
     const existingImages = imagesFor(existingLaptop);
     const removed = state.photoModalRemovedUrls || [];
@@ -4390,8 +4734,9 @@ function attachHandlers(){
   });
 
   const biImportBtn = document.getElementById('bi-import-btn');
-  if(biImportBtn) biImportBtn.addEventListener('click', async function(){
-    const toInsert = state.bulkImportRows.filter(function(r){ return r.include; }).map(function(r){
+   if(biImportBtn) biImportBtn.addEventListener('click', async function(){
+    const dupCount = state.bulkImportRows.filter(function(r){ return r.include && r.duplicate; }).length;
+    const toInsert = state.bulkImportRows.filter(function(r){ return r.include && !r.duplicate; }).map(function(r){
       return {
         dealer_id: state.profile.id, model: r.model, storage: r.storage, color: '',
         condition: state.bulkImportCondition, battery: state.bulkImportCondition==='Used' ? 100 : null,
@@ -4407,8 +4752,66 @@ function attachHandlers(){
       if(error) throw error;
       await refreshAll();
       state.bulkImportRows = []; state.bulkImportText=''; state.bulkImportSupplierId='';
-      closeModal(); showToast(toInsert.length+' phones imported');
+      closeModal();
+      showToast(toInsert.length+' phones imported'+(dupCount ? ' ('+dupCount+' duplicate'+(dupCount===1?'':'s')+' skipped)' : ''));
     } catch(e){ showToast('Import failed: '+e.message, true); render(); }
+  });
+
+  const bliParseBtn = document.getElementById('bli-parse-btn');
+  if(bliParseBtn) bliParseBtn.addEventListener('click', function(){
+    const text = val('bli-text');
+    state.bulkImportLaptopText = text;
+    state.bulkImportLaptopCondition = val('bli-condition');
+    state.bulkImportLaptopSupplier = val('bli-supplier');
+    state.bulkImportLaptopSupplierId = val('bli-supplier-id') || null;
+    const parsed = parseBulkLaptop(text);
+    state.bulkImportLaptopRows = parsed.rows; state.bulkImportLaptopSkipped = parsed.skipped;
+    if(!state.bulkImportLaptopRows.length){ showToast('No recognizable laptop lines found in that paste', true); return; }
+    render();
+  });
+  const bliBackBtn = document.getElementById('bli-back-btn');
+  if(bliBackBtn) bliBackBtn.addEventListener('click', function(){ state.bulkImportLaptopRows = []; render(); });
+
+  const bliSupplierId = document.getElementById('bli-supplier-id');
+  if(bliSupplierId) bliSupplierId.addEventListener('change', function(){
+    const s = state.suppliers.find(function(x){ return x.id === bliSupplierId.value; });
+    const bliSupplier = document.getElementById('bli-supplier');
+    if(s && bliSupplier) bliSupplier.value = s.name;
+  });
+
+  document.querySelectorAll('[data-bli-include]').forEach(function(el){
+    el.addEventListener('change', function(){ state.bulkImportLaptopRows[Number(el.getAttribute('data-bli-include'))].include = el.checked; });
+  });
+  document.querySelectorAll('[data-bli-field]').forEach(function(el){
+    el.addEventListener('input', function(){
+      const i = Number(el.getAttribute('data-bli-row')), f = el.getAttribute('data-bli-field');
+      state.bulkImportLaptopRows[i][f] = el.value;
+    });
+  });
+
+  const bliImportBtn = document.getElementById('bli-import-btn');
+  if(bliImportBtn) bliImportBtn.addEventListener('click', async function(){
+    const dupCount = state.bulkImportLaptopRows.filter(function(r){ return r.include && r.duplicate; }).length;
+    const toInsert = state.bulkImportLaptopRows.filter(function(r){ return r.include && !r.duplicate; }).map(function(r){
+      return {
+        dealer_id: state.profile.id, item_type: 'Laptop', brand: r.brand, model: r.model, cpu: r.cpu||null, ram: r.ram||null,
+        storage: r.storage, screen_size: r.screen_size||null, gpu: r.gpu||null, color: '', condition: state.bulkImportLaptopCondition,
+        battery: state.bulkImportLaptopCondition==='Used' ? 100 : null,
+        quantity: Number(r.quantity)||1, supplier: state.bulkImportLaptopSupplier || (r.sectionLabel||''),
+        supplier_id: state.bulkImportLaptopSupplierId || null,
+        purchase_date: todayISO(),
+        cost: Number(r.price)||0, price: null, status: 'In Stock', shelf: '', notes: 'Bulk imported: '+r.raw
+      };
+    });
+    if(!toInsert.length){ showToast('No rows selected to import', true); return; }
+    try{
+      const { error } = await sb.from('inventory').insert(toInsert);
+      if(error) throw error;
+      await refreshAll();
+      state.bulkImportLaptopRows = []; state.bulkImportLaptopText=''; state.bulkImportLaptopSupplierId='';
+      closeModal();
+      showToast(toInsert.length+' laptops imported'+(dupCount ? ' ('+dupCount+' duplicate'+(dupCount===1?'':'s')+' skipped)' : ''));
+    } catch(e){ showToast('Import failed: '+(e.message||e), true); render(); }
   });
 
   ['calc-cost','calc-target','calc-min','calc-offer'].forEach(function(id){
@@ -6325,7 +6728,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-famil
 .rail-item.active::before{content:'';position:absolute;left:-18px;top:8px;bottom:8px;width:3px;background:var(--accent);border-radius:2px;}
 .rail-item svg{width:19px;height:19px;}
 .rail-item span{font-size:9.5px;font-weight:600;letter-spacing:.02em;}
-.rail-bottom{margin-top:auto;}
+.rail-bottom{margin-top:auto;display:none;}
 .rail-close-btn{display:none;}
 .hamburger-btn{display:none;background:none;border:none;color:var(--text-dim);cursor:pointer;padding:6px;border-radius:var(--radius-sm);flex-shrink:0;}
 .hamburger-btn:hover{background:var(--panel-2);color:var(--text);}
@@ -6350,6 +6753,10 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-famil
   .rail-backdrop{display:block;position:fixed;inset:0;z-index:200;background:rgba(5,7,11,.6);
     opacity:0;pointer-events:none;transition:opacity .22s ease;}
   .rail-backdrop.open{opacity:1;pointer-events:auto;}
+  .topbar-right{display:none;}
+  .rail-bottom{display:flex;flex-direction:column;gap:4px;margin-top:auto;padding-top:10px;border-top:1px solid var(--border);}
+  .rail-bottom-item{width:auto;height:auto;flex-direction:row;justify-content:flex-start;gap:12px;padding:11px 12px;}
+  .rail-bottom-item span{font-size:13px;}
 }
 
 .main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;}
@@ -6362,6 +6769,13 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-famil
 .search-wrap input::placeholder{color:var(--text-faint);}
 .topbar-right{margin-left:auto;display:flex;align-items:center;gap:14px;color:var(--text-dim);font-size:12.5px;}
 .topbar-right svg{ width:18px; height:18px; display:block; }
+
+.rail-bottom-item{width:56px;height:52px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:4px;border-radius:var(--radius-sm);cursor:pointer;color:var(--text-faint);transition:.15s;position:relative;}
+.rail-bottom-item:hover{background:var(--panel-2);color:var(--text-dim);}
+.rail-bottom-item.on{color:var(--success);}
+.rail-bottom-item svg{width:19px;height:19px;}
+.rail-bottom-item span{font-size:9.5px;font-weight:600;letter-spacing:.02em;}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--success);box-shadow:0 0 0 3px var(--success-dim);}
 .bell{cursor:pointer;color:var(--text-faint);position:relative;}
 .bell:hover{color:var(--accent);}
@@ -6433,6 +6847,7 @@ tr:hover td{background:var(--panel-2);}
 .badge-open{background:var(--accent-dim2);color:var(--accent);}
 .badge-closed{background:var(--panel-3);color:var(--text-faint);}
 .badge-admin{background:linear-gradient(90deg,var(--admin-grad-1),var(--admin-grad-2));color:var(--accent);}
+.badge-duplicate{background:#3A3320;color:var(--accent);}
 
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
 .field{display:flex;flex-direction:column;gap:6px;}
@@ -6582,6 +6997,7 @@ let state = {
   networkCategoryFilter:'All', // All | Phone | Laptop — filter for the Network > Search stock view
   networkDealerFilter:null, dealerFilterQuery:'', dealerFilterOpen:false,
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'', bulkImportSupplierId:'',
+  bulkImportLaptopText:'', bulkImportLaptopRows:[], bulkImportLaptopSkipped:[], bulkImportLaptopCondition:'Used', bulkImportLaptopSupplier:'', bulkImportLaptopSupplierId:'',
   pushStatus:'unsupported', // unsupported | off | prompting | on | denied
   mobileMenuOpen:false,
   inventorySupplierFilter:null, supplierFilterName:'',
@@ -6765,25 +7181,75 @@ function generateInvoicePDF(sale){
 }
 
 /* ---------- push notifications ---------- */
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', function(e){
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  render();
+});
+window.addEventListener('appinstalled', function(){
+  deferredInstallPrompt = null;
+  render();
+});
+
+function checkInstallBannerVisibility(){
+  if(state.stage === 'app' || state.stage === 'auth'){
+    render();
+  }
+}
+window.addEventListener('visibilitychange', function(){
+  if(document.visibilityState === 'visible') checkInstallBannerVisibility();
+});
+window.addEventListener('focus', checkInstallBannerVisibility);
+
 function isIOSDevice(){
   return /iP(hone|od|ad)/.test(navigator.userAgent) ||
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPadOS reports as Mac
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 }
 function isStandaloneDisplay(){
   return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
 }
-function shouldShowIosInstallBanner(){
-  return isIOSDevice() && !isStandaloneDisplay();
+function shouldShowInstallBanner(){
+  return !isStandaloneDisplay();
 }
-function renderIosInstallBanner(){
-  if(!shouldShowIosInstallBanner()) return '';
-  return '<div id="iosInstallBanner" style="position:fixed;left:0;right:0;bottom:0;z-index:150;background:var(--panel-2);border-top:1px solid var(--accent);padding:12px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 -8px 24px rgba(0,0,0,.4);">' +
+function renderInstallBanner(){
+  if(!shouldShowInstallBanner()) return '';
+  const wrapStyle = 'position:fixed;left:0;right:0;bottom:0;z-index:150;background:var(--panel-2);border-top:1px solid var(--accent);padding:12px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 -8px 24px rgba(0,0,0,.4);';
+  if(isIOSDevice()){
+    return '<div id="installBanner" style="'+wrapStyle+'">' +
+      '<div style="flex:1;font-size:12.5px;color:var(--text);">' +
+        '<strong>Install PhoneHub on this iPhone</strong><br>' +
+        '<span style="color:var(--text-dim);">Tap the Share icon <span style="display:inline-block;transform:translateY(2px)">'+ICONS_SHARE+'</span> below, then "Add to Home Screen" to receive phone and order requests. This also turns on notifications.</span>' +
+      '</div>' +
+    '</div>';
+  }
+  return '<div id="installBanner" style="'+wrapStyle+'">' +
     '<div style="flex:1;font-size:12.5px;color:var(--text);">' +
-      '<strong>Install PhoneHub on this iPhone</strong><br>' +
-      '<span style="color:var(--text-dim);">Tap the Share icon <span style="display:inline-block;transform:translateY(2px)">'+ICONS_SHARE+'</span> below, then "Add to Home Screen" to receive phone and order requests. This also turns on notifications.</span>' +
+      '<strong>Install PhoneHub on this device</strong><br>' +
+      '<span style="color:var(--text-dim);">Install the app to get phone and order alerts even when your browser is closed.</span>' +
     '</div>' +
+    (deferredInstallPrompt
+      ? '<button class="btn btn-accent btn-sm" id="installAppBtn">Install</button>'
+      : '<span style="font-size:11px;color:var(--text-faint);white-space:nowrap;">Use browser menu → "Install app"</span>') +
   '</div>';
 }
+
+async function forceCacheUpdate(){
+  showToast('Clearing cache and updating…');
+  try{
+    if(window.caches && caches.keys){
+      const keys = await caches.keys();
+      await Promise.all(keys.map(function(k){ return caches.delete(k); }));
+    }
+    if('serviceWorker' in navigator){
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(function(r){ return r.unregister(); }));
+    }
+  } catch(e){ /* ignore — reload regardless */ }
+  const url = window.location.href.split('?')[0].split('#')[0];
+  window.location.href = url + '?_cb=' + Date.now();
+}
+
 const ICONS_SHARE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/></svg>';
 function urlBase64ToUint8Array(base64String){
   const padding = '='.repeat((4 - base64String.length % 4) % 4);
@@ -7015,7 +7481,10 @@ function parseBulkStockLine(raw){
   var connTag = connFirst.tag;
 
   var priceInfo = extractPrice(line);
-  if(!priceInfo){ return null; }
+  var hasPrice = !!priceInfo;
+  if(!priceInfo){
+    priceInfo = { value: 0, start: line.length, end: line.length };
+  }
 
   var leadingText = cleanSeparators(line.slice(0, priceInfo.start));
   var trailingText = line.slice(priceInfo.end);
@@ -7056,9 +7525,20 @@ function parseBulkStockLine(raw){
   if(connTag) model = model + ' ('+connTag+')';
 
   return {
-    raw: raw, model: model, storage: storage, price: priceInfo.value,
+    raw: raw, model: model, storage: storage, price: priceInfo.value, hasPrice: hasPrice,
     include: !unavailable, flagged: unavailable, quantity: 1, recognized: !!result
   };
+}
+
+function isDuplicatePhone(row, inventory){
+  if(!inventory || !inventory.length) return null;
+  return inventory.find(function(p){
+    return p.model === row.model &&
+      (p.storage||'') === (row.storage||'') &&
+      (p.color||'') === (row.color||'') &&
+      (p.condition||'') === (row.condition||'') &&
+      (p.supplier||'') === (row.supplier||'');
+  }) || null;
 }
 
 function parseBulkStock(text){
@@ -7073,14 +7553,188 @@ function parseBulkStock(text){
       return;
     }
     if(!parsed.recognized) skipped.push({raw:raw});
-    rows.push({
-      raw: parsed.raw, model: parsed.model, storage: parsed.storage, price: parsed.price,
-      include: parsed.include, flagged: parsed.flagged, quantity: parsed.quantity, sectionLabel: sectionLabel
-    });
+    const row = {
+      raw: parsed.raw, model: parsed.model, storage: parsed.storage, price: parsed.price, hasPrice: parsed.hasPrice,
+      include: parsed.include, flagged: parsed.flagged, quantity: parsed.quantity, sectionLabel: sectionLabel, duplicate: null
+    };
+    const dup = isDuplicatePhone(row, state.inventory);
+    if(dup) row.duplicate = dup.id;
+    rows.push(row);
   });
   return { rows: rows, skipped: skipped };
 }
 
+const LAPTOP_BRANDS = [
+  ['hp','HP'],['dell','Dell'],['lenovo','Lenovo'],['apple','Apple'],['macbook','MacBook'],
+  ['asus','ASUS'],['acer','Acer'],['toshiba','Toshiba'],['samsung','Samsung'],['microsoft','Microsoft'],
+  ['surface','Surface'],['razer','Razer'],['msi','MSI'],['huawei','Huawei'],['xiaomi','Xiaomi'],
+  ['alienware','Alienware'],['lg','LG'],['panasonic','Panasonic'],['vaio','VAIO'],['chromebook','Chromebook']
+];
+
+function tryLaptopBrand(compact){
+  var body = compact;
+  var brand = null;
+  for(var i=0;i<LAPTOP_BRANDS.length;i++){
+    if(body.indexOf(LAPTOP_BRANDS[i][0])===0){
+      brand = LAPTOP_BRANDS[i][1];
+      body = body.slice(LAPTOP_BRANDS[i][0].length);
+      break;
+    }
+  }
+  if(!brand){
+    var yr = body.match(/^(\d{4})/);
+    if(yr){
+      var rest = body.slice(yr[1].length);
+      for(var j=0;j<LAPTOP_BRANDS.length;j++){
+        if(rest.indexOf(LAPTOP_BRANDS[j][0])===0){
+          brand = LAPTOP_BRANDS[j][1];
+          body = rest.slice(LAPTOP_BRANDS[j][0].length);
+          break;
+        }
+      }
+    }
+  }
+  if(!brand) return null;
+  var model = body.replace(/^[\s\-_.:]+|[\s\-_.:]+$/g,'').replace(/\s+/g,' ');
+  if(!model) model = '(unknown model)';
+  return { brand: brand, model: model };
+}
+
+function parseBulkLaptopLine(raw){
+  var flagged = /[\u274c\u2716\u2717]/.test(raw);
+  var line = raw.replace(/[\u274c\u2716\u2717]/g, '');
+
+  line = line.replace(/^[\u{1F1FA}\u{1F1F8}]/u, '').trim();
+  line = line.replace(/-{2,}.*$/, '').trim();
+
+  var priceInfo = extractPrice(line);
+  var hasPrice = !!priceInfo;
+  if(!priceInfo){
+    priceInfo = { value: 0, start: line.length, end: line.length };
+  }
+
+  var leadingText = cleanSeparators(line.slice(0, priceInfo.start));
+  var trailingText = line.slice(priceInfo.end);
+
+  var unavailable = flagged || /\bna\b/i.test(trailingText.replace(/[^a-zA-Z]/g,' '));
+
+  var storage = '', ram = '', cpu = '', screen_size = '', gpu = '';
+  var pipeParts = leadingText.split('|').map(function(s){ return s.trim(); }).filter(Boolean);
+  if(pipeParts.length >= 3){
+    var firstPart = pipeParts[0];
+    var compact = firstPart.toLowerCase().replace(/[\s\-\u2013\u2014_.:]+/g,'');
+    var brandResult = tryLaptopBrand(compact);
+    var brand = '', model = '';
+    if(brandResult){
+      brand = brandResult.brand;
+      model = brandResult.model;
+    } else {
+      model = firstPart || '(unrecognized)';
+    }
+
+    for(var i = 1; i < pipeParts.length; i++){
+      var part = pipeParts[i];
+      var lowerPart = part.toLowerCase();
+      if(!cpu){
+        var cpuM = lowerPart.match(/(core|i[3579]\-|ryzen|athlon|celeron|pentium)[\s\S]*?(\d{1,2}\s*inch|$)/i);
+        if(cpuM) cpu = part.match(/(core|i[3579]\-|ryzen|athlon|celeron|pentium)[\s\S]*?(?=\d{1,2}\s*inch|$)/i)[0].trim();
+        if(!cpu && /(core|i[3579]|ryzen|athlon|celeron|pentium)/i.test(lowerPart)){
+          cpu = part.replace(/\s*\d{1,2}\s*(inch|in|")[\s\S]*$/i, '').trim();
+        }
+      }
+      if(!ram && /\d+\s*(gb|g)\b/i.test(part)){ ram = part.match(/\d+\s*(gb|g)\b/i)[0].toUpperCase().replace(/\s+/g,''); }
+      if(!storage && /\d+\s*(gb|tb|t)\b/i.test(part)){ storage = part.match(/\d+\s*(gb|tb|t)\b/i)[0].toUpperCase().replace(/\s+/g,''); }
+      if(!screen_size){
+        var scr = part.match(/(\d{2,3}(?:\.\d)?)\s*(inch|in|")/i);
+        if(scr) screen_size = scr[1]+'"';
+      }
+      if(!gpu && /(nvidia|geforce|rtx|radeon|graphics)/i.test(part)){
+        gpu = part.split(/[,|]/)[0].trim();
+      }
+    }
+
+    return {
+      raw: raw, brand: brand, model: model, cpu: cpu, ram: ram, storage: storage, screen_size: screen_size, gpu: gpu,
+      price: priceInfo.value, hasPrice: hasPrice,
+      include: !unavailable, flagged: unavailable, quantity: 1, recognized: !!brandResult
+    };
+  }
+
+  var text = leadingText;
+  var cpuMatch = text.match(/\b(i[3579]|i[3579]\-|celeron|pentium|ryzen|athlon|core)\b/i);
+  if(cpuMatch) cpu = cpuMatch[0];
+  var ramMatch = text.match(/\b(\d{1,2}gb|\d{1,2}\s*gb)\b/i);
+  if(!ramMatch) ramMatch = text.match(/\b(\d{1,2}gb)\b/i);
+  if(ramMatch) ram = ramMatch[1].toUpperCase().replace(/\s+/g,'');
+  var screenMatch = text.match(/(\d{2})["']?\s*(inch|in|")/i);
+  if(screenMatch) screen_size = screenMatch[1]+'"';
+
+  var brandResult = tryLaptopBrand(compact);
+  var brand = '', model;
+  if(brandResult){
+    brand = brandResult.brand;
+    model = brandResult.model;
+  } else {
+    model = text || '(unrecognized)';
+  }
+
+  return {
+    raw: raw, brand: brand, model: model, cpu: cpu, ram: ram, storage: storage, screen_size: screen_size, gpu: gpu,
+    price: priceInfo.value, hasPrice: hasPrice,
+    include: !unavailable, flagged: unavailable, quantity: 1, recognized: !!brandResult
+  };
+}
+
+function isDuplicateLaptop(row, inventory){
+  if(!inventory || !inventory.length) return null;
+  return inventory.find(function(p){
+    return p.item_type === 'Laptop' &&
+      (p.brand||'') === (row.brand||'') &&
+      (p.model||'') === (row.model||'') &&
+      (p.cpu||'') === (row.cpu||'') &&
+      (p.ram||'') === (row.ram||'') &&
+      (p.storage||'') === (row.storage||'') &&
+      (p.screen_size||'') === (row.screen_size||'') &&
+      (p.color||'') === (row.color||'') &&
+      (p.condition||'') === (row.condition||'') &&
+      (p.supplier||'') === (row.supplier||'');
+  }) || null;
+}
+
+function parseBulkLaptop(text){
+  const lines = text.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+  const rows = [], skipped = [];
+  let sectionLabel = '';
+
+  lines.forEach(function(raw){
+    if(raw === '.' || raw === '-') return;
+
+    if(/^\./.test(raw)){
+      var alpha = raw.replace(/^\./,'').replace(/[^a-zA-Z]/g,'');
+      if(alpha.length >= 3) sectionLabel = raw.replace(/^\./,'').trim();
+      return;
+    }
+
+    var line = raw.replace(/^[\u{1F1FA}\u{1F1F8}]/u, '').trim();
+
+    const parsed = parseBulkLaptopLine(line);
+    if(!parsed){
+      if(line.replace(/[^a-zA-Z]/g,'').length >= 3) sectionLabel = line.trim();
+      return;
+    }
+    if(!parsed.recognized) skipped.push({raw:raw});
+    const row = {
+      raw: parsed.raw, brand: parsed.brand, model: parsed.model, cpu: parsed.cpu, ram: parsed.ram,
+      storage: parsed.storage, screen_size: parsed.screen_size, gpu: parsed.gpu,
+      price: parsed.price, hasPrice: parsed.hasPrice,
+      include: parsed.include, flagged: parsed.flagged, quantity: parsed.quantity, sectionLabel: sectionLabel, duplicate: null
+    };
+    const dup = isDuplicateLaptop(row, state.inventory);
+    if(dup) row.duplicate = dup.id;
+    rows.push(row);
+  });
+  return { rows: rows, skipped: skipped };
+}
 function loadConfig(){
   if(HARDCODED_SUPABASE_URL && HARDCODED_SUPABASE_ANON_KEY){
     return { url: HARDCODED_SUPABASE_URL, key: HARDCODED_SUPABASE_ANON_KEY };
@@ -7288,7 +7942,7 @@ function render(){
   const app = document.getElementById('app');
   if(state.stage==='loading'){ app.innerHTML = '<div class="loading-screen"><div class="spinner"></div>booting dealer console…</div>'; return; }
   if(state.stage==='configure'){ app.innerHTML = renderConfigureScreen(); attachConfigureHandlers(); return; }
-  if(state.stage==='auth'){ app.innerHTML = renderAuthScreen() + renderIosInstallBanner(); attachAuthHandlers(); return; }
+  if(state.stage==='auth'){ app.innerHTML = renderAuthScreen() + renderInstallBanner(); attachAuthHandlers(); return; }
 
   app.innerHTML =
     '<div class="rail-backdrop '+(state.mobileMenuOpen?'open':'')+'" id="railBackdrop"></div>' +
@@ -7300,6 +7954,11 @@ function render(){
       railItem('consign','Owed', badgeCount(state.consignments.filter(function(c){return c.status!=='Settled' && c.status!=='Returned';}).length)) +
       railItem('network','Network', badgeCount(state.broadcasts.filter(function(b){return b.status==='Open';}).length)) +
       (state.isAdmin ? railItem('admin','Admin') : '') +
+      '<div class="rail-bottom">' +
+        '<div class="rail-bottom-item '+(state.pushStatus==='on'?'on':'')+'" id="notifBellBtn" title="Notification settings">'+ICONS.bell+'<span>Alerts</span></div>' +
+        '<div class="rail-bottom-item" id="themeSettingsBtn" title="Display theme">'+ICONS.theme+'<span>Theme</span></div>' +
+        '<div class="rail-bottom-item" id="logoutBtn" title="Log out">'+ICONS.gear+'<span>Logout</span></div>' +
+      '</div>' +
     '</div>' +
     '<div class="main">' +
       '<div class="topbar" style="position:relative;">' +
@@ -7309,15 +7968,15 @@ function render(){
         (state.searchQuery ? renderSearchDropdown() : '') +
         '<div class="topbar-right">' +
           '<span class="dot"></span> '+escapeHtml(state.profile.shop_name)+(state.isAdmin?' <span class="badge badge-admin">admin</span>':'') +
-          '<span class="bell '+(state.pushStatus==='on'?'on':'')+'" id="notifBellBtn" title="Notification settings">'+ICONS.bell+'</span>' +
-          '<span class="theme-toggle" id="themeSettingsBtn" title="Display theme">'+ICONS.theme+'</span>' +
-          '<span class="gear" id="logoutBtn" title="Log out">'+ICONS.gear+'</span>' +
+          '<span class="bell '+(state.pushStatus==='on'?'on':'')+' notifBellBtn" title="Notification settings">'+ICONS.bell+'</span>' +
+          '<span class="theme-toggle themeSettingsBtn" title="Display theme">'+ICONS.theme+'</span>' +
+          '<span class="gear logoutBtn" title="Log out">'+ICONS.gear+'</span>' +
         '</div>' +
       '</div>' +
       '<div class="content">'+renderTab()+'</div>' +
     '</div>' +
     (state.modal ? renderModal() : '') +
-    renderIosInstallBanner() +
+    renderInstallBanner() +
     (state.toast ? ('<div class="toast '+(state.toastErr?'err':'')+'">'+escapeHtml(state.toast)+'</div>') : '');
   attachHandlers();
 }
@@ -7546,7 +8205,7 @@ function renderInventory(){
       '<div><h1 class="page-title">Inventory</h1><p class="page-sub">'+allOfType.length+' '+noun+'s tracked · '+allOfType.filter(function(p){return p.status==='In Stock';}).length+' in stock</p></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
         (items.some(function(p){return p.status==='In Stock';}) ? '<button class="btn" id="selectAllInStockBtn">Select all in stock</button>' : '') +
-        (itemTab==='Phone' ? '<button class="btn" data-open-modal="bulkImport">📋 Paste stock list</button>' : '') +
+        '<button class="btn" data-open-modal="'+(itemTab==='Phone'?'bulkImport':'bulkImportLaptop')+'">📋 Paste stock list</button>' +
         (itemTab==='Phone'
           ? '<button class="btn btn-accent" data-open-modal="addPhone">'+ICONS.plus+' Add phone</button>'
           : '<button class="btn btn-accent" data-open-modal="addLaptop">'+ICONS.plus+' Add laptop</button>') +
@@ -7933,6 +8592,10 @@ function renderAdmin(){
       '<div class="kpi"><div class="kpi-label">Total phones tracked</div><div class="kpi-value">'+totalPhones+'</div></div>' +
       '<div class="kpi"><div class="kpi-label">Total platform revenue</div><div class="kpi-value accent">'+naira(totalRevenue)+'</div></div>' +
     '</div>' +
+    '<div class="section"><div class="section-body" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;">' +
+      '<div style="font-size:12.5px;color:var(--text-dim);">Force every device to fetch the latest deployed version — clears cached files, unregisters the old service worker, and reloads. Use this right after you push a change.</div>' +
+      '<button class="btn btn-accent" id="forceCacheUpdateBtn">🔄 Force cache update</button>' +
+    '</div></div>' +
     '<div class="section"><div class="section-head"><h3>Dealers</h3></div><div class="section-body table-scroll" style="padding:0;">' +
       '<table><thead><tr><th>Shop</th><th>Location</th><th>Phone</th><th>Phones tracked</th><th>Sales</th><th>Revenue</th><th>Joined</th></tr></thead><tbody>' +
       dealers.map(function(d){
@@ -7956,7 +8619,7 @@ function renderModal(){
   if(m.name==='addSupplier' || m.name==='editSupplier') return renderSupplierModal(m);
   if(m.name==='newBroadcast') return renderBroadcastModal();
   if(m.name==='respondBroadcast') return renderRespondModal(m);
-  if(m.name==='bulkImport') return renderBulkImportModal();
+  if(m.name==='bulkImport' || m.name==='bulkImportLaptop') return m.name==='bulkImportLaptop' ? renderLaptopBulkImportModal() : renderBulkImportModal();
   if(m.name==='notifSettings') return renderNotifModal();
   if(m.name==='themeSettings') return renderThemeModal();
   if(m.name==='addConsignment' || m.name==='editConsignment') return renderConsignmentModal(m);
@@ -8174,7 +8837,7 @@ function renderBulkImportModal(){
     '<div class="modal-foot">' +
       (!state.bulkImportRows.length ?
         ('<button class="btn" data-close-modal="1">Cancel</button><button class="btn btn-accent" id="bi-parse-btn">Parse list</button>') :
-        ('<button class="btn" id="bi-back-btn">← Back to edit paste</button><button class="btn btn-accent" id="bi-import-btn">Import '+state.bulkImportRows.filter(function(r){return r.include;}).length+' phones</button>')
+        ('<button class="btn" id="bi-back-btn">← Back to edit paste</button><button class="btn btn-accent" id="bi-import-btn">Import '+state.bulkImportRows.filter(function(r){return r.include && !r.duplicate;}).length+' phones</button>')
       ) +
     '</div></div></div>';
 }
@@ -8182,9 +8845,11 @@ function renderBulkImportModal(){
 function renderBulkImportPreview(){
   const rows = state.bulkImportRows;
   const unparsed = state.bulkImportSkipped;
+  const uniqueRows = rows.filter(function(r){ return !r.duplicate; });
+  const dupRows = rows.filter(function(r){ return r.duplicate; });
   return '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">Review before importing — uncheck any row you don\'t want, or fix a value directly. The "Cost" column is what you\'ll set your selling price against later.</p>' +
     '<table><thead><tr><th></th><th>Model</th><th>Storage</th><th>Cost</th><th>Qty</th><th>Original line</th></tr></thead><tbody>' +
-    rows.map(function(r,i){ return '<tr style="'+(r.flagged?'opacity:.55;':'')+'">' +
+    uniqueRows.map(function(r,i){ return '<tr style="'+(r.flagged?'opacity:.55;':'')+'">' +
       '<td><input type="checkbox" data-bi-include="'+i+'" '+(r.include?'checked':'')+'/></td>' +
       '<td><input data-bi-field="model" data-bi-row="'+i+'" value="'+escapeAttr(r.model)+'" style="width:150px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
       '<td><input data-bi-field="storage" data-bi-row="'+i+'" value="'+escapeAttr(r.storage)+'" style="width:70px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
@@ -8192,13 +8857,78 @@ function renderBulkImportPreview(){
       '<td><input type="number" min="1" data-bi-field="quantity" data-bi-row="'+i+'" value="'+(r.quantity||1)+'" style="width:55px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
       '<td class="mono" style="font-size:11px;color:var(--text-faint);">'+escapeHtml(r.raw)+(r.flagged?' <span class="badge badge-danger">❌ flagged</span>':'')+'</td>' +
     '</tr>'; }).join('') +
+    (dupRows.length ? ('<tr><td colspan="6" style="padding:10px 0;border-top:1px solid var(--border);"><strong style="color:var(--accent);font-size:12px;">Duplicate phones (already in inventory — will be skipped)</strong></td></tr>') : '') +
+    dupRows.map(function(r){ return '<tr style="opacity:.5;background:var(--panel-2);">' +
+      '<td><input type="checkbox" disabled/></td>' +
+      '<td>'+escapeHtml(r.model)+' <span class="badge badge-duplicate">duplicate</span></td>' +
+      '<td>'+escapeHtml(r.storage||'—')+'</td>' +
+      '<td>'+naira(r.price||0)+'</td>' +
+      '<td>'+(r.quantity||1)+'</td>' +
+      '<td class="mono" style="font-size:11px;color:var(--text-faint);">'+escapeHtml(r.raw)+'</td>' +
+    '</tr>'; }).join('') +
     '</tbody></table>' +
     (unparsed.length ? ('<div style="margin-top:14px;padding:10px 12px;background:var(--panel-2);border-radius:var(--radius-sm);font-size:12px;color:var(--text-faint);">' +
       'Couldn\'t confidently recognize the model on '+unparsed.length+' line'+(unparsed.length===1?'':'s')+' (added as-is from the original text — rename or uncheck after review): ' +
       unparsed.map(function(u){ return escapeHtml(u.raw); }).join(', ') + '</div>') : '');
 }
 
-function renderSaleModal(){
+function renderLaptopBulkImportModal(){
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:760px;">' +
+    '<div class="modal-head"><h3>Paste laptop stock list</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      (!state.bulkImportLaptopRows.length ? (
+        '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">Paste your laptop list — any format works. We\'ll match brand, model, CPU, RAM, storage, screen size, and cost price automatically. Selling price is left blank since these lists show what you paid — set your selling price per laptop after import.</p>' +
+        '<div class="form-grid">' +
+          '<div class="field"><label>Condition (applies to this whole batch)</label><select id="bli-condition"><option value="Used" '+(state.bulkImportLaptopCondition==='Used'?'selected':'')+'>Used</option><option value="New" '+(state.bulkImportLaptopCondition==='New'?'selected':'')+'>New</option></select></div>' +
+          '<div class="field"><label>Supplier contact (optional)</label><select id="bli-supplier-id"><option value="">— none / type freeform below —</option>' +
+            state.suppliers.map(function(s){ return '<option value="'+s.id+'" '+(state.bulkImportLaptopSupplierId===s.id?'selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('') +
+          '</select></div>' +
+          '<div class="field"><label>Supplier / source label</label><input id="bli-supplier" placeholder="e.g. UK import batch" value="'+escapeAttr(state.bulkImportLaptopSupplier)+'"/></div>' +
+        '</div>' +
+        '<div class="field full" style="margin-top:14px;"><label>Paste here</label><textarea id="bli-text" rows="14" style="font-family:var(--font-mono);font-size:12.5px;" placeholder="HP EliteBook 840 G7 i7 16GB 512GB SSD 14" — 450k&#10;Dell Latitude 5520 8GB 256GB — 320k&#10;...">'+escapeHtml(state.bulkImportLaptopText)+'</textarea></div>'
+      ) : renderLaptopBulkImportPreview()) +
+    '</div>' +
+    '<div class="modal-foot">' +
+      (!state.bulkImportLaptopRows.length ?
+        ('<button class="btn" data-close-modal="1">Cancel</button><button class="btn btn-accent" id="bli-parse-btn">Parse list</button>') :
+        ('<button class="btn" id="bli-back-btn">← Back to edit paste</button><button class="btn btn-accent" id="bli-import-btn">Import '+state.bulkImportLaptopRows.filter(function(r){return r.include && !r.duplicate;}).length+' laptops</button>')
+      ) +
+    '</div></div></div>';
+}
+
+function renderLaptopBulkImportPreview(){
+  const rows = state.bulkImportLaptopRows;
+  const unparsed = state.bulkImportLaptopSkipped;
+  const uniqueRows = rows.filter(function(r){ return !r.duplicate; });
+  const dupRows = rows.filter(function(r){ return r.duplicate; });
+  return '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">Review before importing — uncheck any row you don\'t want, or fix a value directly. The "Cost" column is what you\'ll set your selling price against later.</p>' +
+    '<table><thead><tr><th></th><th>Brand</th><th>Model</th><th>CPU / RAM</th><th>Storage / Screen</th><th>Cost</th><th>Qty</th><th>Original line</th></tr></thead><tbody>' +
+    uniqueRows.map(function(r,i){ return '<tr style="'+(r.flagged?'opacity:.55;':'')+'">' +
+      '<td><input type="checkbox" data-bli-include="'+i+'" '+(r.include?'checked':'')+'/></td>' +
+      '<td><input data-bli-field="brand" data-bli-row="'+i+'" value="'+escapeAttr(r.brand)+'" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input data-bli-field="model" data-bli-row="'+i+'" value="'+escapeAttr(r.model)+'" style="width:150px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input data-bli-field="cpu" data-bli-row="'+i+'" value="'+escapeAttr(r.cpu)+'" style="width:100px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/><input data-bli-field="ram" data-bli-row="'+i+'" value="'+escapeAttr(r.ram)+'" style="width:60px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input data-bli-field="storage" data-bli-row="'+i+'" value="'+escapeAttr(r.storage)+'" style="width:90px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/><input data-bli-field="screen_size" data-bli-row="'+i+'" value="'+escapeAttr(r.screen_size)+'" style="width:50px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input type="number" data-bli-field="price" data-bli-row="'+i+'" value="'+r.price+'" style="width:90px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input type="number" min="1" data-bli-field="quantity" data-bli-row="'+i+'" value="'+(r.quantity||1)+'" style="width:55px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td class="mono" style="font-size:11px;color:var(--text-faint);">'+escapeHtml(r.raw)+(r.flagged?' <span class="badge badge-danger">❌ flagged</span>':'')+'</td>' +
+    '</tr>'; }).join('') +
+    (dupRows.length ? ('<tr><td colspan="8" style="padding:10px 0;border-top:1px solid var(--border);"><strong style="color:var(--accent);font-size:12px;">Duplicate laptops (already in inventory — will be skipped)</strong></td></tr>') : '') +
+    dupRows.map(function(r){ return '<tr style="opacity:.5;background:var(--panel-2);">' +
+      '<td><input type="checkbox" disabled/></td>' +
+      '<td>'+escapeHtml(r.brand||'—')+'</td>' +
+      '<td>'+escapeHtml(r.model)+' <span class="badge badge-duplicate">duplicate</span></td>' +
+      '<td>'+escapeHtml(r.cpu||'—')+'<div style="font-size:11px;color:var(--text-faint);">'+escapeHtml(r.ram||'')+'</div></td>' +
+      '<td>'+escapeHtml(r.storage||'—')+(r.screen_size?(' · '+escapeHtml(r.screen_size)):'')+'</td>' +
+      '<td>'+naira(r.price||0)+'</td>' +
+      '<td>'+(r.quantity||1)+'</td>' +
+      '<td class="mono" style="font-size:11px;color:var(--text-faint);">'+escapeHtml(r.raw)+'</td>' +
+    '</tr>'; }).join('') +
+    '</tbody></table>' +
+    (unparsed.length ? ('<div style="margin-top:14px;padding:10px 12px;background:var(--panel-2);border-radius:var(--radius-sm);font-size:12px;color:var(--text-faint);">' +
+      'Couldn\'t confidently recognize the brand on '+unparsed.length+' line'+(unparsed.length===1?'':'s')+' (added as-is from the original text — rename or uncheck after review): ' +
+      unparsed.map(function(u){ return escapeHtml(u.raw); }).join(', ') + '</div>') : '');
+}
   const available = state.inventory.filter(function(p){ return p.status==='In Stock'; });
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>Log a sale</h3><button class="close-x" data-close-modal="1">×</button></div>' +
@@ -8418,20 +9148,20 @@ function attachHandlers(){
     state.mobileMenuOpen = false;
     setTab(el.getAttribute('data-tab'));
   }); });
+
+  const forceCacheUpdateBtn = document.getElementById('forceCacheUpdateBtn');
+  if(forceCacheUpdateBtn) forceCacheUpdateBtn.addEventListener('click', forceCacheUpdate);
   const hamburgerBtn = document.getElementById('hamburgerBtn');
   if(hamburgerBtn) hamburgerBtn.addEventListener('click', function(){ state.mobileMenuOpen = true; render(); });
   const railCloseBtn = document.getElementById('railCloseBtn');
   if(railCloseBtn) railCloseBtn.addEventListener('click', function(){ state.mobileMenuOpen = false; render(); });
   const railBackdrop = document.getElementById('railBackdrop');
   if(railBackdrop) railBackdrop.addEventListener('click', function(){ state.mobileMenuOpen = false; render(); });
-  const logoutBtn = document.getElementById('logoutBtn');
-  if(logoutBtn) logoutBtn.addEventListener('click', async function(){ await sb.auth.signOut(); state.stage='auth'; state.profile=null; render(); });
+  document.querySelectorAll('.logoutBtn, #logoutBtn').forEach(function(el){ el.addEventListener('click', async function(){ state.mobileMenuOpen = false; await sb.auth.signOut(); state.stage='auth'; state.profile=null; render(); }); });
 
-  const notifBellBtn = document.getElementById('notifBellBtn');
-  if(notifBellBtn) notifBellBtn.addEventListener('click', function(){ openModal('notifSettings'); });
+  document.querySelectorAll('.notifBellBtn, #notifBellBtn').forEach(function(el){ el.addEventListener('click', function(){ state.mobileMenuOpen = false; openModal('notifSettings'); }); });
 
-  const themeSettingsBtn = document.getElementById('themeSettingsBtn');
-  if(themeSettingsBtn) themeSettingsBtn.addEventListener('click', function(){ openModal('themeSettings'); });
+  document.querySelectorAll('.themeSettingsBtn, #themeSettingsBtn').forEach(function(el){ el.addEventListener('click', function(){ state.mobileMenuOpen = false; openModal('themeSettings'); }); });
   app.querySelectorAll('[data-set-theme]').forEach(function(el){ el.addEventListener('click', function(){ setTheme(el.getAttribute('data-set-theme')); }); });
   
   const enablePushInline = document.getElementById('enablePushInline');
@@ -8440,6 +9170,15 @@ function attachHandlers(){
   if(enablePushBtn) enablePushBtn.addEventListener('click', enablePush);
   const disablePushBtn = document.getElementById('disablePushBtn');
   if(disablePushBtn) disablePushBtn.addEventListener('click', disablePush);
+
+  const installAppBtn = document.getElementById('installAppBtn');
+  if(installAppBtn) installAppBtn.addEventListener('click', async function(){
+    if(!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    render();
+  });
 
   const gs = document.getElementById('globalSearch');
   if(gs){
@@ -8682,6 +9421,10 @@ function attachHandlers(){
       status: val('f-status'), shelf: val('f-shelf'), notes: val('f-notes')
     };
     if(!data.model){ showToast('Phone model is required', true); return; }
+    if(!id){
+      const dup = isDuplicatePhone({model:data.model, storage:data.storage, color:data.color, condition:data.condition, supplier:data.supplier}, state.inventory);
+      if(dup){ showToast('This exact phone already exists in inventory (ID: '+dup.id+')', true); return; }
+    }
     const existingPhone = id ? state.inventory.find(function(x){ return x.id===id; }) : null;
     const existingImages = imagesFor(existingPhone);
     const removed = state.photoModalRemovedUrls || [];
@@ -8717,6 +9460,10 @@ function attachHandlers(){
       status: val('l-status'), shelf: val('l-shelf'), notes: val('l-notes')
     };
     if(!data.model){ showToast('Laptop model is required', true); return; }
+    if(!id){
+      const dup = isDuplicateLaptop({brand:data.brand, model:data.model, cpu:data.cpu, ram:data.ram, storage:data.storage, screen_size:data.screen_size, gpu:data.gpu, color:data.color, condition:data.condition, supplier:data.supplier}, state.inventory);
+      if(dup){ showToast('This exact laptop already exists in inventory (ID: '+dup.id+')', true); return; }
+    }
     const existingLaptop = id ? state.inventory.find(function(x){ return x.id===id; }) : null;
     const existingImages = imagesFor(existingLaptop);
     const removed = state.photoModalRemovedUrls || [];
@@ -8995,8 +9742,9 @@ function attachHandlers(){
   });
 
   const biImportBtn = document.getElementById('bi-import-btn');
-  if(biImportBtn) biImportBtn.addEventListener('click', async function(){
-    const toInsert = state.bulkImportRows.filter(function(r){ return r.include; }).map(function(r){
+   if(biImportBtn) biImportBtn.addEventListener('click', async function(){
+    const dupCount = state.bulkImportRows.filter(function(r){ return r.include && r.duplicate; }).length;
+    const toInsert = state.bulkImportRows.filter(function(r){ return r.include && !r.duplicate; }).map(function(r){
       return {
         dealer_id: state.profile.id, model: r.model, storage: r.storage, color: '',
         condition: state.bulkImportCondition, battery: state.bulkImportCondition==='Used' ? 100 : null,
@@ -9012,8 +9760,66 @@ function attachHandlers(){
       if(error) throw error;
       await refreshAll();
       state.bulkImportRows = []; state.bulkImportText=''; state.bulkImportSupplierId='';
-      closeModal(); showToast(toInsert.length+' phones imported');
+      closeModal();
+      showToast(toInsert.length+' phones imported'+(dupCount ? ' ('+dupCount+' duplicate'+(dupCount===1?'':'s')+' skipped)' : ''));
     } catch(e){ showToast('Import failed: '+e.message, true); render(); }
+  });
+
+  const bliParseBtn = document.getElementById('bli-parse-btn');
+  if(bliParseBtn) bliParseBtn.addEventListener('click', function(){
+    const text = val('bli-text');
+    state.bulkImportLaptopText = text;
+    state.bulkImportLaptopCondition = val('bli-condition');
+    state.bulkImportLaptopSupplier = val('bli-supplier');
+    state.bulkImportLaptopSupplierId = val('bli-supplier-id') || null;
+    const parsed = parseBulkLaptop(text);
+    state.bulkImportLaptopRows = parsed.rows; state.bulkImportLaptopSkipped = parsed.skipped;
+    if(!state.bulkImportLaptopRows.length){ showToast('No recognizable laptop lines found in that paste', true); return; }
+    render();
+  });
+  const bliBackBtn = document.getElementById('bli-back-btn');
+  if(bliBackBtn) bliBackBtn.addEventListener('click', function(){ state.bulkImportLaptopRows = []; render(); });
+
+  const bliSupplierId = document.getElementById('bli-supplier-id');
+  if(bliSupplierId) bliSupplierId.addEventListener('change', function(){
+    const s = state.suppliers.find(function(x){ return x.id === bliSupplierId.value; });
+    const bliSupplier = document.getElementById('bli-supplier');
+    if(s && bliSupplier) bliSupplier.value = s.name;
+  });
+
+  document.querySelectorAll('[data-bli-include]').forEach(function(el){
+    el.addEventListener('change', function(){ state.bulkImportLaptopRows[Number(el.getAttribute('data-bli-include'))].include = el.checked; });
+  });
+  document.querySelectorAll('[data-bli-field]').forEach(function(el){
+    el.addEventListener('input', function(){
+      const i = Number(el.getAttribute('data-bli-row')), f = el.getAttribute('data-bli-field');
+      state.bulkImportLaptopRows[i][f] = el.value;
+    });
+  });
+
+  const bliImportBtn = document.getElementById('bli-import-btn');
+  if(bliImportBtn) bliImportBtn.addEventListener('click', async function(){
+    const dupCount = state.bulkImportLaptopRows.filter(function(r){ return r.include && r.duplicate; }).length;
+    const toInsert = state.bulkImportLaptopRows.filter(function(r){ return r.include && !r.duplicate; }).map(function(r){
+      return {
+        dealer_id: state.profile.id, item_type: 'Laptop', brand: r.brand, model: r.model, cpu: r.cpu||null, ram: r.ram||null,
+        storage: r.storage, screen_size: r.screen_size||null, gpu: r.gpu||null, color: '', condition: state.bulkImportLaptopCondition,
+        battery: state.bulkImportLaptopCondition==='Used' ? 100 : null,
+        quantity: Number(r.quantity)||1, supplier: state.bulkImportLaptopSupplier || (r.sectionLabel||''),
+        supplier_id: state.bulkImportLaptopSupplierId || null,
+        purchase_date: todayISO(),
+        cost: Number(r.price)||0, price: null, status: 'In Stock', shelf: '', notes: 'Bulk imported: '+r.raw
+      };
+    });
+    if(!toInsert.length){ showToast('No rows selected to import', true); return; }
+    try{
+      const { error } = await sb.from('inventory').insert(toInsert);
+      if(error) throw error;
+      await refreshAll();
+      state.bulkImportLaptopRows = []; state.bulkImportLaptopText=''; state.bulkImportLaptopSupplierId='';
+      closeModal();
+      showToast(toInsert.length+' laptops imported'+(dupCount ? ' ('+dupCount+' duplicate'+(dupCount===1?'':'s')+' skipped)' : ''));
+    } catch(e){ showToast('Import failed: '+(e.message||e), true); render(); }
   });
 
   ['calc-cost','calc-target','calc-min','calc-offer'].forEach(function(id){
