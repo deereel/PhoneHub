@@ -3481,7 +3481,7 @@ function renderStockAdvertCard(b){
   return '<div class="section">' +
     '<div class="section-head"><div><strong>'+ICONS.broadcast.replace('<svg ', '<svg style="width:13px;height:13px;vertical-align:-2px;margin-right:5px;color:var(--accent)" ')+
       (isMine ? 'Your stock advert' : escapeHtml(dealerName(b.dealer_id))+'\'s stock advert')+'</strong>' +
-      '<div style="font-size:11.5px;color:var(--text-faint);margin-top:3px;">'+escapeHtml(b.date)+'</div></div>' +
+      '<div style="font-size:11.5px;color:var(--text-faint);margin-top:3px;">'+escapeHtml(b.date)+(b.visibility==='private'?' · <span style="color:var(--accent);">Sent to you directly</span>':'')+'</div></div>' +
       '<div style="display:flex;align-items:center;gap:10px;">'+badge(b.status)+
         (isMine && b.status==='Open'?('<button class="btn btn-sm" data-close-broadcast="'+b.id+'">Close</button>'):'') +
       '</div></div>' +
@@ -3921,6 +3921,8 @@ function renderLaptopBulkImportPreview(){
       'Couldn\'t confidently recognize the brand on '+unparsed.length+' line'+(unparsed.length===1?'':'s')+' (added as-is from the original text — rename or uncheck after review): ' +
       unparsed.map(function(u){ return escapeHtml(u.raw); }).join(', ') + '</div>') : '');
 }
+
+function renderSaleModal(){
   const available = state.inventory.filter(function(p){ return p.status==='In Stock'; });
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>Log a sale</h3><button class="close-x" data-close-modal="1">×</button></div>' +
@@ -4077,29 +4079,19 @@ function renderBroadcastComposerModal(m){
         '<p style="color:var(--text-dim);font-size:13px;">Every registered dealer on the network will instantly see these phones as a stock advert — no WhatsApp group needed.</p>' +
         '<div class="field full"><label>Note (optional)</label><textarea id="bc-message" rows="3" placeholder="e.g. Fresh UK arrivals, negotiable">'+escapeHtml(state.broadcastComposer.message)+'</textarea></div>'
       ) : (
-        '<p style="color:var(--text-dim);font-size:13px;">Pick which saved contacts to notify. Since they may not be on PhoneHub yet, this opens a pre-filled WhatsApp message straight to their saved number.</p>' +
+        '<p style="color:var(--text-dim);font-size:13px;">Pick which saved contacts to notify. This sends through PhoneHub itself, the same way an open-market broadcast does — only these contacts will see it or get a notification. A contact needs their own PhoneHub account (matched by the phone number saved on their contact card) to receive it; you\'ll be told after sending if any don\'t.</p>' +
         (state.suppliers.length ? ('<div style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;margin-bottom:14px;">' +
           state.suppliers.map(function(s){ return '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;border-bottom:1px solid var(--border);">' +
             '<input type="checkbox" data-broadcast-contact="'+s.id+'" '+(state.broadcastComposer.selectedContactIds.indexOf(s.id)>-1?'checked':'')+'/>' +
             '<span class="strong">'+escapeHtml(s.name)+'</span><span class="mono" style="color:var(--text-faint);font-size:11px;">'+escapeHtml(s.phone||'no phone saved')+'</span>' +
           '</label>'; }).join('') +
         '</div>') : '<div class="empty">No saved contacts yet — add one under Network → My contacts.</div>') +
-        '<div class="field full"><label>Message</label><textarea id="bc-message" rows="5" style="font-size:12.5px;">'+escapeHtml(state.broadcastComposer.message)+'</textarea></div>' +
-        (state.broadcastComposer.selectedContactIds.length ? ('<div style="margin-top:6px;"><div style="font-size:11.5px;color:var(--text-dim);margin-bottom:8px;">Tap each contact to open their WhatsApp chat with the message above:</div>' +
-          '<div style="display:flex;flex-direction:column;gap:6px;">' +
-          state.broadcastComposer.selectedContactIds.map(function(id){
-            const s = state.suppliers.find(function(x){ return x.id===id; });
-            if(!s) return '';
-            const digits = (s.phone||'').replace(/[^0-9+]/g,'');
-            const waText = encodeURIComponent(state.broadcastComposer.message || defaultBroadcastMessage(items));
-            return '<a class="btn btn-sm" target="_blank" rel="noopener" href="https://wa.me/'+escapeAttr(digits)+'?text='+waText+'">💬 Open WhatsApp — '+escapeHtml(s.name)+'</a>';
-          }).join('') +
-          '</div></div>') : '')
+        '<div class="field full"><label>Note (optional)</label><textarea id="bc-message" rows="3" placeholder="e.g. Fresh UK arrivals, negotiable">'+escapeHtml(state.broadcastComposer.message)+'</textarea></div>'
       )) +
     '</div>' +
     '<div class="modal-foot">' +
       '<button class="btn" data-close-modal="1">Close</button>' +
-      (target==='network' ? '<button class="btn btn-accent" id="sendNetworkBroadcastBtn">Send to network</button>' : '<button class="btn btn-accent" id="logContactBroadcastBtn">Save to broadcast history</button>') +
+      (target==='network' ? '<button class="btn btn-accent" id="sendNetworkBroadcastBtn">Send to network</button>' : '<button class="btn btn-accent" id="sendContactsBroadcastBtn">Send to selected contacts</button>') +
     '</div></div></div>';
 }
 
@@ -4285,7 +4277,8 @@ function attachHandlers(){
     const data = {
       dealer_id: state.profile.id, type:'Stock', status:'Open',
       model: items.length===1 ? items[0].model : (items.length+' items'),
-      items: itemsPayload, message: state.broadcastComposer.message || null
+      items: itemsPayload, message: state.broadcastComposer.message || null,
+      visibility: 'network', target_dealer_ids: []
     };
     try{
       const { error } = await sb.from('broadcasts').insert(data);
@@ -4295,25 +4288,42 @@ function attachHandlers(){
       closeModal(); showToast('Stock advert sent to the network');
     } catch(e){ showToast('Broadcast failed: '+(e.message||e), true); render(); }
   });
-  const logContactBroadcastBtn = document.getElementById('logContactBroadcastBtn');
-  if(logContactBroadcastBtn) logContactBroadcastBtn.addEventListener('click', async function(){
+  const sendContactsBroadcastBtn = document.getElementById('sendContactsBroadcastBtn');
+  if(sendContactsBroadcastBtn) sendContactsBroadcastBtn.addEventListener('click', async function(){
     const ids = state.broadcastComposer.ids;
     const items = state.inventory.filter(function(p){ return ids.indexOf(p.id)>-1; });
     const contactIds = state.broadcastComposer.selectedContactIds;
     if(!contactIds.length){ showToast('Select at least one saved contact', true); return; }
-    const names = contactIds.map(function(id){ const s = state.suppliers.find(function(x){ return x.id===id; }); return s?s.name:''; }).filter(Boolean);
-    const itemsPayload = items.map(function(p){ return {
-      inventory_id:p.id, item_type:p.item_type||'Phone', model:p.model, brand:p.brand, storage:p.storage, color:p.color,
-      condition:p.condition, price:p.price, cpu:p.cpu, ram:p.ram, screen_size:p.screen_size, gpu:p.gpu,
-      image_url:p.image_url, image_urls: imagesFor(p)
-    }; });
+    const contacts = contactIds.map(function(id){ return state.suppliers.find(function(x){ return x.id===id; }); }).filter(function(s){ return s && s.phone; });
+    if(!contacts.length){ showToast('None of the selected contacts have a phone number saved', true); return; }
+
     try{
-      const { error } = await sb.from('stock_broadcast_log').insert({
-        dealer_id: state.profile.id, contact_names: names.join(', '), items: itemsPayload, message: state.broadcastComposer.message || null
-      });
+      const { data: matches, error: matchErr } = await sb.rpc('find_dealers_by_phone', { p_phones: contacts.map(function(c){ return c.phone; }) });
+      if(matchErr) throw matchErr;
+      const targetIds = Array.from(new Set((matches||[]).map(function(mm){ return mm.dealer_id; })));
+      if(!targetIds.length){
+        showToast('None of the selected contacts have a PhoneHub account yet, so they can\'t receive this — try Open market instead', true);
+        return;
+      }
+      const itemsPayload = items.map(function(p){ return {
+        inventory_id:p.id, item_type:p.item_type||'Phone', model:p.model, brand:p.brand, storage:p.storage, color:p.color,
+        condition:p.condition, price:p.price, cpu:p.cpu, ram:p.ram, screen_size:p.screen_size, gpu:p.gpu,
+        image_url:p.image_url, image_urls: imagesFor(p)
+      }; });
+      const data = {
+        dealer_id: state.profile.id, type:'Stock', status:'Open',
+        model: items.length===1 ? items[0].model : (items.length+' items'),
+        items: itemsPayload, message: state.broadcastComposer.message || null,
+        visibility: 'private', target_dealer_ids: targetIds
+      };
+      const { error } = await sb.from('broadcasts').insert(data);
       if(error) throw error;
-      showToast('Saved — tap each contact above to open WhatsApp with the message');
-    } catch(e){ showToast('Could not save: '+(e.message||e), true); render(); }
+      await refreshAll();
+      const missed = contacts.length - targetIds.length;
+      state.selectedInventoryIds = []; state.broadcastComposer = {ids:[], target:'network', message:'', selectedContactIds:[]};
+      closeModal();
+      showToast('Sent to '+targetIds.length+' contact'+(targetIds.length===1?'':'s')+' on PhoneHub'+(missed>0?(' — '+missed+' other'+(missed===1?'':'s')+" aren't registered yet"):''));
+    } catch(e){ showToast('Could not send: '+(e.message||e), true); render(); }
   });
 
   const dealerSearch = document.getElementById('dealerSearch');
@@ -4877,13 +4887,14 @@ Deno.serve(async (req: Request) => {
     }
 
     const payload = await req.json();
-    const { type, dealer_id, exclude_dealer_id, title, body, url, tag } = payload || {};
+    const { type, dealer_id, dealer_ids, exclude_dealer_id, title, body, url, tag } = payload || {};
 
     let query = supabase.from("push_subscriptions").select("*");
     if (dealer_id) query = query.eq("dealer_id", dealer_id);
+    else if (dealer_ids && Array.isArray(dealer_ids) && dealer_ids.length) query = query.in("dealer_id", dealer_ids);
     else if (exclude_dealer_id) query = query.neq("dealer_id", exclude_dealer_id);
     else {
-      return new Response(JSON.stringify({ error: "no dealer_id or exclude_dealer_id given" }), { status: 400 });
+      return new Response(JSON.stringify({ error: "no dealer_id, dealer_ids, or exclude_dealer_id given" }), { status: 400 });
     }
 
     const { data: subs, error } = await query;
@@ -8489,7 +8500,7 @@ function renderStockAdvertCard(b){
   return '<div class="section">' +
     '<div class="section-head"><div><strong>'+ICONS.broadcast.replace('<svg ', '<svg style="width:13px;height:13px;vertical-align:-2px;margin-right:5px;color:var(--accent)" ')+
       (isMine ? 'Your stock advert' : escapeHtml(dealerName(b.dealer_id))+'\'s stock advert')+'</strong>' +
-      '<div style="font-size:11.5px;color:var(--text-faint);margin-top:3px;">'+escapeHtml(b.date)+'</div></div>' +
+      '<div style="font-size:11.5px;color:var(--text-faint);margin-top:3px;">'+escapeHtml(b.date)+(b.visibility==='private'?' · <span style="color:var(--accent);">Sent to you directly</span>':'')+'</div></div>' +
       '<div style="display:flex;align-items:center;gap:10px;">'+badge(b.status)+
         (isMine && b.status==='Open'?('<button class="btn btn-sm" data-close-broadcast="'+b.id+'">Close</button>'):'') +
       '</div></div>' +
@@ -8929,6 +8940,8 @@ function renderLaptopBulkImportPreview(){
       'Couldn\'t confidently recognize the brand on '+unparsed.length+' line'+(unparsed.length===1?'':'s')+' (added as-is from the original text — rename or uncheck after review): ' +
       unparsed.map(function(u){ return escapeHtml(u.raw); }).join(', ') + '</div>') : '');
 }
+
+function renderSaleModal(){
   const available = state.inventory.filter(function(p){ return p.status==='In Stock'; });
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>Log a sale</h3><button class="close-x" data-close-modal="1">×</button></div>' +
@@ -9085,29 +9098,19 @@ function renderBroadcastComposerModal(m){
         '<p style="color:var(--text-dim);font-size:13px;">Every registered dealer on the network will instantly see these phones as a stock advert — no WhatsApp group needed.</p>' +
         '<div class="field full"><label>Note (optional)</label><textarea id="bc-message" rows="3" placeholder="e.g. Fresh UK arrivals, negotiable">'+escapeHtml(state.broadcastComposer.message)+'</textarea></div>'
       ) : (
-        '<p style="color:var(--text-dim);font-size:13px;">Pick which saved contacts to notify. Since they may not be on PhoneHub yet, this opens a pre-filled WhatsApp message straight to their saved number.</p>' +
+        '<p style="color:var(--text-dim);font-size:13px;">Pick which saved contacts to notify. This sends through PhoneHub itself, the same way an open-market broadcast does — only these contacts will see it or get a notification. A contact needs their own PhoneHub account (matched by the phone number saved on their contact card) to receive it; you\'ll be told after sending if any don\'t.</p>' +
         (state.suppliers.length ? ('<div style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;margin-bottom:14px;">' +
           state.suppliers.map(function(s){ return '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;border-bottom:1px solid var(--border);">' +
             '<input type="checkbox" data-broadcast-contact="'+s.id+'" '+(state.broadcastComposer.selectedContactIds.indexOf(s.id)>-1?'checked':'')+'/>' +
             '<span class="strong">'+escapeHtml(s.name)+'</span><span class="mono" style="color:var(--text-faint);font-size:11px;">'+escapeHtml(s.phone||'no phone saved')+'</span>' +
           '</label>'; }).join('') +
         '</div>') : '<div class="empty">No saved contacts yet — add one under Network → My contacts.</div>') +
-        '<div class="field full"><label>Message</label><textarea id="bc-message" rows="5" style="font-size:12.5px;">'+escapeHtml(state.broadcastComposer.message)+'</textarea></div>' +
-        (state.broadcastComposer.selectedContactIds.length ? ('<div style="margin-top:6px;"><div style="font-size:11.5px;color:var(--text-dim);margin-bottom:8px;">Tap each contact to open their WhatsApp chat with the message above:</div>' +
-          '<div style="display:flex;flex-direction:column;gap:6px;">' +
-          state.broadcastComposer.selectedContactIds.map(function(id){
-            const s = state.suppliers.find(function(x){ return x.id===id; });
-            if(!s) return '';
-            const digits = (s.phone||'').replace(/[^0-9+]/g,'');
-            const waText = encodeURIComponent(state.broadcastComposer.message || defaultBroadcastMessage(items));
-            return '<a class="btn btn-sm" target="_blank" rel="noopener" href="https://wa.me/'+escapeAttr(digits)+'?text='+waText+'">💬 Open WhatsApp — '+escapeHtml(s.name)+'</a>';
-          }).join('') +
-          '</div></div>') : '')
+        '<div class="field full"><label>Note (optional)</label><textarea id="bc-message" rows="3" placeholder="e.g. Fresh UK arrivals, negotiable">'+escapeHtml(state.broadcastComposer.message)+'</textarea></div>'
       )) +
     '</div>' +
     '<div class="modal-foot">' +
       '<button class="btn" data-close-modal="1">Close</button>' +
-      (target==='network' ? '<button class="btn btn-accent" id="sendNetworkBroadcastBtn">Send to network</button>' : '<button class="btn btn-accent" id="logContactBroadcastBtn">Save to broadcast history</button>') +
+      (target==='network' ? '<button class="btn btn-accent" id="sendNetworkBroadcastBtn">Send to network</button>' : '<button class="btn btn-accent" id="sendContactsBroadcastBtn">Send to selected contacts</button>') +
     '</div></div></div>';
 }
 
@@ -9293,7 +9296,8 @@ function attachHandlers(){
     const data = {
       dealer_id: state.profile.id, type:'Stock', status:'Open',
       model: items.length===1 ? items[0].model : (items.length+' items'),
-      items: itemsPayload, message: state.broadcastComposer.message || null
+      items: itemsPayload, message: state.broadcastComposer.message || null,
+      visibility: 'network', target_dealer_ids: []
     };
     try{
       const { error } = await sb.from('broadcasts').insert(data);
@@ -9303,25 +9307,42 @@ function attachHandlers(){
       closeModal(); showToast('Stock advert sent to the network');
     } catch(e){ showToast('Broadcast failed: '+(e.message||e), true); render(); }
   });
-  const logContactBroadcastBtn = document.getElementById('logContactBroadcastBtn');
-  if(logContactBroadcastBtn) logContactBroadcastBtn.addEventListener('click', async function(){
+  const sendContactsBroadcastBtn = document.getElementById('sendContactsBroadcastBtn');
+  if(sendContactsBroadcastBtn) sendContactsBroadcastBtn.addEventListener('click', async function(){
     const ids = state.broadcastComposer.ids;
     const items = state.inventory.filter(function(p){ return ids.indexOf(p.id)>-1; });
     const contactIds = state.broadcastComposer.selectedContactIds;
     if(!contactIds.length){ showToast('Select at least one saved contact', true); return; }
-    const names = contactIds.map(function(id){ const s = state.suppliers.find(function(x){ return x.id===id; }); return s?s.name:''; }).filter(Boolean);
-    const itemsPayload = items.map(function(p){ return {
-      inventory_id:p.id, item_type:p.item_type||'Phone', model:p.model, brand:p.brand, storage:p.storage, color:p.color,
-      condition:p.condition, price:p.price, cpu:p.cpu, ram:p.ram, screen_size:p.screen_size, gpu:p.gpu,
-      image_url:p.image_url, image_urls: imagesFor(p)
-    }; });
+    const contacts = contactIds.map(function(id){ return state.suppliers.find(function(x){ return x.id===id; }); }).filter(function(s){ return s && s.phone; });
+    if(!contacts.length){ showToast('None of the selected contacts have a phone number saved', true); return; }
+
     try{
-      const { error } = await sb.from('stock_broadcast_log').insert({
-        dealer_id: state.profile.id, contact_names: names.join(', '), items: itemsPayload, message: state.broadcastComposer.message || null
-      });
+      const { data: matches, error: matchErr } = await sb.rpc('find_dealers_by_phone', { p_phones: contacts.map(function(c){ return c.phone; }) });
+      if(matchErr) throw matchErr;
+      const targetIds = Array.from(new Set((matches||[]).map(function(mm){ return mm.dealer_id; })));
+      if(!targetIds.length){
+        showToast('None of the selected contacts have a PhoneHub account yet, so they can\'t receive this — try Open market instead', true);
+        return;
+      }
+      const itemsPayload = items.map(function(p){ return {
+        inventory_id:p.id, item_type:p.item_type||'Phone', model:p.model, brand:p.brand, storage:p.storage, color:p.color,
+        condition:p.condition, price:p.price, cpu:p.cpu, ram:p.ram, screen_size:p.screen_size, gpu:p.gpu,
+        image_url:p.image_url, image_urls: imagesFor(p)
+      }; });
+      const data = {
+        dealer_id: state.profile.id, type:'Stock', status:'Open',
+        model: items.length===1 ? items[0].model : (items.length+' items'),
+        items: itemsPayload, message: state.broadcastComposer.message || null,
+        visibility: 'private', target_dealer_ids: targetIds
+      };
+      const { error } = await sb.from('broadcasts').insert(data);
       if(error) throw error;
-      showToast('Saved — tap each contact above to open WhatsApp with the message');
-    } catch(e){ showToast('Could not save: '+(e.message||e), true); render(); }
+      await refreshAll();
+      const missed = contacts.length - targetIds.length;
+      state.selectedInventoryIds = []; state.broadcastComposer = {ids:[], target:'network', message:'', selectedContactIds:[]};
+      closeModal();
+      showToast('Sent to '+targetIds.length+' contact'+(targetIds.length===1?'':'s')+' on PhoneHub'+(missed>0?(' — '+missed+' other'+(missed===1?'':'s')+" aren't registered yet"):''));
+    } catch(e){ showToast('Could not send: '+(e.message||e), true); render(); }
   });
 
   const dealerSearch = document.getElementById('dealerSearch');

@@ -39,13 +39,14 @@ Deno.serve(async (req: Request) => {
     }
 
     const payload = await req.json();
-    const { type, dealer_id, exclude_dealer_id, title, body, url, tag } = payload || {};
+    const { type, dealer_id, dealer_ids, exclude_dealer_id, title, body, url, tag } = payload || {};
 
     let query = supabase.from("push_subscriptions").select("*");
     if (dealer_id) query = query.eq("dealer_id", dealer_id);
+    else if (dealer_ids && Array.isArray(dealer_ids) && dealer_ids.length) query = query.in("dealer_id", dealer_ids);
     else if (exclude_dealer_id) query = query.neq("dealer_id", exclude_dealer_id);
     else {
-      return new Response(JSON.stringify({ error: "no dealer_id or exclude_dealer_id given" }), { status: 400 });
+      return new Response(JSON.stringify({ error: "no dealer_id, dealer_ids, or exclude_dealer_id given" }), { status: 400 });
     }
 
     const { data: subs, error } = await query;
