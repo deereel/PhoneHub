@@ -1680,12 +1680,20 @@ seller\index.html
   --border:#2A3140; --text:#EDEFF3; --text-dim:#8C96AA; --text-faint:#5C6577;
   --accent:#E8A93A; --accent-dim:#7A6633; --success:#3FAE6C; --success-dim:#1E3A2A;
   --danger:#E15B5B; --danger-dim:#3A2323; --info:#5B9CE1;
+  --accent-dim2:#3A3320;      /* used by reserved/open badges */
+  --info-dim:#2A2C3A;         /* used by repair badge */
+  --admin-grad-1:#3A3320;
+  --admin-grad-2:#4A3C1F;
 }
 html[data-theme="light"]{
   --bg:#F3F4F7; --panel:#FFFFFF; --panel-2:#EFF1F4; --panel-3:#E3E6EC;
   --border:#D8DCE3; --text:#1A1E27; --text-dim:#5B6472; --text-faint:#8A93A3;
   --accent:#B8791C; --accent-dim:#FCEFD8; --success:#2E8B57; --success-dim:#DFF3E6;
   --danger:#D14343; --danger-dim:#FBE4E4; --info:#2E6FD9;
+  --accent-dim2:#FCEFD8;
+  --info-dim:#E4ECFB;
+  --admin-grad-1:#FCEFD8;
+  --admin-grad-2:#F3DFB2;
 }
 :root{
   --radius:10px; --radius-sm:6px;
@@ -1812,13 +1820,13 @@ tr:hover td{background:var(--panel-2);}
 .badge{display:inline-flex;align-items:center;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;font-family:var(--font-body);}
 .badge-stock{background:var(--success-dim);color:var(--success);}
 .badge-sold{background:var(--panel-3);color:var(--text-faint);}
-.badge-reserved{background:#3A3320;color:var(--accent);}
-.badge-repair{background:#2A2C3A;color:var(--info);}
+.badge-reserved{background:var(--accent-dim2);color:var(--accent);}
+.badge-repair{background:var(--info-dim);color:var(--info);}
 .badge-new{background:var(--panel-3);color:var(--text-dim);}
 .badge-danger{background:var(--danger-dim);color:var(--danger);}
-.badge-open{background:#3A3320;color:var(--accent);}
+.badge-open{background:var(--accent-dim2);color:var(--accent);}
 .badge-closed{background:var(--panel-3);color:var(--text-faint);}
-.badge-admin{background:linear-gradient(90deg,#3A3320,#4A3C1F);color:var(--accent);}
+.badge-admin{background:linear-gradient(90deg,var(--admin-grad-1),var(--admin-grad-2));color:var(--accent);}
 
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
 .field{display:flex;flex-direction:column;gap:6px;}
@@ -6276,12 +6284,20 @@ seller\index.html
   --border:#2A3140; --text:#EDEFF3; --text-dim:#8C96AA; --text-faint:#5C6577;
   --accent:#E8A93A; --accent-dim:#7A6633; --success:#3FAE6C; --success-dim:#1E3A2A;
   --danger:#E15B5B; --danger-dim:#3A2323; --info:#5B9CE1;
+  --accent-dim2:#3A3320;      /* used by reserved/open badges */
+  --info-dim:#2A2C3A;         /* used by repair badge */
+  --admin-grad-1:#3A3320;
+  --admin-grad-2:#4A3C1F;
 }
 html[data-theme="light"]{
   --bg:#F3F4F7; --panel:#FFFFFF; --panel-2:#EFF1F4; --panel-3:#E3E6EC;
   --border:#D8DCE3; --text:#1A1E27; --text-dim:#5B6472; --text-faint:#8A93A3;
   --accent:#B8791C; --accent-dim:#FCEFD8; --success:#2E8B57; --success-dim:#DFF3E6;
   --danger:#D14343; --danger-dim:#FBE4E4; --info:#2E6FD9;
+  --accent-dim2:#FCEFD8;
+  --info-dim:#E4ECFB;
+  --admin-grad-1:#FCEFD8;
+  --admin-grad-2:#F3DFB2;
 }
 :root{
   --radius:10px; --radius-sm:6px;
@@ -6408,13 +6424,13 @@ tr:hover td{background:var(--panel-2);}
 .badge{display:inline-flex;align-items:center;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;font-family:var(--font-body);}
 .badge-stock{background:var(--success-dim);color:var(--success);}
 .badge-sold{background:var(--panel-3);color:var(--text-faint);}
-.badge-reserved{background:#3A3320;color:var(--accent);}
-.badge-repair{background:#2A2C3A;color:var(--info);}
+.badge-reserved{background:var(--accent-dim2);color:var(--accent);}
+.badge-repair{background:var(--info-dim);color:var(--info);}
 .badge-new{background:var(--panel-3);color:var(--text-dim);}
 .badge-danger{background:var(--danger-dim);color:var(--danger);}
-.badge-open{background:#3A3320;color:var(--accent);}
+.badge-open{background:var(--accent-dim2);color:var(--accent);}
 .badge-closed{background:var(--panel-3);color:var(--text-faint);}
-.badge-admin{background:linear-gradient(90deg,#3A3320,#4A3C1F);color:var(--accent);}
+.badge-admin{background:linear-gradient(90deg,var(--admin-grad-1),var(--admin-grad-2));color:var(--accent);}
 
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
 .field{display:flex;flex-direction:column;gap:6px;}
