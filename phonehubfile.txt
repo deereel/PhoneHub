@@ -1,3 +1,89 @@
+combine_files.py
+
+#!/usr/bin/env python3
+"""
+Combines all files in a folder and its subfolders into a single unified .txt file.
+
+Usage:
+    python combine_files.py /path/to/your/project/folder
+    python combine_files.py /path/to/your/project/folder -o output.txt
+
+Edit EXTENSIONS below if you have other file types to include.
+"""
+
+import argparse
+import os
+
+# Which file extensions to include. Add/remove as needed.
+EXTENSIONS = {".gs", ".html", ".js", ".json", ".sql", ".css", ".md", ".txt", ".ts", ".py"}
+
+
+# Never walk into these - huge, binary-heavy, or not yours to index.
+# This is what caused venv/site-packages to end up in a combined dump before.
+EXCLUDE_DIRS = {"node_modules", ".git", "venv", ".venv", "env", "__pycache__",
+                 "dist", "build", ".next", "chroma_db", "site-packages",
+                 "target", "bin", "obj", "vendor", ".idea", ".vscode"}
+
+SEPARATOR = "=" * 150
+
+
+def combine_files(folder, output_path, subfolders=True):
+    # Collect matching files.
+    files = []
+    if subfolders:
+        for root, dirs, filenames in os.walk(folder):
+            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS and not d.startswith(".")]
+            for filename in filenames:
+                if os.path.splitext(filename)[1].lower() in EXTENSIONS:
+                    relative_path = os.path.relpath(os.path.join(root, filename), folder)
+                    files.append(relative_path)
+    else:
+        for filename in os.listdir(folder):
+            filepath = os.path.join(folder, filename)
+            if os.path.isfile(filepath) and os.path.splitext(filename)[1].lower() in EXTENSIONS:
+                files.append(filename)
+
+    if not files:
+        print(f"No matching files found in {folder} (looking for {EXTENSIONS})")
+        return
+
+    # Put Code.gs first if present, then alphabetical for the rest.
+    def sort_key(filepath):
+        name = os.path.basename(filepath)
+        return (0, "") if name.lower() == "code.gs" else (1, name.lower())
+
+    files.sort(key=sort_key)
+
+    with open(output_path, "w", encoding="utf-8") as out:
+        for i, filename in enumerate(files):
+            filepath = os.path.join(folder, filename)
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f: # filename is now a relative path
+                content = f.read()
+
+            out.write(f"{filename}\n\n")
+            out.write(content.strip())
+            out.write("\n\n")
+
+            if i < len(files) - 1:
+                out.write(f"{SEPARATOR}\n\n")
+
+    print(f"Combined {len(files)} files into: {output_path}")
+    for f in files:
+        print(f"  - {f}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Combine project files into one txt file.")
+    parser.add_argument("folder", help="Path to the folder containing your files")
+    parser.add_argument("-o", "--output", default="combined_project.txt", help="Output file path")
+    parser.add_argument("--subfolders", action="store_true", default=True, help="Include files in subfolders (default)")
+    parser.add_argument("--no-subfolders", action="store_false", dest="subfolders", help="Exclude files in subfolders")
+    args = parser.parse_args()
+
+    combine_files(args.folder, args.output, subfolders=args.subfolders)
+
+======================================================================================================================================================
+
 supabase\functions\send-push\deno.json
 
 {
@@ -5,14 +91,6 @@ supabase\functions\send-push\deno.json
     "@supabase/functions-js": "jsr:@supabase/functions-js@^2",
     "@supabase/server": "npm:@supabase/server@^1"
   }
-}
-
-======================================================================================================================================================
-
-.vscode\extensions.json
-
-{
-  "recommendations": ["denoland.vscode-deno"]
 }
 
 ======================================================================================================================================================
@@ -1255,7 +1333,7 @@ let state = {
   stage:'loading', // loading -> configure -> pickShop -> shop
   configError:null, configuring:false, urlInput:'', keyInput:'',
   shops:[], selectedShop:null,
-  tab:'shop', inventory:[], q:'', condFilter:'All', maxPrice:'', modal:null, toast:null, toastErr:false,
+  tab:'shop', inventory:[], q:'', condFilter:'All', maxPrice:'', categoryFilter:'All', modal:null, toast:null, toastErr:false,
   lookupPhone:'', lookupDone:false, lookupResults:[]
 };
 
@@ -1336,7 +1414,12 @@ function closeModal(){ state.modal=null; render(); }
 
 function catalog(){
   return state.inventory.filter(function(p){ return p.status==='In Stock'; }).filter(function(p){
-    if(state.q && !((String(p.model||'').toLowerCase().includes(state.q.toLowerCase())) || (String(p.color||'').toLowerCase().includes(state.q.toLowerCase())))) return false;
+    if(state.categoryFilter!=='All' && (p.item_type||'Phone')!==state.categoryFilter) return false;
+    if(state.q){
+      const q = state.q.toLowerCase();
+      const hay = [p.model,p.color,p.brand,p.cpu].filter(Boolean).join(' ').toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
     if(state.condFilter!=='All' && p.condition!==state.condFilter) return false;
     if(state.maxPrice && Number(p.price) > Number(state.maxPrice)) return false;
     return true;
@@ -1418,20 +1501,28 @@ function renderTab(){
 
 function renderShop(){
   const items = catalog();
-  return '<div class="hero"><h1>Find your next phone</h1><p>Everything below is verified and in stock at '+escapeHtml(state.selectedShop.shop_name)+' right now.</p></div>' +
+  const catCounts = { All: state.inventory.filter(function(p){return p.status==='In Stock';}).length,
+    Phone: state.inventory.filter(function(p){return p.status==='In Stock' && (p.item_type||'Phone')==='Phone';}).length,
+    Laptop: state.inventory.filter(function(p){return p.status==='In Stock' && p.item_type==='Laptop';}).length };
+  return '<div class="hero"><h1>Find your next phone or laptop</h1><p>Everything below is verified and in stock at '+escapeHtml(state.selectedShop.shop_name)+' right now.</p></div>' +
+    '<div class="filter-row" style="margin-bottom:10px;">' +
+      ['All','Phone','Laptop'].map(function(c){ return '<span class="nav-tab '+(state.categoryFilter===c?'active':'')+'" data-category-filter="'+c+'" style="cursor:pointer;">'+(c==='All'?'All':(c==='Phone'?'📱 Phones':'💻 Laptops'))+' ('+catCounts[c]+')</span>'; }).join('') +
+    '</div>' +
     '<div class="filter-row">' +
-      '<input id="q" placeholder="Search model or color…" value="'+escapeHtml(state.q)+'"/>' +
+      '<input id="q" placeholder="Search model, brand, or color…" value="'+escapeHtml(state.q)+'"/>' +
       '<select id="cond"><option '+(state.condFilter==='All'?'selected':'')+'>All</option><option '+(state.condFilter==='New'?'selected':'')+'>New</option><option '+(state.condFilter==='Used'?'selected':'')+'>Used</option></select>' +
       '<input id="maxPrice" type="number" placeholder="Max budget (₦)" value="'+escapeHtml(state.maxPrice)+'"/>' +
     '</div>' +
     '<div class="grid">' + items.map(function(p){
+      const isLaptop = (p.item_type||'Phone')==='Laptop';
+      const spec = isLaptop ? [p.cpu,p.ram,p.storage].filter(Boolean).join(' · ') : [p.storage,p.color].filter(Boolean).join(' · ');
       return '<div class="tag-card" data-view-phone="'+p.id+'">' +
         (p.image_url ? ('<img class="tag-photo" src="'+escapeAttr(p.image_url)+'" loading="lazy" alt="'+escapeAttr(p.model)+'"/>') : '') +
         '<span class="tag-condition '+(p.condition==='New'?'new':'used')+'">'+escapeHtml(p.condition)+'</span>' +
-        '<div class="tag-model">'+escapeHtml(p.model)+'</div>' +
-        '<div class="tag-spec">'+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</div>' +
+        '<div class="tag-model">'+(isLaptop && p.brand ? escapeHtml(p.brand)+' ' : '')+escapeHtml(p.model)+'</div>' +
+        '<div class="tag-spec">'+escapeHtml(spec)+'</div>' +
         '<div class="tag-price">'+naira(p.price)+'</div>' +
-        (p.condition==='Used' ? ('<div class="tag-battery">Battery health '+p.battery+'%</div>') : '') +
+        (p.condition==='Used' && p.battery!=null ? ('<div class="tag-battery">Battery health '+p.battery+'%</div>') : '') +
       '</div>';
     }).join('') + '</div>' +
     (!items.length ? ('<div class="empty"><div class="big">Nothing matches right now</div>Try a wider budget, or tell us what you\'re looking for.<br/><br/>' +
@@ -1441,18 +1532,27 @@ function renderShop(){
 function renderModal(){
   const p = state.inventory.find(function(x){ return x.id===state.modal.payload.id; });
   if(!p) return '';
+  const isLaptop = (p.item_type||'Phone')==='Laptop';
   return '<div class="overlay" data-close-overlay="1"><div class="sheet" data-stop="1">' +
     '<button class="close-x" data-close-modal="1">×</button>' +
     (p.image_url ? ('<img class="sheet-photo" src="'+escapeAttr(p.image_url)+'" alt="'+escapeAttr(p.model)+'"/>') : '') +
     '<span class="tag-condition '+(p.condition==='New'?'new':'used')+'">'+escapeHtml(p.condition)+'</span>' +
-    '<h2>'+escapeHtml(p.model)+'</h2>' +
+    '<h2>'+(isLaptop && p.brand ? escapeHtml(p.brand)+' ' : '')+escapeHtml(p.model)+'</h2>' +
     '<div class="price-big">'+naira(p.price)+'</div>' +
-    '<div class="detail-row"><span class="k">Storage</span><span class="v">'+escapeHtml(p.storage)+'</span></div>' +
+    (isLaptop ? (
+      '<div class="detail-row"><span class="k">Processor</span><span class="v">'+escapeHtml(p.cpu||'—')+'</span></div>' +
+      '<div class="detail-row"><span class="k">RAM</span><span class="v">'+escapeHtml(p.ram||'—')+'</span></div>' +
+      '<div class="detail-row"><span class="k">Storage</span><span class="v">'+escapeHtml(p.storage||'—')+'</span></div>' +
+      '<div class="detail-row"><span class="k">Screen</span><span class="v">'+escapeHtml(p.screen_size||'—')+'</span></div>' +
+      (p.gpu ? ('<div class="detail-row"><span class="k">Graphics</span><span class="v">'+escapeHtml(p.gpu)+'</span></div>') : '')
+    ) : (
+      '<div class="detail-row"><span class="k">Storage</span><span class="v">'+escapeHtml(p.storage)+'</span></div>'
+    )) +
     '<div class="detail-row"><span class="k">Color</span><span class="v">'+escapeHtml(p.color)+'</span></div>' +
-    (p.condition==='Used' ? ('<div class="detail-row"><span class="k">Battery health</span><span class="v">'+p.battery+'%</span></div>') : '') +
+    (p.condition==='Used' && p.battery!=null ? ('<div class="detail-row"><span class="k">Battery health</span><span class="v">'+p.battery+'%</span></div>') : '') +
     '<div class="detail-row"><span class="k">Warranty</span><span class="v">Included on purchase</span></div>' +
     '<div class="detail-row"><span class="k">Availability</span><span class="v" style="color:var(--success)">In stock now</span></div>' +
-    '<button class="btn btn-primary btn-block" style="margin-top:18px;" data-tab="request" data-close-modal="1">Ask about this phone</button>' +
+    '<button class="btn btn-primary btn-block" style="margin-top:18px;" data-tab="request" data-close-modal="1">Ask about this '+(isLaptop?'laptop':'phone')+'</button>' +
   '</div></div>';
 }
 
@@ -1460,7 +1560,7 @@ function renderRequestForm(){
   return '<div class="hero"><h1>Can\'t find it?</h1><p>Tell '+escapeHtml(state.selectedShop.shop_name)+' what you want — they\'ll reach out the moment it\'s available, sometimes from their trusted dealer network.</p></div>' +
     '<div class="form-card">' +
       '<div class="two-col"><div class="field"><label>Your name</label><input id="r-name"/></div><div class="field"><label>Phone number</label><input id="r-phone"/></div></div>' +
-      '<div class="two-col"><div class="field"><label>Phone model</label><input id="r-model" placeholder="e.g. Google Pixel 9"/></div><div class="field"><label>Storage / color (optional)</label><input id="r-variant" placeholder="256GB, Black"/></div></div>' +
+      '<div class="two-col"><div class="field"><label>Phone or laptop model</label><input id="r-model" placeholder="e.g. Google Pixel 9, or HP EliteBook 840"/></div><div class="field"><label>Storage / color / spec (optional)</label><input id="r-variant" placeholder="256GB, Black, 16GB RAM…"/></div></div>' +
       '<div class="field"><label>Your budget (₦, optional)</label><input type="number" id="r-budget"/></div>' +
       '<div class="field"><label>Anything else?</label><textarea id="r-notes" rows="2"></textarea></div>' +
       '<button class="btn btn-primary btn-block" id="submitRequestBtn">Send request</button>' +
@@ -1495,6 +1595,7 @@ function attachHandlers(){
     state.selectedShop = null; await loadShopPicker();
   });
   app.querySelectorAll('[data-view-phone]').forEach(function(el){ el.addEventListener('click', function(){ openModal('view',{id:el.getAttribute('data-view-phone')}); }); });
+  app.querySelectorAll('[data-category-filter]').forEach(function(el){ el.addEventListener('click', function(){ state.categoryFilter = el.getAttribute('data-category-filter'); render(); }); });
   app.querySelectorAll('[data-close-modal]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-close-overlay]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-stop]').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); });
@@ -1547,6 +1648,17 @@ seller\index.html
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+
+<script>
+(function(){
+  try{
+    var t = localStorage.getItem('phonehub-theme') || 'dark';
+    var eff = t === 'system' ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : t;
+    document.documentElement.setAttribute('data-theme', eff);
+  }catch(e){ document.documentElement.setAttribute('data-theme','dark'); }
+})();
+</script>
+
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PhoneHub Pro — Seller</title>
 <link rel="manifest" href="./manifest.json">
@@ -1563,17 +1675,26 @@ seller\index.html
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
-:root{
+:root, html[data-theme="dark"]{
   --bg:#10141C; --panel:#171C27; --panel-2:#1F2530; --panel-3:#252C3A;
   --border:#2A3140; --text:#EDEFF3; --text-dim:#8C96AA; --text-faint:#5C6577;
   --accent:#E8A93A; --accent-dim:#7A6633; --success:#3FAE6C; --success-dim:#1E3A2A;
   --danger:#E15B5B; --danger-dim:#3A2323; --info:#5B9CE1;
+}
+html[data-theme="light"]{
+  --bg:#F3F4F7; --panel:#FFFFFF; --panel-2:#EFF1F4; --panel-3:#E3E6EC;
+  --border:#D8DCE3; --text:#1A1E27; --text-dim:#5B6472; --text-faint:#8A93A3;
+  --accent:#B8791C; --accent-dim:#FCEFD8; --success:#2E8B57; --success-dim:#DFF3E6;
+  --danger:#D14343; --danger-dim:#FBE4E4; --info:#2E6FD9;
+}
+:root{
   --radius:10px; --radius-sm:6px;
   --font-display:'Space Grotesk',sans-serif; --font-body:'Inter',sans-serif; --font-mono:'JetBrains Mono',monospace;
 }
+
 *{box-sizing:border-box;}
-html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-body);overflow-x:hidden;max-width:100%;}
-#app{display:flex;min-height:600px;background:var(--bg);max-width:100vw;overflow-x:hidden;}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:var(--font-body);overflow-x:hidden;max-width:100%;}
+#app{display:flex;height:100vh;background:var(--bg);max-width:100vw;overflow-x:hidden;}
 ::selection{background:var(--accent);color:#10141C;}
 ::-webkit-scrollbar{width:8px;height:8px;}
 ::-webkit-scrollbar-thumb{background:var(--panel-3);border-radius:4px;}
@@ -1618,7 +1739,7 @@ html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font
   .rail-backdrop.open{opacity:1;pointer-events:auto;}
 }
 
-.main{flex:1;display:flex;flex-direction:column;min-width:0;}
+.main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;}
 .topbar{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--border);background:var(--panel);}
 .search-wrap{flex:1;max-width:560px;display:flex;align-items:center;gap:10px;background:var(--bg);
   border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 14px;font-family:var(--font-mono);}
@@ -1633,7 +1754,9 @@ html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font
 .bell.on{color:var(--success);}
 .gear{cursor:pointer;color:var(--text-faint);}
 .gear:hover{color:var(--text-dim);}
-.content{flex:1;overflow-y:auto;overflow-x:hidden;padding:24px 28px 60px;min-width:0;}
+.theme-toggle{cursor:pointer;color:var(--text-faint);}
+.theme-toggle:hover{color:var(--accent);}
+.content{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:24px 28px 60px;min-width:0;}
 .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;}
 .page-title{font-family:var(--font-display);font-size:22px;font-weight:700;margin:0 0 4px;}
 .page-sub{color:var(--text-dim);font-size:13px;margin:0 0 22px;}
@@ -1732,6 +1855,11 @@ tr:hover td{background:var(--panel-2);}
   border:1px solid var(--border);width:fit-content;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;}
 .pill-tab{padding:7px 14px;border-radius:5px;font-size:12.5px;font-weight:600;color:var(--text-dim);cursor:pointer;}
 .pill-tab.active{background:var(--panel-3);color:var(--accent);}
+/* Keeps a row of controls pinned to the top of .content while the page scrolls
+   underneath it — used for the Broadcasts All/Need it/For sale filters so they
+   stay reachable instead of scrolling out of view. */
+.sticky-subtabs{position:sticky;top:0;z-index:15;background:var(--bg);padding:10px 0 14px;margin-top:-10px;
+  border-bottom:1px solid var(--border);}
 .calc-result{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px;margin-top:6px;}
 .calc-result .row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;}
 .calc-result .row:last-child{border-bottom:none;}
@@ -1783,10 +1911,36 @@ const ICONS = {
   bell:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>',
   consign:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="8" r="3"/><path d="M2.5 21v-1.5A4 4 0 016.5 15.5h1"/><path d="M21.5 21v-1.5a4 4 0 00-4-3.5h-1"/><path d="M9.5 17h5"/></svg>',
   broadcast:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 10v4a1 1 0 001 1h1.5l5 4v-14l-5 4H5a1 1 0 00-1 1z"/><path d="M15 9a3.5 3.5 0 010 6"/><path d="M17.5 6.5a7 7 0 010 11"/></svg>',
-  hamburger:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'
+  hamburger:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
+  theme:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'  
 };
 
 const CONFIG_KEY = 'phonehub-supabase-config';
+
+const THEME_KEY = 'phonehub-theme';
+function loadTheme(){
+  try{ return localStorage.getItem(THEME_KEY) || 'dark'; } catch(e){ return 'dark'; }
+}
+function saveTheme(t){
+  try{ localStorage.setItem(THEME_KEY, t); } catch(e){ /* ignore */ }
+}
+function effectiveTheme(t){
+  if(t==='system') return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+  return t;
+}
+function applyTheme(){
+  const eff = effectiveTheme(state.theme);
+  document.documentElement.setAttribute('data-theme', eff);
+  const metaTheme = document.querySelector('meta[name="theme-color"]');
+  if(metaTheme) metaTheme.setAttribute('content', eff==='light' ? '#F3F4F7' : '#10141C');
+}
+function setTheme(t){ state.theme = t; saveTheme(t); applyTheme(); render(); }
+if(window.matchMedia){
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function(){
+    if(state.theme==='system') applyTheme();
+  });
+}
+
 // If you've deployed this app for real, paste your Supabase project URL and anon key here.
 // Doing so skips the "Connect" screen entirely for every dealer who opens this app.
 // Safe to leave blank while testing — the app will ask for them once and remember
@@ -1803,6 +1957,7 @@ let dealerFilterBlurTimer = null;
 
 let state = {
   stage:'loading', // loading -> configure -> auth -> app
+  theme: loadTheme(),
   configError:null, configuring:false, urlInput:'', keyInput:'',
   authMode:'login', authError:null, authBusy:false,
   profile:null, isAdmin:false,
@@ -1810,11 +1965,13 @@ let state = {
   adminDealers:[], adminInventory:[], adminSales:[],
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
   networkView:'search', dealerSearchQuery:'', networkOrder:[], networkVisibleCount:20,
+  networkCategoryFilter:'All', // All | Phone | Laptop — filter for the Network > Search stock view
   networkDealerFilter:null, dealerFilterQuery:'', dealerFilterOpen:false,
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'', bulkImportSupplierId:'',
   pushStatus:'unsupported', // unsupported | off | prompting | on | denied
   mobileMenuOpen:false,
   inventorySupplierFilter:null, supplierFilterName:'',
+  inventoryItemTab:'phones', // 'phones' | 'laptops' — sub-tab within the Inventory tab
   selectedInventoryIds:[], // checked rows in Inventory, used by the "Broadcast selected" flow
   broadcastComposer:{ids:[], target:'network', message:'', selectedContactIds:[]},
   networkBroadcastTypeFilter:'All', // All | Need | Stock — filter for the Network > Broadcasts view
@@ -1838,6 +1995,15 @@ function syncNetworkOrder(){
   state.networkOrder = kept.concat(shuffleArray(freshIds));
 }
 function naira(n){ n = Number(n)||0; return '₦'+n.toLocaleString('en-NG',{maximumFractionDigits:0}); }
+// Short display label for an inventory row, whether it's a phone or a laptop —
+// used anywhere a compact "which item is this" line is needed (sale picker,
+// consignment picker, global search results).
+function itemLabel(p){
+  if((p.item_type||'Phone')==='Laptop'){
+    return [p.brand, p.model].filter(Boolean).join(' ') + (p.cpu ? (' · '+p.cpu) : '') + (p.ram ? (' · '+p.ram) : '') + (p.storage ? (' · '+p.storage) : '');
+  }
+  return [p.model, p.storage, p.color].filter(Boolean).join(' · ');
+}
 function todayISO(){ return new Date().toISOString().slice(0,10); }
 function daysBetween(a,b){ return Math.round((new Date(b)-new Date(a))/86400000); }
 function escapeAttr(s){ return (s||'').toString().replace(/"/g,'&quot;'); }
@@ -2425,7 +2591,7 @@ function applyHashTab(){
   }
 }
 function openModal(name, payload){
-  if(name==='addPhone' || name==='editPhone') state.photoModalRemovedUrls = [];
+  if(name==='addPhone' || name==='editPhone' || name==='addLaptop' || name==='editLaptop') state.photoModalRemovedUrls = [];
   if(name==='viewNetworkItem' || name==='viewStockItem') state.galleryIndex = 0;
   state.modal = {name:name, payload: payload||{}}; render();
 }
@@ -2494,7 +2660,8 @@ function searchAll(q){
   q = q.toLowerCase();
   const invHits = state.inventory.filter(function(p){
     return String(p.imei||'').includes(q) || String(p.imei2||'').includes(q) || String(p.model||'').toLowerCase().includes(q) ||
-      String(p.color||'').toLowerCase().includes(q) || String(p.supplier||'').toLowerCase().includes(q);
+      String(p.color||'').toLowerCase().includes(q) || String(p.supplier||'').toLowerCase().includes(q) ||
+      String(p.brand||'').toLowerCase().includes(q) || String(p.cpu||'').toLowerCase().includes(q) || String(p.ram||'').toLowerCase().includes(q);
   }).map(function(p){ return {type:'phone', item:p}; });
   const saleHits = state.sales.filter(function(s){
     return String(s.customer_name||'').toLowerCase().includes(q) || String(s.customer_phone||'').includes(q);
@@ -2529,6 +2696,7 @@ function render(){
         '<div class="topbar-right">' +
           '<span class="dot"></span> '+escapeHtml(state.profile.shop_name)+(state.isAdmin?' <span class="badge badge-admin">admin</span>':'') +
           '<span class="bell '+(state.pushStatus==='on'?'on':'')+'" id="notifBellBtn" title="Notification settings">'+ICONS.bell+'</span>' +
+          '<span class="theme-toggle" id="themeSettingsBtn" title="Display theme">'+ICONS.theme+'</span>' +
           '<span class="gear" id="logoutBtn" title="Log out">'+ICONS.gear+'</span>' +
         '</div>' +
       '</div>' +
@@ -2638,9 +2806,10 @@ function renderSearchDropdown(){
   return '<div class="search-results">' + results.map(function(r){
     if(r.type==='phone'){
       const p = r.item;
-      return '<div class="search-row" data-open-phone="'+p.id+'">' +
-        '<div><div class="sr-main">'+escapeHtml(p.model)+' · '+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</div>' +
-        '<div class="sr-sub">IMEI '+escapeHtml(p.imei)+' · '+badge(p.status)+'</div></div>' +
+      const isLaptop = (p.item_type||'Phone')==='Laptop';
+      return '<div class="search-row" data-open-phone="'+p.id+'" data-open-item-type="'+(p.item_type||'Phone')+'">' +
+        '<div><div class="sr-main">'+(isLaptop?'💻 ':'📱 ')+escapeHtml(itemLabel(p))+'</div>' +
+        '<div class="sr-sub">'+(isLaptop?escapeHtml(p.storage||''):('IMEI '+escapeHtml(p.imei||'—')))+' · '+badge(p.status)+'</div></div>' +
         '<div class="sr-price">'+naira(p.price)+'</div></div>';
     } else {
       const s = r.item;
@@ -2736,54 +2905,98 @@ function renderDashboard(){
 }
 
 function renderInventory(){
-  let items = state.inventory.slice().sort(function(a,b){ return (a.status==='In Stock'?0:1)-(b.status==='In Stock'?0:1); });
+  const itemTab = state.inventoryItemTab === 'laptops' ? 'Laptop' : 'Phone';
+  const noun = itemTab === 'Laptop' ? 'laptop' : 'phone';
+  let items = state.inventory.filter(function(p){ return (p.item_type||'Phone') === itemTab; })
+    .sort(function(a,b){ return (a.status==='In Stock'?0:1)-(b.status==='In Stock'?0:1); });
+  const allOfType = state.inventory.filter(function(p){ return (p.item_type||'Phone') === itemTab; });
+  const phoneCount = state.inventory.filter(function(p){ return (p.item_type||'Phone')==='Phone'; }).length;
+  const laptopCount = state.inventory.filter(function(p){ return p.item_type==='Laptop'; }).length;
+
+  const subTabs = '<div class="pill-tabs">' +
+      '<div class="pill-tab '+(state.inventoryItemTab==='phones'?'active':'')+'" data-inventory-item-tab="phones">📱 Phones'+pillBadge(phoneCount)+'</div>' +
+      '<div class="pill-tab '+(state.inventoryItemTab==='laptops'?'active':'')+'" data-inventory-item-tab="laptops">💻 Laptops'+pillBadge(laptopCount)+'</div>' +
+    '</div>';
+
   let header = '';
   if (state.inventorySupplierFilter){
     items = items.filter(function(p){ return p.supplier_id === state.inventorySupplierFilter; });
     const filterContact = state.suppliers.find(function(x){ return x.id === state.inventorySupplierFilter; });
     const filterName = filterContact ? filterContact.name : state.supplierFilterName;
     header = '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">' +
-      '<div><h1 class="page-title">Stock gotten from '+escapeHtml(filterName)+'</h1><p class="page-sub">'+items.length+' phone'+(items.length===1?'':'s')+' tracked</p></div>' +
+      '<div><h1 class="page-title">Stock gotten from '+escapeHtml(filterName)+'</h1><p class="page-sub">'+items.length+' '+noun+(items.length===1?'':'s')+' tracked</p></div>' +
       '<div style="display:flex;gap:8px;"><button class="btn" data-clear-supplier-filter="1">← Back to all inventory</button></div>' +
     '</div>';
   } else {
     header = '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">' +
-      '<div><h1 class="page-title">Inventory</h1><p class="page-sub">'+state.inventory.length+' phones tracked · '+state.inventory.filter(function(p){return p.status==='In Stock';}).length+' in stock</p></div>' +
+      '<div><h1 class="page-title">Inventory</h1><p class="page-sub">'+allOfType.length+' '+noun+'s tracked · '+allOfType.filter(function(p){return p.status==='In Stock';}).length+' in stock</p></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
         (items.some(function(p){return p.status==='In Stock';}) ? '<button class="btn" id="selectAllInStockBtn">Select all in stock</button>' : '') +
-        '<button class="btn" data-open-modal="bulkImport">📋 Paste stock list</button>' +
-        '<button class="btn btn-accent" data-open-modal="addPhone">'+ICONS.plus+' Add phone</button>' +
+        (itemTab==='Phone' ? '<button class="btn" data-open-modal="bulkImport">📋 Paste stock list</button>' : '') +
+        (itemTab==='Phone'
+          ? '<button class="btn btn-accent" data-open-modal="addPhone">'+ICONS.plus+' Add phone</button>'
+          : '<button class="btn btn-accent" data-open-modal="addLaptop">'+ICONS.plus+' Add laptop</button>') +
       '</div>' +
     '</div>';
   }
   const selectedCount = state.selectedInventoryIds.length;
-  return header +
-    (selectedCount>0 ? ('<div class="section" style="margin-top:16px;border-color:var(--accent);"><div class="section-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">' +
-      '<div><strong>'+selectedCount+'</strong> phone'+(selectedCount===1?'':'s')+' selected</div>' +
+  const selectionBar = selectedCount>0 ? ('<div class="section" style="margin-top:16px;border-color:var(--accent);"><div class="section-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">' +
+      '<div><strong>'+selectedCount+'</strong> item'+(selectedCount===1?'':'s')+' selected</div>' +
       '<div style="display:flex;gap:8px;"><button class="btn" id="clearSelectionBtn">Clear</button><button class="btn btn-accent" id="broadcastSelectedBtn">'+ICONS.broadcast.replace('<svg ', '<svg style="width:14px;height:14px;vertical-align:-2px;margin-right:4px;" ')+'Broadcast selected</button></div>' +
-    '</div></div>') : '') +
-    '<div class="section" style="margin-top:16px;"><div class="section-body table-scroll" style="padding:0;">' +
-      (items.length ? ('<table><thead><tr><th></th><th>Photo</th><th>Model</th><th>IMEI</th><th>Qty</th><th>Storage / Color</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
-        items.map(function(p){ return '<tr>' +
-          '<td><input type="checkbox" data-select-inventory="'+p.id+'" '+(state.selectedInventoryIds.indexOf(p.id)>-1?'checked':'')+'/></td>' +
-          '<td>'+thumbHTML(p.image_url)+'</td>' +
-          '<td class="strong">'+escapeHtml(p.model)+'</td>' +
-          '<td class="mono">'+(p.imei?escapeHtml(p.imei):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
-          '<td class="mono">'+(p.quantity!=null?p.quantity:1)+'</td>' +
-          '<td>'+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</td>' +
-          '<td>'+escapeHtml(p.condition)+(p.condition==='Used'?(' · '+p.battery+'% batt'):'')+'</td>' +
-          '<td class="mono">'+(p.cost?naira(p.cost):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
-          '<td class="mono">'+(p.price?naira(p.price):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
-          '<td class="mono" style="color:var(--success)">'+(p.price?naira((Number(p.price)||0)-(Number(p.cost)||0)):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
-          '<td><button class="btn btn-sm '+(p.status==='In Stock'?'btn-stock-toggle-on':'btn-stock-toggle-off')+'" data-toggle-status="'+p.id+'">'+(p.status==='In Stock'?'In Stock':'Out of Stock')+'</button></td>' +
-          '<td>'+escapeHtml(p.shelf)+'</td>' +
-          '<td style="display:flex;gap:6px;white-space:nowrap;">' +
-            '<button class="btn btn-sm" data-open-modal="editPhone" data-id="'+p.id+'">Edit</button>' +
-            '<button class="btn btn-sm" data-broadcast-single="'+p.id+'" title="Send as broadcast">📣</button>' +
-          '</td>' +
-        '</tr>'; }).join('') +
-      '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No phones from this contact yet.</div></div>')) +
-    '</div></div>';
+    '</div></div>') : '';
+
+  const table = itemTab==='Phone' ? renderPhoneInventoryTable(items) : renderLaptopInventoryTable(items);
+
+  return subTabs + header + selectionBar +
+    '<div class="section" style="margin-top:16px;"><div class="section-body table-scroll" style="padding:0;">' + table + '</div></div>';
+}
+
+function renderPhoneInventoryTable(items){
+  if(!items.length) return '<div class="empty">'+ICONS.empty+'<div>No phones from this contact yet.</div></div>';
+  return '<table><thead><tr><th></th><th>Photo</th><th>Model</th><th>IMEI</th><th>Qty</th><th>Storage / Color</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
+    items.map(function(p){ return '<tr>' +
+      '<td><input type="checkbox" data-select-inventory="'+p.id+'" '+(state.selectedInventoryIds.indexOf(p.id)>-1?'checked':'')+'/></td>' +
+      '<td>'+thumbHTML(p.image_url)+'</td>' +
+      '<td class="strong">'+escapeHtml(p.model)+'</td>' +
+      '<td class="mono">'+(p.imei?escapeHtml(p.imei):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td class="mono">'+(p.quantity!=null?p.quantity:1)+'</td>' +
+      '<td>'+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</td>' +
+      '<td>'+escapeHtml(p.condition)+(p.condition==='Used'?(' · '+p.battery+'% batt'):'')+'</td>' +
+      '<td class="mono">'+(p.cost?naira(p.cost):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td class="mono">'+(p.price?naira(p.price):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td class="mono" style="color:var(--success)">'+(p.price?naira((Number(p.price)||0)-(Number(p.cost)||0)):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td><button class="btn btn-sm '+(p.status==='In Stock'?'btn-stock-toggle-on':'btn-stock-toggle-off')+'" data-toggle-status="'+p.id+'">'+(p.status==='In Stock'?'In Stock':'Out of Stock')+'</button></td>' +
+      '<td>'+escapeHtml(p.shelf)+'</td>' +
+      '<td style="display:flex;gap:6px;white-space:nowrap;">' +
+        '<button class="btn btn-sm" data-open-modal="editPhone" data-id="'+p.id+'">Edit</button>' +
+        '<button class="btn btn-sm" data-broadcast-single="'+p.id+'" title="Send as broadcast">📣</button>' +
+      '</td>' +
+    '</tr>'; }).join('') +
+  '</tbody></table>';
+}
+
+function renderLaptopInventoryTable(items){
+  if(!items.length) return '<div class="empty">'+ICONS.empty+'<div>No laptops in inventory yet.</div></div>';
+  return '<table><thead><tr><th></th><th>Photo</th><th>Brand / Model</th><th>Qty</th><th>CPU / RAM</th><th>Storage · Screen</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
+    items.map(function(p){ return '<tr>' +
+      '<td><input type="checkbox" data-select-inventory="'+p.id+'" '+(state.selectedInventoryIds.indexOf(p.id)>-1?'checked':'')+'/></td>' +
+      '<td>'+thumbHTML(p.image_url)+'</td>' +
+      '<td class="strong">'+(p.brand?escapeHtml(p.brand)+' — ':'')+escapeHtml(p.model)+'<div style="font-size:11px;color:var(--text-faint);font-weight:400;">'+escapeHtml(p.color||'')+'</div></td>' +
+      '<td class="mono">'+(p.quantity!=null?p.quantity:1)+'</td>' +
+      '<td>'+escapeHtml(p.cpu||'—')+'<div style="font-size:11px;color:var(--text-faint);">'+escapeHtml(p.ram||'')+'</div></td>' +
+      '<td>'+escapeHtml(p.storage||'—')+(p.screen_size?(' · '+escapeHtml(p.screen_size)):'')+(p.gpu?('<div style="font-size:11px;color:var(--text-faint);">'+escapeHtml(p.gpu)+'</div>'):'')+'</td>' +
+      '<td>'+escapeHtml(p.condition)+(p.condition==='Used' && p.battery!=null?(' · '+p.battery+'% batt'):'')+'</td>' +
+      '<td class="mono">'+(p.cost?naira(p.cost):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td class="mono">'+(p.price?naira(p.price):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td class="mono" style="color:var(--success)">'+(p.price?naira((Number(p.price)||0)-(Number(p.cost)||0)):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td><button class="btn btn-sm '+(p.status==='In Stock'?'btn-stock-toggle-on':'btn-stock-toggle-off')+'" data-toggle-status="'+p.id+'">'+(p.status==='In Stock'?'In Stock':'Out of Stock')+'</button></td>' +
+      '<td>'+escapeHtml(p.shelf)+'</td>' +
+      '<td style="display:flex;gap:6px;white-space:nowrap;">' +
+        '<button class="btn btn-sm" data-open-modal="editLaptop" data-id="'+p.id+'">Edit</button>' +
+        '<button class="btn btn-sm" data-broadcast-single="'+p.id+'" title="Send as broadcast">📣</button>' +
+      '</td>' +
+    '</tr>'; }).join('') +
+  '</tbody></table>';
 }
 
 function renderSales(){
@@ -2941,9 +3154,10 @@ function renderNetworkSearch(){
   let list, showLoadMore = false, totalCount = 0;
 
   let base = dealerFilterId ? state.dealerNetwork.filter(function(d){ return d.dealer_id===dealerFilterId; }) : state.dealerNetwork;
+  if(state.networkCategoryFilter !== 'All') base = base.filter(function(d){ return (d.item_type||'Phone') === state.networkCategoryFilter; });
 
   if(isFiltered){
-    list = base.filter(function(d){ return !q || String(d.model||'').toLowerCase().includes(q); })
+    list = base.filter(function(d){ return !q || String(d.model||'').toLowerCase().includes(q) || String(d.brand||'').toLowerCase().includes(q); })
       .slice().sort(function(a,b){ return (Number(a.price)||0)-(Number(b.price)||0); });
   } else {
     const byId = {}; base.forEach(function(d){ byId[d.id] = d; });
@@ -2953,16 +3167,26 @@ function renderNetworkSearch(){
     showLoadMore = ordered.length > state.networkVisibleCount;
   }
 
+  const categoryPills = '<div class="pill-tabs" style="margin-bottom:12px;">' +
+    ['All','Phone','Laptop'].map(function(c){ return '<div class="pill-tab '+(state.networkCategoryFilter===c?'active':'')+'" data-network-category-filter="'+c+'">'+(c==='All'?'All':(c==='Phone'?'📱 Phones':'💻 Laptops'))+'</div>'; }).join('') +
+  '</div>';
+
   return '<div class="section"><div class="section-body">' +
+      categoryPills +
       renderDealerFilterDropdown() +
-      '<input id="dealerSearch" placeholder="e.g. S24 Ultra, iPhone 15…" value="'+escapeAttr(state.dealerSearchQuery)+'" ' +
+      '<input id="dealerSearch" placeholder="e.g. S24 Ultra, iPhone 15, EliteBook…" value="'+escapeAttr(state.dealerSearchQuery)+'" ' +
       'style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;color:var(--text);font-family:var(--font-mono);font-size:13px;outline:none;margin-bottom:10px;"/>' +
       (!isFiltered && totalCount>0 ? ('<div style="font-size:11.5px;color:var(--text-faint);margin-bottom:14px;">Showing '+list.length+' of '+totalCount+' network listings, in random order — search above to find something specific.</div>') : '') +
       '<div class="table-scroll">' +
       (list.length ? ('<table><thead><tr><th>Img</th><th>Model</th><th>Dealer</th><th>Price</th><th>Updated</th><th></th></tr></thead><tbody>' +
-        list.map(function(d,i){ return '<tr data-view-network-item="'+d.id+'" style="cursor:pointer;">' +
+        list.map(function(d,i){
+          const isLaptop = (d.item_type||'Phone')==='Laptop';
+          const specLine = isLaptop
+            ? ((d.brand?escapeHtml(d.brand)+' ':'')+escapeHtml(d.model)+(d.cpu?(' · '+escapeHtml(d.cpu)):'')+(d.ram?(' · '+escapeHtml(d.ram)):'')+(d.storage?(' · '+escapeHtml(d.storage)):''))
+            : (escapeHtml(d.model)+(d.storage?(' · '+escapeHtml(d.storage)):'')+(d.color?(' · '+escapeHtml(d.color)):'')+(d.condition==='Used'?(' · '+d.battery+'% batt'):''));
+          return '<tr data-view-network-item="'+d.id+'" style="cursor:pointer;">' +
           '<td>'+thumbHTML(d.image_url)+'</td>' +
-          '<td class="strong">'+escapeHtml(d.model)+(d.storage?(' · '+escapeHtml(d.storage)):'')+(d.color?(' · '+escapeHtml(d.color)):'')+(d.condition==='Used'?(' · '+d.battery+'% batt'):'')+'</td>' +
+          '<td class="strong">'+specLine+'</td>' +
           '<td>'+escapeHtml(d.dealer_name)+(d.dealer_id===state.profile.id?' <span style="font-size:10px;color:var(--text-faint)">(you)</span>':'')+'<br>'+reputationBadgeHTML(d.dealer_id)+'</td>' +
           '<td class="mono" style="color:'+(isFiltered && i===0?'var(--success)':'var(--text)')+'">'+naira(d.price)+(isFiltered && i===0?' <span style="font-size:10px">· lowest</span>':'')+'</td>' +
           '<td class="mono" style="font-size:11px;color:var(--text-faint)">'+new Date(d.updated_at).toLocaleDateString()+'</td>' +
@@ -2999,10 +3223,13 @@ function renderStockAdvertCard(b){
     '<div class="section-body">' +
       (b.message ? ('<div style="color:var(--text-dim);font-size:13px;margin-bottom:12px;">'+escapeHtml(b.message)+'</div>') : '') +
       '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;">' +
-        items.map(function(it,idx){ return '<div data-view-stock-item="'+b.id+'" data-item-index="'+idx+'" style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;">' +
+        items.map(function(it,idx){
+          const isLaptop = (it.item_type||'Phone')==='Laptop';
+          const spec = isLaptop ? [it.cpu,it.ram,it.storage].filter(Boolean).join(' · ') : [it.storage,it.color].filter(Boolean).join(' ');
+          return '<div data-view-stock-item="'+b.id+'" data-item-index="'+idx+'" style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;">' +
           (it.image_url ? ('<img src="'+escapeAttr(it.image_url)+'" style="width:100%;height:84px;object-fit:cover;border-radius:6px;margin-bottom:6px;"/>') : '') +
-          '<div class="strong" style="font-size:12.5px;">'+escapeHtml(it.model)+'</div>' +
-          '<div style="font-size:11px;color:var(--text-faint);">'+escapeHtml(it.storage||'')+' '+escapeHtml(it.color||'')+'</div>' +
+          '<div class="strong" style="font-size:12.5px;">'+(isLaptop?'💻 ':'📱 ')+escapeHtml((isLaptop && it.brand ? it.brand+' ' : '')+it.model)+'</div>' +
+          '<div style="font-size:11px;color:var(--text-faint);">'+escapeHtml(spec)+'</div>' +
           '<div class="mono" style="color:var(--accent);font-size:13px;margin-top:4px;">'+(it.price?naira(it.price):'—')+'</div>' +
         '</div>'; }).join('') +
       '</div>' +
@@ -3046,13 +3273,15 @@ function renderBroadcasts(){
   const openStockCount = state.broadcasts.filter(function(b){ return b.status==='Open' && (b.type||'Need')==='Stock'; }).length;
   const pillCounts = { All: openNeedCount+openStockCount, Need: openNeedCount, Stock: openStockCount };
 
-  return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">' +
+  return '<div class="sticky-subtabs" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">' +
       '<div class="pill-tabs" style="margin:0;">' +
         ['All','Need','Stock'].map(function(f){ return '<div class="pill-tab '+(filter===f?'active':'')+'" data-broadcast-type-filter="'+f+'">'+(f==='All'?'All':(f==='Need'?'Need it':'For sale'))+pillBadge(pillCounts[f])+'</div>'; }).join('') +
       '</div>' +
       '<button class="btn btn-accent" data-open-modal="newBroadcast">'+ICONS.plus+' New request</button>' +
     '</div>' +
-    (body || ('<div class="empty">'+ICONS.empty+'<div>No broadcasts yet. Send one when you need a phone urgently, or advertise stock straight from the Inventory tab.</div></div>'));
+    '<div style="margin-top:14px;">' +
+    (body || ('<div class="empty">'+ICONS.empty+'<div>No broadcasts yet. Send one when you need a phone urgently, or advertise stock straight from the Inventory tab.</div></div>')) +
+    '</div>';
 }
 
 function renderSuppliers(){
@@ -3108,12 +3337,14 @@ function renderAdmin(){
 function renderModal(){
   const m = state.modal;
   if(m.name==='addPhone' || m.name==='editPhone') return renderPhoneModal(m);
+  if(m.name==='addLaptop' || m.name==='editLaptop') return renderLaptopModal(m);
   if(m.name==='logSale') return renderSaleModal();
   if(m.name==='addSupplier' || m.name==='editSupplier') return renderSupplierModal(m);
   if(m.name==='newBroadcast') return renderBroadcastModal();
   if(m.name==='respondBroadcast') return renderRespondModal(m);
   if(m.name==='bulkImport') return renderBulkImportModal();
   if(m.name==='notifSettings') return renderNotifModal();
+  if(m.name==='themeSettings') return renderThemeModal();
   if(m.name==='addConsignment' || m.name==='editConsignment') return renderConsignmentModal(m);
   if(m.name==='viewConsignment') return renderConsignmentDetailModal(m);
   if(m.name==='logConsignmentPayment') return renderConsignmentPaymentModal(m);
@@ -3127,12 +3358,21 @@ function renderNetworkItemModal(m){
   const d = state.dealerNetwork.find(function(x){ return x.id === m.payload.id; });
   if(!d) return '';
   const isMine = d.dealer_id === state.profile.id;
+  const isLaptop = (d.item_type||'Phone')==='Laptop';
   const row = function(k,v){ return '<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="color:var(--text-dim);">'+k+'</span><span class="strong">'+v+'</span></div>'; };
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
-    '<div class="modal-head"><h3>'+escapeHtml(d.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-head"><h3>'+(isLaptop && d.brand ? escapeHtml(d.brand)+' ' : '')+escapeHtml(d.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body">' +
       renderImageGallery(imagesFor(d), state.galleryIndex) +
-      row('Storage', escapeHtml(d.storage||'—')) +
+      (isLaptop ? (
+        row('Processor', escapeHtml(d.cpu||'—')) +
+        row('RAM', escapeHtml(d.ram||'—')) +
+        row('Storage', escapeHtml(d.storage||'—')) +
+        row('Screen', escapeHtml(d.screen_size||'—')) +
+        (d.gpu ? row('Graphics', escapeHtml(d.gpu)) : '')
+      ) : (
+        row('Storage', escapeHtml(d.storage||'—'))
+      )) +
       row('Color', escapeHtml(d.color||'—')) +
       row('Condition', escapeHtml(d.condition||'—')+(d.condition==='Used' && d.battery!=null?(' · '+d.battery+'% battery'):'')) +
       row('Price', '<span style="color:var(--accent);font-size:16px;">'+naira(d.price)+'</span>') +
@@ -3151,12 +3391,19 @@ function renderStockItemModal(m){
   if(!it) return '';
   const isMine = b.dealer_id === state.profile.id;
   const phone = dealerPhone(b.dealer_id);
+  const isLaptop = (it.item_type||'Phone')==='Laptop';
   const row = function(k,v){ return '<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="color:var(--text-dim);">'+k+'</span><span class="strong">'+v+'</span></div>'; };
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
-    '<div class="modal-head"><h3>'+escapeHtml(it.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-head"><h3>'+(isLaptop && it.brand ? escapeHtml(it.brand)+' ' : '')+escapeHtml(it.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body">' +
       renderImageGallery(imagesFor(it), state.galleryIndex) +
-      row('Storage', escapeHtml(it.storage||'—')) +
+      (isLaptop ? (
+        row('Processor', escapeHtml(it.cpu||'—')) +
+        row('RAM', escapeHtml(it.ram||'—')) +
+        row('Storage', escapeHtml(it.storage||'—')) +
+        row('Screen', escapeHtml(it.screen_size||'—')) +
+        (it.gpu ? row('Graphics', escapeHtml(it.gpu)) : '')
+      ) : row('Storage', escapeHtml(it.storage||'—'))) +
       row('Color', escapeHtml(it.color||'—')) +
       row('Condition', escapeHtml(it.condition||'—')) +
       row('Price', '<span style="color:var(--accent);font-size:16px;">'+(it.price?naira(it.price):'—')+'</span>') +
@@ -3182,6 +3429,19 @@ function renderNotifModal(){
       '</div>' +
       '<div class="notif-row"><div class="n-sub">You\'ll be alerted for: new customer requests, dealer network broadcasts and responses, warranty phones expiring within 2 days, and phones down to their last unit. Alerts arrive even if this app isn\'t open, as long as your phone has data/wifi.</div></div>' +
       (status==='denied' ? '<div class="n-sub" style="margin-top:8px;color:var(--danger)">Notifications are blocked for this site in your browser. Open your browser\'s site settings for this page and allow notifications, then reopen this dialog.</div>' : '') +
+    '</div>' +
+  '</div></div>';
+}
+
+function renderThemeModal(){
+  const options = [['system','🖥️ System'],['light','☀️ Light'],['dark','🌙 Dark']];
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:380px;">' +
+    '<div class="modal-head"><h3>Display</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      '<div class="pill-tabs" style="width:100%;">' +
+        options.map(function(o){ return '<div class="pill-tab" style="flex:1;text-align:center;'+(state.theme===o[0]?'background:var(--panel-3);color:var(--accent);':'')+'" data-set-theme="'+o[0]+'">'+o[1]+'</div>'; }).join('') +
+      '</div>' +
+      '<div class="n-sub" style="margin-top:12px;">"System" follows this device\'s light/dark setting automatically.</div>' +
     '</div>' +
   '</div></div>';
 }
@@ -3229,6 +3489,55 @@ function renderPhoneModal(m){
       (editing ? ('<button class="btn btn-danger" data-delete-phone="'+p.id+'">Delete</button>') : '') +
       '<button class="btn" data-close-modal="1">Cancel</button>' +
       '<button class="btn btn-accent" data-save-phone="'+(editing?p.id:'')+'">'+(editing?'Save changes':'Add to inventory')+'</button>' +
+    '</div></div></div>';
+}
+
+function renderLaptopModal(m){
+  const editing = m.name==='editLaptop';
+  const p = editing ? (state.inventory.find(function(x){ return x.id===m.payload.id; }) || {}) : {};
+  const existingImages = imagesFor(p);
+  const removedUrls = state.photoModalRemovedUrls || [];
+  const visibleExisting = existingImages.filter(function(u){ return removedUrls.indexOf(u)===-1; });
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
+    '<div class="modal-head"><h3>'+(editing?'Edit laptop':'Add laptop')+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body"><div class="form-grid">' +
+      '<div class="field full"><label>Photos (add at least 2 if you can — you can add just one, but buyers trust listings with more)</label>' +
+        '<div id="photo-gallery-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;">' +
+          (visibleExisting.length ? visibleExisting.map(function(url){
+            return '<div style="position:relative;">' +
+              '<img class="photo-preview" src="'+escapeAttr(url)+'" style="width:72px;height:72px;"/>' +
+              '<button type="button" data-remove-existing-image="'+escapeAttr(url)+'" title="Remove this photo" style="position:absolute;top:-6px;right:-6px;background:var(--danger);color:#fff;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;line-height:1;">×</button>' +
+            '</div>';
+          }).join('') : '<span style="font-size:11.5px;color:var(--text-faint);">No photos yet</span>') +
+        '</div>' +
+        '<input type="file" id="l-images" accept="image/*" multiple capture="environment"/>' +
+        '<div id="new-photo-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;"></div>' +
+        '<span style="font-size:11px;color:var(--text-faint);display:block;margin-top:6px;">Snap with your camera or pick from gallery — you can select several at once. Resized automatically before upload.</span>' +
+      '</div>' +
+      '<div class="field"><label>Brand</label><input id="l-brand" value="'+escapeAttr(p.brand)+'" placeholder="e.g. HP, Dell, Apple, Lenovo"/></div>' +
+      '<div class="field"><label>Model</label><input id="l-model" value="'+escapeAttr(p.model)+'" placeholder="e.g. EliteBook 840 G7"/></div>' +
+      '<div class="field"><label>Processor (CPU)</label><input id="l-cpu" value="'+escapeAttr(p.cpu)+'" placeholder="e.g. Intel Core i7-1165G7"/></div>' +
+      '<div class="field"><label>RAM</label><input id="l-ram" value="'+escapeAttr(p.ram)+'" placeholder="e.g. 16GB"/></div>' +
+      '<div class="field"><label>Storage</label><input id="l-storage" value="'+escapeAttr(p.storage)+'" placeholder="e.g. 512GB SSD"/></div>' +
+      '<div class="field"><label>Screen size</label><input id="l-screen" value="'+escapeAttr(p.screen_size)+'" placeholder="e.g. 14&quot;"/></div>' +
+      '<div class="field"><label>Graphics (GPU, optional)</label><input id="l-gpu" value="'+escapeAttr(p.gpu)+'" placeholder="e.g. Intel Iris Xe, RTX 3050"/></div>' +
+      '<div class="field"><label>Color</label><input id="l-color" value="'+escapeAttr(p.color)+'"/></div>' +
+      '<div class="field"><label>Condition</label><select id="l-condition"><option '+(p.condition==='New'?'selected':'')+'>New</option><option '+(p.condition==='Used'?'selected':'')+'>Used</option></select></div>' +
+      '<div class="field"><label>Battery health %</label><input type="number" id="l-battery" value="'+(p.battery!=null?p.battery:100)+'"/></div>' +
+      '<div class="field"><label>Supplier contact (optional)</label><select id="l-supplier-id"><option value="">— none / type below —</option>' +
+        state.suppliers.map(function(s){ return '<option value="'+s.id+'" '+(p.supplier_id===s.id?'selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('') +
+      '</select></div>' +
+      '<div class="field"><label>Supplier / source label</label><input id="l-supplier" value="'+escapeAttr(p.supplier)+'" placeholder="e.g. UK import batch, or contact name"/></div>' +
+      '<div class="field mono"><label>Cost price (₦)</label><input type="number" id="l-cost" value="'+(p.cost||'')+'"/></div>' +
+      '<div class="field mono"><label>Selling price (₦)</label><input type="number" id="l-price" value="'+(p.price||'')+'"/></div>' +
+      '<div class="field"><label>Status</label><select id="l-status">'+['In Stock','Reserved','Sold','In Repair','Consigned'].map(function(s){ return '<option '+(p.status===s?'selected':'')+'>'+s+'</option>'; }).join('')+'</select></div>' +
+      '<div class="field"><label>Shelf location</label><input id="l-shelf" value="'+escapeAttr(p.shelf)+'"/></div>' +
+      '<div class="field full"><label>Notes</label><textarea id="l-notes" rows="2">'+escapeHtml(p.notes)+'</textarea></div>' +
+    '</div></div>' +
+    '<div class="modal-foot">' +
+      (editing ? ('<button class="btn btn-danger" data-delete-phone="'+p.id+'">Delete</button>') : '') +
+      '<button class="btn" data-close-modal="1">Cancel</button>' +
+      '<button class="btn btn-accent" data-save-laptop="'+(editing?p.id:'')+'">'+(editing?'Save changes':'Add to inventory')+'</button>' +
     '</div></div></div>';
 }
 
@@ -3281,7 +3590,7 @@ function renderSaleModal(){
     '<div class="modal-head"><h3>Log a sale</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body"><div class="form-grid">' +
       '<div class="field full"><label>Phone (in stock only)</label><select id="s-inventory-id"><option value="">Select a phone…</option>' +
-        available.map(function(p){ return '<option value="'+p.id+'">'+escapeHtml(p.model)+' · '+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+' — '+(p.price?naira(p.price):'no price set yet')+(p.quantity>1?(' ('+p.quantity+' in stock)'):'')+'</option>'; }).join('') +
+        available.map(function(p){ return '<option value="'+p.id+'">'+(p.item_type==='Laptop'?'💻 ':'📱 ')+escapeHtml(itemLabel(p))+' — '+(p.price?naira(p.price):'no price set yet')+(p.quantity>1?(' ('+p.quantity+' in stock)'):'')+'</option>'; }).join('') +
       '</select></div>' +
       '<div class="field"><label>Sale date</label><input type="date" id="s-date" value="'+todayISO()+'"/></div>' +
       '<div class="field mono"><label>Sale price (₦)</label><input type="number" id="s-price"/></div>' +
@@ -3331,7 +3640,7 @@ function renderConsignmentModal(m){
         '<div class="field"><label>Colleague name</label><input id="cn-name" value="'+escapeAttr(c.contact_name||'')+'"/></div>' +
         '<div class="field"><label>Colleague phone</label><input id="cn-phone" value="'+escapeAttr(c.contact_phone||'')+'"/></div>' +
         '<div class="field"><label>Link to inventory phone (optional)</label><select id="cn-inventory-id"><option value="">— none / type below —</option>' +
-          state.inventory.filter(function(p){ return p.status==='In Stock' || p.id===c.inventory_id; }).map(function(p){ return '<option value="'+p.id+'" '+(c.inventory_id===p.id?'selected':'')+'>'+escapeHtml(p.model)+' · '+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</option>'; }).join('') +
+          state.inventory.filter(function(p){ return p.status==='In Stock' || p.id===c.inventory_id; }).map(function(p){ return '<option value="'+p.id+'" '+(c.inventory_id===p.id?'selected':'')+'>'+(p.item_type==='Laptop'?'💻 ':'📱 ')+escapeHtml(itemLabel(p))+'</option>'; }).join('') +
         '</select></div>' +
         '<div class="field"><label>Phone model</label><input id="cn-model" value="'+escapeAttr(c.model||'')+'" placeholder="e.g. iPhone 13 Pro"/></div>' +
         '<div class="field"><label>Storage</label><input id="cn-storage" value="'+escapeAttr(c.storage||'')+'"/></div>' +
@@ -3407,7 +3716,7 @@ function renderConsignmentPaymentModal(m){
 
 function defaultBroadcastMessage(items){
   const shopName = state.profile ? state.profile.shop_name : 'our shop';
-  const lines = items.map(function(p){ return '• '+p.model+(p.storage?(' '+p.storage):'')+(p.color?(' · '+p.color):'')+' — '+(p.price?naira(p.price):'price on request'); });
+  const lines = items.map(function(p){ return '• '+itemLabel(p)+' — '+(p.price?naira(p.price):'price on request'); });
   return 'New stock available at '+shopName+':\n\n'+lines.join('\n')+'\n\nReply or call to grab it!';
 }
 
@@ -3422,7 +3731,7 @@ function renderBroadcastComposerModal(m){
     '<div class="modal-body">' +
       '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;">' +
         items.map(function(p){ return '<div style="display:flex;align-items:center;gap:8px;background:var(--panel-2);border:1px solid var(--border);border-radius:20px;padding:5px 12px 5px 5px;">'+
-          thumbHTML(p.image_url)+'<span style="font-size:12px;">'+escapeHtml(p.model)+(p.storage?(' · '+escapeHtml(p.storage)):'')+' — '+(p.price?naira(p.price):'no price')+'</span></div>'; }).join('') +
+          thumbHTML(p.image_url)+'<span style="font-size:12px;">'+escapeHtml(itemLabel(p))+' — '+(p.price?naira(p.price):'no price')+'</span></div>'; }).join('') +
       '</div>' +
       '<div class="pill-tabs" style="margin-bottom:16px;">' +
         '<div class="pill-tab '+(target==='network'?'active':'')+'" data-broadcast-target="network">📡 Open market (all dealers)</div>' +
@@ -3506,6 +3815,11 @@ function attachHandlers(){
 
   const notifBellBtn = document.getElementById('notifBellBtn');
   if(notifBellBtn) notifBellBtn.addEventListener('click', function(){ openModal('notifSettings'); });
+
+  const themeSettingsBtn = document.getElementById('themeSettingsBtn');
+  if(themeSettingsBtn) themeSettingsBtn.addEventListener('click', function(){ openModal('themeSettings'); });
+  app.querySelectorAll('[data-set-theme]').forEach(function(el){ el.addEventListener('click', function(){ setTheme(el.getAttribute('data-set-theme')); }); });
+  
   const enablePushInline = document.getElementById('enablePushInline');
   if(enablePushInline) enablePushInline.addEventListener('click', enablePush);
   const enablePushBtn = document.getElementById('enablePushBtn');
@@ -3520,13 +3834,24 @@ function attachHandlers(){
       const el = document.getElementById('globalSearch'); el.focus(); el.selectionStart = el.selectionEnd = state.searchQuery.length;
     });
   }
-  app.querySelectorAll('[data-open-phone]').forEach(function(el){ el.addEventListener('click', function(){ state.searchQuery=''; openModal('editPhone',{id:el.getAttribute('data-open-phone')}); }); });
+  app.querySelectorAll('[data-open-phone]').forEach(function(el){ el.addEventListener('click', function(){
+    state.searchQuery='';
+    const type = el.getAttribute('data-open-item-type')==='Laptop' ? 'editLaptop' : 'editPhone';
+    openModal(type,{id:el.getAttribute('data-open-phone')});
+  }); });
   app.querySelectorAll('[data-open-modal]').forEach(function(el){ el.addEventListener('click', function(){ openModal(el.getAttribute('data-open-modal'), {id:el.getAttribute('data-id')}); }); });
   app.querySelectorAll('[data-close-modal]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-close-overlay]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-stop]').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); });
   app.querySelectorAll('[data-network-view]').forEach(function(el){ el.addEventListener('click', function(){ state.networkView = el.getAttribute('data-network-view'); render(); }); });
+  app.querySelectorAll('[data-inventory-item-tab]').forEach(function(el){ el.addEventListener('click', function(){
+    state.inventoryItemTab = el.getAttribute('data-inventory-item-tab');
+    state.selectedInventoryIds = [];
+    state.inventorySupplierFilter = null; state.supplierFilterName = '';
+    render();
+  }); });
   app.querySelectorAll('[data-broadcast-type-filter]').forEach(function(el){ el.addEventListener('click', function(){ state.networkBroadcastTypeFilter = el.getAttribute('data-broadcast-type-filter'); render(); }); });
+  app.querySelectorAll('[data-network-category-filter]').forEach(function(el){ el.addEventListener('click', function(){ state.networkCategoryFilter = el.getAttribute('data-network-category-filter'); render(); }); });
   app.querySelectorAll('[data-toggle-status]').forEach(function(el){ el.addEventListener('click', function(){ toggleStatus(el.getAttribute('data-toggle-status')); }); });
   app.querySelectorAll('[data-view-stock-item]').forEach(function(el){ el.addEventListener('click', function(){
     openModal('viewStockItem', { broadcastId: el.getAttribute('data-view-stock-item'), itemIndex: Number(el.getAttribute('data-item-index')) });
@@ -3608,12 +3933,13 @@ function attachHandlers(){
     const items = state.inventory.filter(function(p){ return ids.indexOf(p.id)>-1; });
     if(!items.length){ showToast('Nothing to broadcast', true); return; }
     const itemsPayload = items.map(function(p){ return {
-      inventory_id:p.id, model:p.model, storage:p.storage, color:p.color, condition:p.condition, price:p.price,
+      inventory_id:p.id, item_type:p.item_type||'Phone', model:p.model, brand:p.brand, storage:p.storage, color:p.color,
+      condition:p.condition, price:p.price, cpu:p.cpu, ram:p.ram, screen_size:p.screen_size, gpu:p.gpu,
       image_url:p.image_url, image_urls: imagesFor(p)
     }; });
     const data = {
       dealer_id: state.profile.id, type:'Stock', status:'Open',
-      model: items.length===1 ? items[0].model : (items.length+' phones'),
+      model: items.length===1 ? items[0].model : (items.length+' items'),
       items: itemsPayload, message: state.broadcastComposer.message || null
     };
     try{
@@ -3632,7 +3958,8 @@ function attachHandlers(){
     if(!contactIds.length){ showToast('Select at least one saved contact', true); return; }
     const names = contactIds.map(function(id){ const s = state.suppliers.find(function(x){ return x.id===id; }); return s?s.name:''; }).filter(Boolean);
     const itemsPayload = items.map(function(p){ return {
-      inventory_id:p.id, model:p.model, storage:p.storage, color:p.color, condition:p.condition, price:p.price,
+      inventory_id:p.id, item_type:p.item_type||'Phone', model:p.model, brand:p.brand, storage:p.storage, color:p.color,
+      condition:p.condition, price:p.price, cpu:p.cpu, ram:p.ram, screen_size:p.screen_size, gpu:p.gpu,
       image_url:p.image_url, image_urls: imagesFor(p)
     }; });
     try{
@@ -3700,6 +4027,12 @@ function attachHandlers(){
     const fSupplier = document.getElementById('f-supplier');
     if(s && fSupplier) fSupplier.value = s.name;
   });
+  const lSupplierId = document.getElementById('l-supplier-id');
+  if(lSupplierId) lSupplierId.addEventListener('change', function(){
+    const s = state.suppliers.find(function(x){ return x.id === lSupplierId.value; });
+    const lSupplier = document.getElementById('l-supplier');
+    if(s && lSupplier) lSupplier.value = s.name;
+  });
 
   app.querySelectorAll('[data-remove-existing-image]').forEach(function(el){ el.addEventListener('click', function(){
     const url = el.getAttribute('data-remove-existing-image');
@@ -3707,22 +4040,28 @@ function attachHandlers(){
     state.photoModalRemovedUrls.push(url);
     render();
   }); });
-  const fImages = document.getElementById('f-images');
-  if(fImages) fImages.addEventListener('change', function(){
-    const preview = document.getElementById('new-photo-preview');
-    if(!preview) return;
-    preview.innerHTML = '';
-    Array.from(fImages.files||[]).forEach(function(file){
-      const img = document.createElement('img');
-      img.className = 'photo-preview'; img.style.width='72px'; img.style.height='72px';
-      img.src = URL.createObjectURL(file);
-      preview.appendChild(img);
+  function wirePhotoPreview(inputId){
+    const input = document.getElementById(inputId);
+    if(!input) return;
+    input.addEventListener('change', function(){
+      const preview = document.getElementById('new-photo-preview');
+      if(!preview) return;
+      preview.innerHTML = '';
+      Array.from(input.files||[]).forEach(function(file){
+        const img = document.createElement('img');
+        img.className = 'photo-preview'; img.style.width='72px'; img.style.height='72px';
+        img.src = URL.createObjectURL(file);
+        preview.appendChild(img);
+      });
     });
-  });
+  }
+  wirePhotoPreview('f-images');
+  wirePhotoPreview('l-images');
 
   app.querySelectorAll('[data-save-phone]').forEach(function(el){ el.addEventListener('click', async function(){
     const id = el.getAttribute('data-save-phone');
     const data = {
+      item_type: 'Phone',
       imei: val('f-imei')||null, imei2: val('f-imei2')||null, model: val('f-model'), storage: val('f-storage'),
       color: val('f-color'), condition: val('f-condition'), battery: Number(val('f-battery')),
       supplier: val('f-supplier'), supplier_id: val('f-supplier-id')||null, purchase_date: todayISO(), cost: Number(val('f-cost')), price: Number(val('f-price')),
@@ -3750,6 +4089,41 @@ function attachHandlers(){
       await refreshAll();
       state.photoModalRemovedUrls = [];
       closeModal(); showToast(id?'Phone updated':'Phone added to inventory');
+    } catch(e){ showToast('Save failed: '+(e.message||e), true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-save-laptop]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-save-laptop');
+    const data = {
+      item_type: 'Laptop',
+      brand: val('l-brand')||null, model: val('l-model'), cpu: val('l-cpu')||null, ram: val('l-ram')||null,
+      storage: val('l-storage'), screen_size: val('l-screen')||null, gpu: val('l-gpu')||null,
+      color: val('l-color'), condition: val('l-condition'), battery: val('l-battery')?Number(val('l-battery')):null,
+      supplier: val('l-supplier'), supplier_id: val('l-supplier-id')||null, purchase_date: todayISO(), cost: Number(val('l-cost')), price: Number(val('l-price')),
+      status: val('l-status'), shelf: val('l-shelf'), notes: val('l-notes')
+    };
+    if(!data.model){ showToast('Laptop model is required', true); return; }
+    const existingLaptop = id ? state.inventory.find(function(x){ return x.id===id; }) : null;
+    const existingImages = imagesFor(existingLaptop);
+    const removed = state.photoModalRemovedUrls || [];
+    let keptImages = existingImages.filter(function(u){ return removed.indexOf(u)===-1; });
+    const lImagesEl = document.getElementById('l-images');
+    const newFiles = lImagesEl && lImagesEl.files ? Array.from(lImagesEl.files) : [];
+    try{
+      if(newFiles.length){
+        showToast('Uploading '+newFiles.length+' photo'+(newFiles.length===1?'':'s')+'…');
+        for(let i=0;i<newFiles.length;i++){
+          const url = await uploadPhoneImage(newFiles[i]);
+          keptImages.push(url);
+        }
+      }
+      data.image_urls = keptImages;
+      data.image_url = keptImages.length ? keptImages[0] : null;
+      if(id){ const { error } = await sb.from('inventory').update(data).eq('id', id); if(error) throw error; }
+      else{ data.dealer_id = state.profile.id; const { error } = await sb.from('inventory').insert(data); if(error) throw error; }
+      await refreshAll();
+      state.photoModalRemovedUrls = [];
+      closeModal(); showToast(id?'Laptop updated':'Laptop added to inventory');
     } catch(e){ showToast('Save failed: '+(e.message||e), true); render(); }
   }); });
 
@@ -4039,6 +4413,7 @@ function attachHandlers(){
   window.addEventListener('hashchange', applyHashTab);
 }
 
+applyTheme();
 init();
 })();
 </script>
@@ -4140,12 +4515,6 @@ Deno.serve(async (req: Request) => {
 
 ======================================================================================================================================================
 
-supabase\.temp\linked-project.json
-
-{"ref":"qqlykvrofoobowrsarxi","name":"PhoneHub Pro","organization_id":"nrdvzteoafbqtcxqgoqz","organization_slug":"nrdvzteoafbqtcxqgoqz"}
-
-======================================================================================================================================================
-
 seller\manifest.json
 
 {
@@ -4225,6 +4594,92 @@ grant execute on function sell_phone(uuid,numeric,text,text,text,text,int,text,t
 
 phonehubfile.txt
 
+combine_files.py
+
+#!/usr/bin/env python3
+"""
+Combines all files in a folder and its subfolders into a single unified .txt file.
+
+Usage:
+    python combine_files.py /path/to/your/project/folder
+    python combine_files.py /path/to/your/project/folder -o output.txt
+
+Edit EXTENSIONS below if you have other file types to include.
+"""
+
+import argparse
+import os
+
+# Which file extensions to include. Add/remove as needed.
+EXTENSIONS = {".gs", ".html", ".js", ".json", ".sql", ".css", ".md", ".txt", ".ts", ".py"}
+
+
+# Never walk into these - huge, binary-heavy, or not yours to index.
+# This is what caused venv/site-packages to end up in a combined dump before.
+EXCLUDE_DIRS = {"node_modules", ".git", "venv", ".venv", "env", "__pycache__",
+                 "dist", "build", ".next", "chroma_db", "site-packages",
+                 "target", "bin", "obj", "vendor", ".idea", ".vscode"}
+
+SEPARATOR = "=" * 150
+
+
+def combine_files(folder, output_path, subfolders=True):
+    # Collect matching files.
+    files = []
+    if subfolders:
+        for root, dirs, filenames in os.walk(folder):
+            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS and not d.startswith(".")]
+            for filename in filenames:
+                if os.path.splitext(filename)[1].lower() in EXTENSIONS:
+                    relative_path = os.path.relpath(os.path.join(root, filename), folder)
+                    files.append(relative_path)
+    else:
+        for filename in os.listdir(folder):
+            filepath = os.path.join(folder, filename)
+            if os.path.isfile(filepath) and os.path.splitext(filename)[1].lower() in EXTENSIONS:
+                files.append(filename)
+
+    if not files:
+        print(f"No matching files found in {folder} (looking for {EXTENSIONS})")
+        return
+
+    # Put Code.gs first if present, then alphabetical for the rest.
+    def sort_key(filepath):
+        name = os.path.basename(filepath)
+        return (0, "") if name.lower() == "code.gs" else (1, name.lower())
+
+    files.sort(key=sort_key)
+
+    with open(output_path, "w", encoding="utf-8") as out:
+        for i, filename in enumerate(files):
+            filepath = os.path.join(folder, filename)
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f: # filename is now a relative path
+                content = f.read()
+
+            out.write(f"{filename}\n\n")
+            out.write(content.strip())
+            out.write("\n\n")
+
+            if i < len(files) - 1:
+                out.write(f"{SEPARATOR}\n\n")
+
+    print(f"Combined {len(files)} files into: {output_path}")
+    for f in files:
+        print(f"  - {f}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Combine project files into one txt file.")
+    parser.add_argument("folder", help="Path to the folder containing your files")
+    parser.add_argument("-o", "--output", default="combined_project.txt", help="Output file path")
+    parser.add_argument("--subfolders", action="store_true", default=True, help="Include files in subfolders (default)")
+    parser.add_argument("--no-subfolders", action="store_false", dest="subfolders", help="Exclude files in subfolders")
+    args = parser.parse_args()
+
+    combine_files(args.folder, args.output, subfolders=args.subfolders)
+
+======================================================================================================================================================
+
 supabase\functions\send-push\deno.json
 
 {
@@ -4232,14 +4687,6 @@ supabase\functions\send-push\deno.json
     "@supabase/functions-js": "jsr:@supabase/functions-js@^2",
     "@supabase/server": "npm:@supabase/server@^1"
   }
-}
-
-======================================================================================================================================================
-
-.vscode\extensions.json
-
-{
-  "recommendations": ["denoland.vscode-deno"]
 }
 
 ======================================================================================================================================================
@@ -5482,7 +5929,7 @@ let state = {
   stage:'loading', // loading -> configure -> pickShop -> shop
   configError:null, configuring:false, urlInput:'', keyInput:'',
   shops:[], selectedShop:null,
-  tab:'shop', inventory:[], q:'', condFilter:'All', maxPrice:'', modal:null, toast:null, toastErr:false,
+  tab:'shop', inventory:[], q:'', condFilter:'All', maxPrice:'', categoryFilter:'All', modal:null, toast:null, toastErr:false,
   lookupPhone:'', lookupDone:false, lookupResults:[]
 };
 
@@ -5563,7 +6010,12 @@ function closeModal(){ state.modal=null; render(); }
 
 function catalog(){
   return state.inventory.filter(function(p){ return p.status==='In Stock'; }).filter(function(p){
-    if(state.q && !((String(p.model||'').toLowerCase().includes(state.q.toLowerCase())) || (String(p.color||'').toLowerCase().includes(state.q.toLowerCase())))) return false;
+    if(state.categoryFilter!=='All' && (p.item_type||'Phone')!==state.categoryFilter) return false;
+    if(state.q){
+      const q = state.q.toLowerCase();
+      const hay = [p.model,p.color,p.brand,p.cpu].filter(Boolean).join(' ').toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
     if(state.condFilter!=='All' && p.condition!==state.condFilter) return false;
     if(state.maxPrice && Number(p.price) > Number(state.maxPrice)) return false;
     return true;
@@ -5645,20 +6097,28 @@ function renderTab(){
 
 function renderShop(){
   const items = catalog();
-  return '<div class="hero"><h1>Find your next phone</h1><p>Everything below is verified and in stock at '+escapeHtml(state.selectedShop.shop_name)+' right now.</p></div>' +
+  const catCounts = { All: state.inventory.filter(function(p){return p.status==='In Stock';}).length,
+    Phone: state.inventory.filter(function(p){return p.status==='In Stock' && (p.item_type||'Phone')==='Phone';}).length,
+    Laptop: state.inventory.filter(function(p){return p.status==='In Stock' && p.item_type==='Laptop';}).length };
+  return '<div class="hero"><h1>Find your next phone or laptop</h1><p>Everything below is verified and in stock at '+escapeHtml(state.selectedShop.shop_name)+' right now.</p></div>' +
+    '<div class="filter-row" style="margin-bottom:10px;">' +
+      ['All','Phone','Laptop'].map(function(c){ return '<span class="nav-tab '+(state.categoryFilter===c?'active':'')+'" data-category-filter="'+c+'" style="cursor:pointer;">'+(c==='All'?'All':(c==='Phone'?'📱 Phones':'💻 Laptops'))+' ('+catCounts[c]+')</span>'; }).join('') +
+    '</div>' +
     '<div class="filter-row">' +
-      '<input id="q" placeholder="Search model or color…" value="'+escapeHtml(state.q)+'"/>' +
+      '<input id="q" placeholder="Search model, brand, or color…" value="'+escapeHtml(state.q)+'"/>' +
       '<select id="cond"><option '+(state.condFilter==='All'?'selected':'')+'>All</option><option '+(state.condFilter==='New'?'selected':'')+'>New</option><option '+(state.condFilter==='Used'?'selected':'')+'>Used</option></select>' +
       '<input id="maxPrice" type="number" placeholder="Max budget (₦)" value="'+escapeHtml(state.maxPrice)+'"/>' +
     '</div>' +
     '<div class="grid">' + items.map(function(p){
+      const isLaptop = (p.item_type||'Phone')==='Laptop';
+      const spec = isLaptop ? [p.cpu,p.ram,p.storage].filter(Boolean).join(' · ') : [p.storage,p.color].filter(Boolean).join(' · ');
       return '<div class="tag-card" data-view-phone="'+p.id+'">' +
         (p.image_url ? ('<img class="tag-photo" src="'+escapeAttr(p.image_url)+'" loading="lazy" alt="'+escapeAttr(p.model)+'"/>') : '') +
         '<span class="tag-condition '+(p.condition==='New'?'new':'used')+'">'+escapeHtml(p.condition)+'</span>' +
-        '<div class="tag-model">'+escapeHtml(p.model)+'</div>' +
-        '<div class="tag-spec">'+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</div>' +
+        '<div class="tag-model">'+(isLaptop && p.brand ? escapeHtml(p.brand)+' ' : '')+escapeHtml(p.model)+'</div>' +
+        '<div class="tag-spec">'+escapeHtml(spec)+'</div>' +
         '<div class="tag-price">'+naira(p.price)+'</div>' +
-        (p.condition==='Used' ? ('<div class="tag-battery">Battery health '+p.battery+'%</div>') : '') +
+        (p.condition==='Used' && p.battery!=null ? ('<div class="tag-battery">Battery health '+p.battery+'%</div>') : '') +
       '</div>';
     }).join('') + '</div>' +
     (!items.length ? ('<div class="empty"><div class="big">Nothing matches right now</div>Try a wider budget, or tell us what you\'re looking for.<br/><br/>' +
@@ -5668,18 +6128,27 @@ function renderShop(){
 function renderModal(){
   const p = state.inventory.find(function(x){ return x.id===state.modal.payload.id; });
   if(!p) return '';
+  const isLaptop = (p.item_type||'Phone')==='Laptop';
   return '<div class="overlay" data-close-overlay="1"><div class="sheet" data-stop="1">' +
     '<button class="close-x" data-close-modal="1">×</button>' +
     (p.image_url ? ('<img class="sheet-photo" src="'+escapeAttr(p.image_url)+'" alt="'+escapeAttr(p.model)+'"/>') : '') +
     '<span class="tag-condition '+(p.condition==='New'?'new':'used')+'">'+escapeHtml(p.condition)+'</span>' +
-    '<h2>'+escapeHtml(p.model)+'</h2>' +
+    '<h2>'+(isLaptop && p.brand ? escapeHtml(p.brand)+' ' : '')+escapeHtml(p.model)+'</h2>' +
     '<div class="price-big">'+naira(p.price)+'</div>' +
-    '<div class="detail-row"><span class="k">Storage</span><span class="v">'+escapeHtml(p.storage)+'</span></div>' +
+    (isLaptop ? (
+      '<div class="detail-row"><span class="k">Processor</span><span class="v">'+escapeHtml(p.cpu||'—')+'</span></div>' +
+      '<div class="detail-row"><span class="k">RAM</span><span class="v">'+escapeHtml(p.ram||'—')+'</span></div>' +
+      '<div class="detail-row"><span class="k">Storage</span><span class="v">'+escapeHtml(p.storage||'—')+'</span></div>' +
+      '<div class="detail-row"><span class="k">Screen</span><span class="v">'+escapeHtml(p.screen_size||'—')+'</span></div>' +
+      (p.gpu ? ('<div class="detail-row"><span class="k">Graphics</span><span class="v">'+escapeHtml(p.gpu)+'</span></div>') : '')
+    ) : (
+      '<div class="detail-row"><span class="k">Storage</span><span class="v">'+escapeHtml(p.storage)+'</span></div>'
+    )) +
     '<div class="detail-row"><span class="k">Color</span><span class="v">'+escapeHtml(p.color)+'</span></div>' +
-    (p.condition==='Used' ? ('<div class="detail-row"><span class="k">Battery health</span><span class="v">'+p.battery+'%</span></div>') : '') +
+    (p.condition==='Used' && p.battery!=null ? ('<div class="detail-row"><span class="k">Battery health</span><span class="v">'+p.battery+'%</span></div>') : '') +
     '<div class="detail-row"><span class="k">Warranty</span><span class="v">Included on purchase</span></div>' +
     '<div class="detail-row"><span class="k">Availability</span><span class="v" style="color:var(--success)">In stock now</span></div>' +
-    '<button class="btn btn-primary btn-block" style="margin-top:18px;" data-tab="request" data-close-modal="1">Ask about this phone</button>' +
+    '<button class="btn btn-primary btn-block" style="margin-top:18px;" data-tab="request" data-close-modal="1">Ask about this '+(isLaptop?'laptop':'phone')+'</button>' +
   '</div></div>';
 }
 
@@ -5687,7 +6156,7 @@ function renderRequestForm(){
   return '<div class="hero"><h1>Can\'t find it?</h1><p>Tell '+escapeHtml(state.selectedShop.shop_name)+' what you want — they\'ll reach out the moment it\'s available, sometimes from their trusted dealer network.</p></div>' +
     '<div class="form-card">' +
       '<div class="two-col"><div class="field"><label>Your name</label><input id="r-name"/></div><div class="field"><label>Phone number</label><input id="r-phone"/></div></div>' +
-      '<div class="two-col"><div class="field"><label>Phone model</label><input id="r-model" placeholder="e.g. Google Pixel 9"/></div><div class="field"><label>Storage / color (optional)</label><input id="r-variant" placeholder="256GB, Black"/></div></div>' +
+      '<div class="two-col"><div class="field"><label>Phone or laptop model</label><input id="r-model" placeholder="e.g. Google Pixel 9, or HP EliteBook 840"/></div><div class="field"><label>Storage / color / spec (optional)</label><input id="r-variant" placeholder="256GB, Black, 16GB RAM…"/></div></div>' +
       '<div class="field"><label>Your budget (₦, optional)</label><input type="number" id="r-budget"/></div>' +
       '<div class="field"><label>Anything else?</label><textarea id="r-notes" rows="2"></textarea></div>' +
       '<button class="btn btn-primary btn-block" id="submitRequestBtn">Send request</button>' +
@@ -5722,6 +6191,7 @@ function attachHandlers(){
     state.selectedShop = null; await loadShopPicker();
   });
   app.querySelectorAll('[data-view-phone]').forEach(function(el){ el.addEventListener('click', function(){ openModal('view',{id:el.getAttribute('data-view-phone')}); }); });
+  app.querySelectorAll('[data-category-filter]').forEach(function(el){ el.addEventListener('click', function(){ state.categoryFilter = el.getAttribute('data-category-filter'); render(); }); });
   app.querySelectorAll('[data-close-modal]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-close-overlay]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-stop]').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); });
@@ -5774,6 +6244,17 @@ seller\index.html
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+
+<script>
+(function(){
+  try{
+    var t = localStorage.getItem('phonehub-theme') || 'dark';
+    var eff = t === 'system' ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : t;
+    document.documentElement.setAttribute('data-theme', eff);
+  }catch(e){ document.documentElement.setAttribute('data-theme','dark'); }
+})();
+</script>
+
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PhoneHub Pro — Seller</title>
 <link rel="manifest" href="./manifest.json">
@@ -5790,17 +6271,26 @@ seller\index.html
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
-:root{
+:root, html[data-theme="dark"]{
   --bg:#10141C; --panel:#171C27; --panel-2:#1F2530; --panel-3:#252C3A;
   --border:#2A3140; --text:#EDEFF3; --text-dim:#8C96AA; --text-faint:#5C6577;
   --accent:#E8A93A; --accent-dim:#7A6633; --success:#3FAE6C; --success-dim:#1E3A2A;
   --danger:#E15B5B; --danger-dim:#3A2323; --info:#5B9CE1;
+}
+html[data-theme="light"]{
+  --bg:#F3F4F7; --panel:#FFFFFF; --panel-2:#EFF1F4; --panel-3:#E3E6EC;
+  --border:#D8DCE3; --text:#1A1E27; --text-dim:#5B6472; --text-faint:#8A93A3;
+  --accent:#B8791C; --accent-dim:#FCEFD8; --success:#2E8B57; --success-dim:#DFF3E6;
+  --danger:#D14343; --danger-dim:#FBE4E4; --info:#2E6FD9;
+}
+:root{
   --radius:10px; --radius-sm:6px;
   --font-display:'Space Grotesk',sans-serif; --font-body:'Inter',sans-serif; --font-mono:'JetBrains Mono',monospace;
 }
+
 *{box-sizing:border-box;}
-html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-body);overflow-x:hidden;max-width:100%;}
-#app{display:flex;min-height:600px;background:var(--bg);max-width:100vw;overflow-x:hidden;}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:var(--font-body);overflow-x:hidden;max-width:100%;}
+#app{display:flex;height:100vh;background:var(--bg);max-width:100vw;overflow-x:hidden;}
 ::selection{background:var(--accent);color:#10141C;}
 ::-webkit-scrollbar{width:8px;height:8px;}
 ::-webkit-scrollbar-thumb{background:var(--panel-3);border-radius:4px;}
@@ -5845,7 +6335,7 @@ html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font
   .rail-backdrop.open{opacity:1;pointer-events:auto;}
 }
 
-.main{flex:1;display:flex;flex-direction:column;min-width:0;}
+.main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;}
 .topbar{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--border);background:var(--panel);}
 .search-wrap{flex:1;max-width:560px;display:flex;align-items:center;gap:10px;background:var(--bg);
   border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 14px;font-family:var(--font-mono);}
@@ -5860,7 +6350,9 @@ html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font
 .bell.on{color:var(--success);}
 .gear{cursor:pointer;color:var(--text-faint);}
 .gear:hover{color:var(--text-dim);}
-.content{flex:1;overflow-y:auto;overflow-x:hidden;padding:24px 28px 60px;min-width:0;}
+.theme-toggle{cursor:pointer;color:var(--text-faint);}
+.theme-toggle:hover{color:var(--accent);}
+.content{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:24px 28px 60px;min-width:0;}
 .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;}
 .page-title{font-family:var(--font-display);font-size:22px;font-weight:700;margin:0 0 4px;}
 .page-sub{color:var(--text-dim);font-size:13px;margin:0 0 22px;}
@@ -5959,6 +6451,11 @@ tr:hover td{background:var(--panel-2);}
   border:1px solid var(--border);width:fit-content;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;}
 .pill-tab{padding:7px 14px;border-radius:5px;font-size:12.5px;font-weight:600;color:var(--text-dim);cursor:pointer;}
 .pill-tab.active{background:var(--panel-3);color:var(--accent);}
+/* Keeps a row of controls pinned to the top of .content while the page scrolls
+   underneath it — used for the Broadcasts All/Need it/For sale filters so they
+   stay reachable instead of scrolling out of view. */
+.sticky-subtabs{position:sticky;top:0;z-index:15;background:var(--bg);padding:10px 0 14px;margin-top:-10px;
+  border-bottom:1px solid var(--border);}
 .calc-result{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px;margin-top:6px;}
 .calc-result .row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;}
 .calc-result .row:last-child{border-bottom:none;}
@@ -6010,10 +6507,36 @@ const ICONS = {
   bell:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>',
   consign:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="8" r="3"/><path d="M2.5 21v-1.5A4 4 0 016.5 15.5h1"/><path d="M21.5 21v-1.5a4 4 0 00-4-3.5h-1"/><path d="M9.5 17h5"/></svg>',
   broadcast:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 10v4a1 1 0 001 1h1.5l5 4v-14l-5 4H5a1 1 0 00-1 1z"/><path d="M15 9a3.5 3.5 0 010 6"/><path d="M17.5 6.5a7 7 0 010 11"/></svg>',
-  hamburger:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'
+  hamburger:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
+  theme:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'  
 };
 
 const CONFIG_KEY = 'phonehub-supabase-config';
+
+const THEME_KEY = 'phonehub-theme';
+function loadTheme(){
+  try{ return localStorage.getItem(THEME_KEY) || 'dark'; } catch(e){ return 'dark'; }
+}
+function saveTheme(t){
+  try{ localStorage.setItem(THEME_KEY, t); } catch(e){ /* ignore */ }
+}
+function effectiveTheme(t){
+  if(t==='system') return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+  return t;
+}
+function applyTheme(){
+  const eff = effectiveTheme(state.theme);
+  document.documentElement.setAttribute('data-theme', eff);
+  const metaTheme = document.querySelector('meta[name="theme-color"]');
+  if(metaTheme) metaTheme.setAttribute('content', eff==='light' ? '#F3F4F7' : '#10141C');
+}
+function setTheme(t){ state.theme = t; saveTheme(t); applyTheme(); render(); }
+if(window.matchMedia){
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function(){
+    if(state.theme==='system') applyTheme();
+  });
+}
+
 // If you've deployed this app for real, paste your Supabase project URL and anon key here.
 // Doing so skips the "Connect" screen entirely for every dealer who opens this app.
 // Safe to leave blank while testing — the app will ask for them once and remember
@@ -6030,6 +6553,7 @@ let dealerFilterBlurTimer = null;
 
 let state = {
   stage:'loading', // loading -> configure -> auth -> app
+  theme: loadTheme(),
   configError:null, configuring:false, urlInput:'', keyInput:'',
   authMode:'login', authError:null, authBusy:false,
   profile:null, isAdmin:false,
@@ -6037,11 +6561,13 @@ let state = {
   adminDealers:[], adminInventory:[], adminSales:[],
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
   networkView:'search', dealerSearchQuery:'', networkOrder:[], networkVisibleCount:20,
+  networkCategoryFilter:'All', // All | Phone | Laptop — filter for the Network > Search stock view
   networkDealerFilter:null, dealerFilterQuery:'', dealerFilterOpen:false,
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'', bulkImportSupplierId:'',
   pushStatus:'unsupported', // unsupported | off | prompting | on | denied
   mobileMenuOpen:false,
   inventorySupplierFilter:null, supplierFilterName:'',
+  inventoryItemTab:'phones', // 'phones' | 'laptops' — sub-tab within the Inventory tab
   selectedInventoryIds:[], // checked rows in Inventory, used by the "Broadcast selected" flow
   broadcastComposer:{ids:[], target:'network', message:'', selectedContactIds:[]},
   networkBroadcastTypeFilter:'All', // All | Need | Stock — filter for the Network > Broadcasts view
@@ -6065,6 +6591,15 @@ function syncNetworkOrder(){
   state.networkOrder = kept.concat(shuffleArray(freshIds));
 }
 function naira(n){ n = Number(n)||0; return '₦'+n.toLocaleString('en-NG',{maximumFractionDigits:0}); }
+// Short display label for an inventory row, whether it's a phone or a laptop —
+// used anywhere a compact "which item is this" line is needed (sale picker,
+// consignment picker, global search results).
+function itemLabel(p){
+  if((p.item_type||'Phone')==='Laptop'){
+    return [p.brand, p.model].filter(Boolean).join(' ') + (p.cpu ? (' · '+p.cpu) : '') + (p.ram ? (' · '+p.ram) : '') + (p.storage ? (' · '+p.storage) : '');
+  }
+  return [p.model, p.storage, p.color].filter(Boolean).join(' · ');
+}
 function todayISO(){ return new Date().toISOString().slice(0,10); }
 function daysBetween(a,b){ return Math.round((new Date(b)-new Date(a))/86400000); }
 function escapeAttr(s){ return (s||'').toString().replace(/"/g,'&quot;'); }
@@ -6652,7 +7187,7 @@ function applyHashTab(){
   }
 }
 function openModal(name, payload){
-  if(name==='addPhone' || name==='editPhone') state.photoModalRemovedUrls = [];
+  if(name==='addPhone' || name==='editPhone' || name==='addLaptop' || name==='editLaptop') state.photoModalRemovedUrls = [];
   if(name==='viewNetworkItem' || name==='viewStockItem') state.galleryIndex = 0;
   state.modal = {name:name, payload: payload||{}}; render();
 }
@@ -6721,7 +7256,8 @@ function searchAll(q){
   q = q.toLowerCase();
   const invHits = state.inventory.filter(function(p){
     return String(p.imei||'').includes(q) || String(p.imei2||'').includes(q) || String(p.model||'').toLowerCase().includes(q) ||
-      String(p.color||'').toLowerCase().includes(q) || String(p.supplier||'').toLowerCase().includes(q);
+      String(p.color||'').toLowerCase().includes(q) || String(p.supplier||'').toLowerCase().includes(q) ||
+      String(p.brand||'').toLowerCase().includes(q) || String(p.cpu||'').toLowerCase().includes(q) || String(p.ram||'').toLowerCase().includes(q);
   }).map(function(p){ return {type:'phone', item:p}; });
   const saleHits = state.sales.filter(function(s){
     return String(s.customer_name||'').toLowerCase().includes(q) || String(s.customer_phone||'').includes(q);
@@ -6756,6 +7292,7 @@ function render(){
         '<div class="topbar-right">' +
           '<span class="dot"></span> '+escapeHtml(state.profile.shop_name)+(state.isAdmin?' <span class="badge badge-admin">admin</span>':'') +
           '<span class="bell '+(state.pushStatus==='on'?'on':'')+'" id="notifBellBtn" title="Notification settings">'+ICONS.bell+'</span>' +
+          '<span class="theme-toggle" id="themeSettingsBtn" title="Display theme">'+ICONS.theme+'</span>' +
           '<span class="gear" id="logoutBtn" title="Log out">'+ICONS.gear+'</span>' +
         '</div>' +
       '</div>' +
@@ -6865,9 +7402,10 @@ function renderSearchDropdown(){
   return '<div class="search-results">' + results.map(function(r){
     if(r.type==='phone'){
       const p = r.item;
-      return '<div class="search-row" data-open-phone="'+p.id+'">' +
-        '<div><div class="sr-main">'+escapeHtml(p.model)+' · '+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</div>' +
-        '<div class="sr-sub">IMEI '+escapeHtml(p.imei)+' · '+badge(p.status)+'</div></div>' +
+      const isLaptop = (p.item_type||'Phone')==='Laptop';
+      return '<div class="search-row" data-open-phone="'+p.id+'" data-open-item-type="'+(p.item_type||'Phone')+'">' +
+        '<div><div class="sr-main">'+(isLaptop?'💻 ':'📱 ')+escapeHtml(itemLabel(p))+'</div>' +
+        '<div class="sr-sub">'+(isLaptop?escapeHtml(p.storage||''):('IMEI '+escapeHtml(p.imei||'—')))+' · '+badge(p.status)+'</div></div>' +
         '<div class="sr-price">'+naira(p.price)+'</div></div>';
     } else {
       const s = r.item;
@@ -6963,54 +7501,98 @@ function renderDashboard(){
 }
 
 function renderInventory(){
-  let items = state.inventory.slice().sort(function(a,b){ return (a.status==='In Stock'?0:1)-(b.status==='In Stock'?0:1); });
+  const itemTab = state.inventoryItemTab === 'laptops' ? 'Laptop' : 'Phone';
+  const noun = itemTab === 'Laptop' ? 'laptop' : 'phone';
+  let items = state.inventory.filter(function(p){ return (p.item_type||'Phone') === itemTab; })
+    .sort(function(a,b){ return (a.status==='In Stock'?0:1)-(b.status==='In Stock'?0:1); });
+  const allOfType = state.inventory.filter(function(p){ return (p.item_type||'Phone') === itemTab; });
+  const phoneCount = state.inventory.filter(function(p){ return (p.item_type||'Phone')==='Phone'; }).length;
+  const laptopCount = state.inventory.filter(function(p){ return p.item_type==='Laptop'; }).length;
+
+  const subTabs = '<div class="pill-tabs">' +
+      '<div class="pill-tab '+(state.inventoryItemTab==='phones'?'active':'')+'" data-inventory-item-tab="phones">📱 Phones'+pillBadge(phoneCount)+'</div>' +
+      '<div class="pill-tab '+(state.inventoryItemTab==='laptops'?'active':'')+'" data-inventory-item-tab="laptops">💻 Laptops'+pillBadge(laptopCount)+'</div>' +
+    '</div>';
+
   let header = '';
   if (state.inventorySupplierFilter){
     items = items.filter(function(p){ return p.supplier_id === state.inventorySupplierFilter; });
     const filterContact = state.suppliers.find(function(x){ return x.id === state.inventorySupplierFilter; });
     const filterName = filterContact ? filterContact.name : state.supplierFilterName;
     header = '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">' +
-      '<div><h1 class="page-title">Stock gotten from '+escapeHtml(filterName)+'</h1><p class="page-sub">'+items.length+' phone'+(items.length===1?'':'s')+' tracked</p></div>' +
+      '<div><h1 class="page-title">Stock gotten from '+escapeHtml(filterName)+'</h1><p class="page-sub">'+items.length+' '+noun+(items.length===1?'':'s')+' tracked</p></div>' +
       '<div style="display:flex;gap:8px;"><button class="btn" data-clear-supplier-filter="1">← Back to all inventory</button></div>' +
     '</div>';
   } else {
     header = '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">' +
-      '<div><h1 class="page-title">Inventory</h1><p class="page-sub">'+state.inventory.length+' phones tracked · '+state.inventory.filter(function(p){return p.status==='In Stock';}).length+' in stock</p></div>' +
+      '<div><h1 class="page-title">Inventory</h1><p class="page-sub">'+allOfType.length+' '+noun+'s tracked · '+allOfType.filter(function(p){return p.status==='In Stock';}).length+' in stock</p></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
         (items.some(function(p){return p.status==='In Stock';}) ? '<button class="btn" id="selectAllInStockBtn">Select all in stock</button>' : '') +
-        '<button class="btn" data-open-modal="bulkImport">📋 Paste stock list</button>' +
-        '<button class="btn btn-accent" data-open-modal="addPhone">'+ICONS.plus+' Add phone</button>' +
+        (itemTab==='Phone' ? '<button class="btn" data-open-modal="bulkImport">📋 Paste stock list</button>' : '') +
+        (itemTab==='Phone'
+          ? '<button class="btn btn-accent" data-open-modal="addPhone">'+ICONS.plus+' Add phone</button>'
+          : '<button class="btn btn-accent" data-open-modal="addLaptop">'+ICONS.plus+' Add laptop</button>') +
       '</div>' +
     '</div>';
   }
   const selectedCount = state.selectedInventoryIds.length;
-  return header +
-    (selectedCount>0 ? ('<div class="section" style="margin-top:16px;border-color:var(--accent);"><div class="section-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">' +
-      '<div><strong>'+selectedCount+'</strong> phone'+(selectedCount===1?'':'s')+' selected</div>' +
+  const selectionBar = selectedCount>0 ? ('<div class="section" style="margin-top:16px;border-color:var(--accent);"><div class="section-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">' +
+      '<div><strong>'+selectedCount+'</strong> item'+(selectedCount===1?'':'s')+' selected</div>' +
       '<div style="display:flex;gap:8px;"><button class="btn" id="clearSelectionBtn">Clear</button><button class="btn btn-accent" id="broadcastSelectedBtn">'+ICONS.broadcast.replace('<svg ', '<svg style="width:14px;height:14px;vertical-align:-2px;margin-right:4px;" ')+'Broadcast selected</button></div>' +
-    '</div></div>') : '') +
-    '<div class="section" style="margin-top:16px;"><div class="section-body table-scroll" style="padding:0;">' +
-      (items.length ? ('<table><thead><tr><th></th><th>Photo</th><th>Model</th><th>IMEI</th><th>Qty</th><th>Storage / Color</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
-        items.map(function(p){ return '<tr>' +
-          '<td><input type="checkbox" data-select-inventory="'+p.id+'" '+(state.selectedInventoryIds.indexOf(p.id)>-1?'checked':'')+'/></td>' +
-          '<td>'+thumbHTML(p.image_url)+'</td>' +
-          '<td class="strong">'+escapeHtml(p.model)+'</td>' +
-          '<td class="mono">'+(p.imei?escapeHtml(p.imei):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
-          '<td class="mono">'+(p.quantity!=null?p.quantity:1)+'</td>' +
-          '<td>'+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</td>' +
-          '<td>'+escapeHtml(p.condition)+(p.condition==='Used'?(' · '+p.battery+'% batt'):'')+'</td>' +
-          '<td class="mono">'+(p.cost?naira(p.cost):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
-          '<td class="mono">'+(p.price?naira(p.price):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
-          '<td class="mono" style="color:var(--success)">'+(p.price?naira((Number(p.price)||0)-(Number(p.cost)||0)):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
-          '<td><button class="btn btn-sm '+(p.status==='In Stock'?'btn-stock-toggle-on':'btn-stock-toggle-off')+'" data-toggle-status="'+p.id+'">'+(p.status==='In Stock'?'In Stock':'Out of Stock')+'</button></td>' +
-          '<td>'+escapeHtml(p.shelf)+'</td>' +
-          '<td style="display:flex;gap:6px;white-space:nowrap;">' +
-            '<button class="btn btn-sm" data-open-modal="editPhone" data-id="'+p.id+'">Edit</button>' +
-            '<button class="btn btn-sm" data-broadcast-single="'+p.id+'" title="Send as broadcast">📣</button>' +
-          '</td>' +
-        '</tr>'; }).join('') +
-      '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No phones from this contact yet.</div></div>')) +
-    '</div></div>';
+    '</div></div>') : '';
+
+  const table = itemTab==='Phone' ? renderPhoneInventoryTable(items) : renderLaptopInventoryTable(items);
+
+  return subTabs + header + selectionBar +
+    '<div class="section" style="margin-top:16px;"><div class="section-body table-scroll" style="padding:0;">' + table + '</div></div>';
+}
+
+function renderPhoneInventoryTable(items){
+  if(!items.length) return '<div class="empty">'+ICONS.empty+'<div>No phones from this contact yet.</div></div>';
+  return '<table><thead><tr><th></th><th>Photo</th><th>Model</th><th>IMEI</th><th>Qty</th><th>Storage / Color</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
+    items.map(function(p){ return '<tr>' +
+      '<td><input type="checkbox" data-select-inventory="'+p.id+'" '+(state.selectedInventoryIds.indexOf(p.id)>-1?'checked':'')+'/></td>' +
+      '<td>'+thumbHTML(p.image_url)+'</td>' +
+      '<td class="strong">'+escapeHtml(p.model)+'</td>' +
+      '<td class="mono">'+(p.imei?escapeHtml(p.imei):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td class="mono">'+(p.quantity!=null?p.quantity:1)+'</td>' +
+      '<td>'+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</td>' +
+      '<td>'+escapeHtml(p.condition)+(p.condition==='Used'?(' · '+p.battery+'% batt'):'')+'</td>' +
+      '<td class="mono">'+(p.cost?naira(p.cost):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td class="mono">'+(p.price?naira(p.price):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td class="mono" style="color:var(--success)">'+(p.price?naira((Number(p.price)||0)-(Number(p.cost)||0)):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td><button class="btn btn-sm '+(p.status==='In Stock'?'btn-stock-toggle-on':'btn-stock-toggle-off')+'" data-toggle-status="'+p.id+'">'+(p.status==='In Stock'?'In Stock':'Out of Stock')+'</button></td>' +
+      '<td>'+escapeHtml(p.shelf)+'</td>' +
+      '<td style="display:flex;gap:6px;white-space:nowrap;">' +
+        '<button class="btn btn-sm" data-open-modal="editPhone" data-id="'+p.id+'">Edit</button>' +
+        '<button class="btn btn-sm" data-broadcast-single="'+p.id+'" title="Send as broadcast">📣</button>' +
+      '</td>' +
+    '</tr>'; }).join('') +
+  '</tbody></table>';
+}
+
+function renderLaptopInventoryTable(items){
+  if(!items.length) return '<div class="empty">'+ICONS.empty+'<div>No laptops in inventory yet.</div></div>';
+  return '<table><thead><tr><th></th><th>Photo</th><th>Brand / Model</th><th>Qty</th><th>CPU / RAM</th><th>Storage · Screen</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
+    items.map(function(p){ return '<tr>' +
+      '<td><input type="checkbox" data-select-inventory="'+p.id+'" '+(state.selectedInventoryIds.indexOf(p.id)>-1?'checked':'')+'/></td>' +
+      '<td>'+thumbHTML(p.image_url)+'</td>' +
+      '<td class="strong">'+(p.brand?escapeHtml(p.brand)+' — ':'')+escapeHtml(p.model)+'<div style="font-size:11px;color:var(--text-faint);font-weight:400;">'+escapeHtml(p.color||'')+'</div></td>' +
+      '<td class="mono">'+(p.quantity!=null?p.quantity:1)+'</td>' +
+      '<td>'+escapeHtml(p.cpu||'—')+'<div style="font-size:11px;color:var(--text-faint);">'+escapeHtml(p.ram||'')+'</div></td>' +
+      '<td>'+escapeHtml(p.storage||'—')+(p.screen_size?(' · '+escapeHtml(p.screen_size)):'')+(p.gpu?('<div style="font-size:11px;color:var(--text-faint);">'+escapeHtml(p.gpu)+'</div>'):'')+'</td>' +
+      '<td>'+escapeHtml(p.condition)+(p.condition==='Used' && p.battery!=null?(' · '+p.battery+'% batt'):'')+'</td>' +
+      '<td class="mono">'+(p.cost?naira(p.cost):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td class="mono">'+(p.price?naira(p.price):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td class="mono" style="color:var(--success)">'+(p.price?naira((Number(p.price)||0)-(Number(p.cost)||0)):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td><button class="btn btn-sm '+(p.status==='In Stock'?'btn-stock-toggle-on':'btn-stock-toggle-off')+'" data-toggle-status="'+p.id+'">'+(p.status==='In Stock'?'In Stock':'Out of Stock')+'</button></td>' +
+      '<td>'+escapeHtml(p.shelf)+'</td>' +
+      '<td style="display:flex;gap:6px;white-space:nowrap;">' +
+        '<button class="btn btn-sm" data-open-modal="editLaptop" data-id="'+p.id+'">Edit</button>' +
+        '<button class="btn btn-sm" data-broadcast-single="'+p.id+'" title="Send as broadcast">📣</button>' +
+      '</td>' +
+    '</tr>'; }).join('') +
+  '</tbody></table>';
 }
 
 function renderSales(){
@@ -7168,9 +7750,10 @@ function renderNetworkSearch(){
   let list, showLoadMore = false, totalCount = 0;
 
   let base = dealerFilterId ? state.dealerNetwork.filter(function(d){ return d.dealer_id===dealerFilterId; }) : state.dealerNetwork;
+  if(state.networkCategoryFilter !== 'All') base = base.filter(function(d){ return (d.item_type||'Phone') === state.networkCategoryFilter; });
 
   if(isFiltered){
-    list = base.filter(function(d){ return !q || String(d.model||'').toLowerCase().includes(q); })
+    list = base.filter(function(d){ return !q || String(d.model||'').toLowerCase().includes(q) || String(d.brand||'').toLowerCase().includes(q); })
       .slice().sort(function(a,b){ return (Number(a.price)||0)-(Number(b.price)||0); });
   } else {
     const byId = {}; base.forEach(function(d){ byId[d.id] = d; });
@@ -7180,16 +7763,26 @@ function renderNetworkSearch(){
     showLoadMore = ordered.length > state.networkVisibleCount;
   }
 
+  const categoryPills = '<div class="pill-tabs" style="margin-bottom:12px;">' +
+    ['All','Phone','Laptop'].map(function(c){ return '<div class="pill-tab '+(state.networkCategoryFilter===c?'active':'')+'" data-network-category-filter="'+c+'">'+(c==='All'?'All':(c==='Phone'?'📱 Phones':'💻 Laptops'))+'</div>'; }).join('') +
+  '</div>';
+
   return '<div class="section"><div class="section-body">' +
+      categoryPills +
       renderDealerFilterDropdown() +
-      '<input id="dealerSearch" placeholder="e.g. S24 Ultra, iPhone 15…" value="'+escapeAttr(state.dealerSearchQuery)+'" ' +
+      '<input id="dealerSearch" placeholder="e.g. S24 Ultra, iPhone 15, EliteBook…" value="'+escapeAttr(state.dealerSearchQuery)+'" ' +
       'style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;color:var(--text);font-family:var(--font-mono);font-size:13px;outline:none;margin-bottom:10px;"/>' +
       (!isFiltered && totalCount>0 ? ('<div style="font-size:11.5px;color:var(--text-faint);margin-bottom:14px;">Showing '+list.length+' of '+totalCount+' network listings, in random order — search above to find something specific.</div>') : '') +
       '<div class="table-scroll">' +
       (list.length ? ('<table><thead><tr><th>Img</th><th>Model</th><th>Dealer</th><th>Price</th><th>Updated</th><th></th></tr></thead><tbody>' +
-        list.map(function(d,i){ return '<tr data-view-network-item="'+d.id+'" style="cursor:pointer;">' +
+        list.map(function(d,i){
+          const isLaptop = (d.item_type||'Phone')==='Laptop';
+          const specLine = isLaptop
+            ? ((d.brand?escapeHtml(d.brand)+' ':'')+escapeHtml(d.model)+(d.cpu?(' · '+escapeHtml(d.cpu)):'')+(d.ram?(' · '+escapeHtml(d.ram)):'')+(d.storage?(' · '+escapeHtml(d.storage)):''))
+            : (escapeHtml(d.model)+(d.storage?(' · '+escapeHtml(d.storage)):'')+(d.color?(' · '+escapeHtml(d.color)):'')+(d.condition==='Used'?(' · '+d.battery+'% batt'):''));
+          return '<tr data-view-network-item="'+d.id+'" style="cursor:pointer;">' +
           '<td>'+thumbHTML(d.image_url)+'</td>' +
-          '<td class="strong">'+escapeHtml(d.model)+(d.storage?(' · '+escapeHtml(d.storage)):'')+(d.color?(' · '+escapeHtml(d.color)):'')+(d.condition==='Used'?(' · '+d.battery+'% batt'):'')+'</td>' +
+          '<td class="strong">'+specLine+'</td>' +
           '<td>'+escapeHtml(d.dealer_name)+(d.dealer_id===state.profile.id?' <span style="font-size:10px;color:var(--text-faint)">(you)</span>':'')+'<br>'+reputationBadgeHTML(d.dealer_id)+'</td>' +
           '<td class="mono" style="color:'+(isFiltered && i===0?'var(--success)':'var(--text)')+'">'+naira(d.price)+(isFiltered && i===0?' <span style="font-size:10px">· lowest</span>':'')+'</td>' +
           '<td class="mono" style="font-size:11px;color:var(--text-faint)">'+new Date(d.updated_at).toLocaleDateString()+'</td>' +
@@ -7226,10 +7819,13 @@ function renderStockAdvertCard(b){
     '<div class="section-body">' +
       (b.message ? ('<div style="color:var(--text-dim);font-size:13px;margin-bottom:12px;">'+escapeHtml(b.message)+'</div>') : '') +
       '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;">' +
-        items.map(function(it,idx){ return '<div data-view-stock-item="'+b.id+'" data-item-index="'+idx+'" style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;">' +
+        items.map(function(it,idx){
+          const isLaptop = (it.item_type||'Phone')==='Laptop';
+          const spec = isLaptop ? [it.cpu,it.ram,it.storage].filter(Boolean).join(' · ') : [it.storage,it.color].filter(Boolean).join(' ');
+          return '<div data-view-stock-item="'+b.id+'" data-item-index="'+idx+'" style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;">' +
           (it.image_url ? ('<img src="'+escapeAttr(it.image_url)+'" style="width:100%;height:84px;object-fit:cover;border-radius:6px;margin-bottom:6px;"/>') : '') +
-          '<div class="strong" style="font-size:12.5px;">'+escapeHtml(it.model)+'</div>' +
-          '<div style="font-size:11px;color:var(--text-faint);">'+escapeHtml(it.storage||'')+' '+escapeHtml(it.color||'')+'</div>' +
+          '<div class="strong" style="font-size:12.5px;">'+(isLaptop?'💻 ':'📱 ')+escapeHtml((isLaptop && it.brand ? it.brand+' ' : '')+it.model)+'</div>' +
+          '<div style="font-size:11px;color:var(--text-faint);">'+escapeHtml(spec)+'</div>' +
           '<div class="mono" style="color:var(--accent);font-size:13px;margin-top:4px;">'+(it.price?naira(it.price):'—')+'</div>' +
         '</div>'; }).join('') +
       '</div>' +
@@ -7273,13 +7869,15 @@ function renderBroadcasts(){
   const openStockCount = state.broadcasts.filter(function(b){ return b.status==='Open' && (b.type||'Need')==='Stock'; }).length;
   const pillCounts = { All: openNeedCount+openStockCount, Need: openNeedCount, Stock: openStockCount };
 
-  return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">' +
+  return '<div class="sticky-subtabs" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">' +
       '<div class="pill-tabs" style="margin:0;">' +
         ['All','Need','Stock'].map(function(f){ return '<div class="pill-tab '+(filter===f?'active':'')+'" data-broadcast-type-filter="'+f+'">'+(f==='All'?'All':(f==='Need'?'Need it':'For sale'))+pillBadge(pillCounts[f])+'</div>'; }).join('') +
       '</div>' +
       '<button class="btn btn-accent" data-open-modal="newBroadcast">'+ICONS.plus+' New request</button>' +
     '</div>' +
-    (body || ('<div class="empty">'+ICONS.empty+'<div>No broadcasts yet. Send one when you need a phone urgently, or advertise stock straight from the Inventory tab.</div></div>'));
+    '<div style="margin-top:14px;">' +
+    (body || ('<div class="empty">'+ICONS.empty+'<div>No broadcasts yet. Send one when you need a phone urgently, or advertise stock straight from the Inventory tab.</div></div>')) +
+    '</div>';
 }
 
 function renderSuppliers(){
@@ -7335,12 +7933,14 @@ function renderAdmin(){
 function renderModal(){
   const m = state.modal;
   if(m.name==='addPhone' || m.name==='editPhone') return renderPhoneModal(m);
+  if(m.name==='addLaptop' || m.name==='editLaptop') return renderLaptopModal(m);
   if(m.name==='logSale') return renderSaleModal();
   if(m.name==='addSupplier' || m.name==='editSupplier') return renderSupplierModal(m);
   if(m.name==='newBroadcast') return renderBroadcastModal();
   if(m.name==='respondBroadcast') return renderRespondModal(m);
   if(m.name==='bulkImport') return renderBulkImportModal();
   if(m.name==='notifSettings') return renderNotifModal();
+  if(m.name==='themeSettings') return renderThemeModal();
   if(m.name==='addConsignment' || m.name==='editConsignment') return renderConsignmentModal(m);
   if(m.name==='viewConsignment') return renderConsignmentDetailModal(m);
   if(m.name==='logConsignmentPayment') return renderConsignmentPaymentModal(m);
@@ -7354,12 +7954,21 @@ function renderNetworkItemModal(m){
   const d = state.dealerNetwork.find(function(x){ return x.id === m.payload.id; });
   if(!d) return '';
   const isMine = d.dealer_id === state.profile.id;
+  const isLaptop = (d.item_type||'Phone')==='Laptop';
   const row = function(k,v){ return '<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="color:var(--text-dim);">'+k+'</span><span class="strong">'+v+'</span></div>'; };
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
-    '<div class="modal-head"><h3>'+escapeHtml(d.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-head"><h3>'+(isLaptop && d.brand ? escapeHtml(d.brand)+' ' : '')+escapeHtml(d.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body">' +
       renderImageGallery(imagesFor(d), state.galleryIndex) +
-      row('Storage', escapeHtml(d.storage||'—')) +
+      (isLaptop ? (
+        row('Processor', escapeHtml(d.cpu||'—')) +
+        row('RAM', escapeHtml(d.ram||'—')) +
+        row('Storage', escapeHtml(d.storage||'—')) +
+        row('Screen', escapeHtml(d.screen_size||'—')) +
+        (d.gpu ? row('Graphics', escapeHtml(d.gpu)) : '')
+      ) : (
+        row('Storage', escapeHtml(d.storage||'—'))
+      )) +
       row('Color', escapeHtml(d.color||'—')) +
       row('Condition', escapeHtml(d.condition||'—')+(d.condition==='Used' && d.battery!=null?(' · '+d.battery+'% battery'):'')) +
       row('Price', '<span style="color:var(--accent);font-size:16px;">'+naira(d.price)+'</span>') +
@@ -7378,12 +7987,19 @@ function renderStockItemModal(m){
   if(!it) return '';
   const isMine = b.dealer_id === state.profile.id;
   const phone = dealerPhone(b.dealer_id);
+  const isLaptop = (it.item_type||'Phone')==='Laptop';
   const row = function(k,v){ return '<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="color:var(--text-dim);">'+k+'</span><span class="strong">'+v+'</span></div>'; };
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
-    '<div class="modal-head"><h3>'+escapeHtml(it.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-head"><h3>'+(isLaptop && it.brand ? escapeHtml(it.brand)+' ' : '')+escapeHtml(it.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body">' +
       renderImageGallery(imagesFor(it), state.galleryIndex) +
-      row('Storage', escapeHtml(it.storage||'—')) +
+      (isLaptop ? (
+        row('Processor', escapeHtml(it.cpu||'—')) +
+        row('RAM', escapeHtml(it.ram||'—')) +
+        row('Storage', escapeHtml(it.storage||'—')) +
+        row('Screen', escapeHtml(it.screen_size||'—')) +
+        (it.gpu ? row('Graphics', escapeHtml(it.gpu)) : '')
+      ) : row('Storage', escapeHtml(it.storage||'—'))) +
       row('Color', escapeHtml(it.color||'—')) +
       row('Condition', escapeHtml(it.condition||'—')) +
       row('Price', '<span style="color:var(--accent);font-size:16px;">'+(it.price?naira(it.price):'—')+'</span>') +
@@ -7409,6 +8025,19 @@ function renderNotifModal(){
       '</div>' +
       '<div class="notif-row"><div class="n-sub">You\'ll be alerted for: new customer requests, dealer network broadcasts and responses, warranty phones expiring within 2 days, and phones down to their last unit. Alerts arrive even if this app isn\'t open, as long as your phone has data/wifi.</div></div>' +
       (status==='denied' ? '<div class="n-sub" style="margin-top:8px;color:var(--danger)">Notifications are blocked for this site in your browser. Open your browser\'s site settings for this page and allow notifications, then reopen this dialog.</div>' : '') +
+    '</div>' +
+  '</div></div>';
+}
+
+function renderThemeModal(){
+  const options = [['system','🖥️ System'],['light','☀️ Light'],['dark','🌙 Dark']];
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:380px;">' +
+    '<div class="modal-head"><h3>Display</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      '<div class="pill-tabs" style="width:100%;">' +
+        options.map(function(o){ return '<div class="pill-tab" style="flex:1;text-align:center;'+(state.theme===o[0]?'background:var(--panel-3);color:var(--accent);':'')+'" data-set-theme="'+o[0]+'">'+o[1]+'</div>'; }).join('') +
+      '</div>' +
+      '<div class="n-sub" style="margin-top:12px;">"System" follows this device\'s light/dark setting automatically.</div>' +
     '</div>' +
   '</div></div>';
 }
@@ -7456,6 +8085,55 @@ function renderPhoneModal(m){
       (editing ? ('<button class="btn btn-danger" data-delete-phone="'+p.id+'">Delete</button>') : '') +
       '<button class="btn" data-close-modal="1">Cancel</button>' +
       '<button class="btn btn-accent" data-save-phone="'+(editing?p.id:'')+'">'+(editing?'Save changes':'Add to inventory')+'</button>' +
+    '</div></div></div>';
+}
+
+function renderLaptopModal(m){
+  const editing = m.name==='editLaptop';
+  const p = editing ? (state.inventory.find(function(x){ return x.id===m.payload.id; }) || {}) : {};
+  const existingImages = imagesFor(p);
+  const removedUrls = state.photoModalRemovedUrls || [];
+  const visibleExisting = existingImages.filter(function(u){ return removedUrls.indexOf(u)===-1; });
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
+    '<div class="modal-head"><h3>'+(editing?'Edit laptop':'Add laptop')+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body"><div class="form-grid">' +
+      '<div class="field full"><label>Photos (add at least 2 if you can — you can add just one, but buyers trust listings with more)</label>' +
+        '<div id="photo-gallery-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;">' +
+          (visibleExisting.length ? visibleExisting.map(function(url){
+            return '<div style="position:relative;">' +
+              '<img class="photo-preview" src="'+escapeAttr(url)+'" style="width:72px;height:72px;"/>' +
+              '<button type="button" data-remove-existing-image="'+escapeAttr(url)+'" title="Remove this photo" style="position:absolute;top:-6px;right:-6px;background:var(--danger);color:#fff;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;line-height:1;">×</button>' +
+            '</div>';
+          }).join('') : '<span style="font-size:11.5px;color:var(--text-faint);">No photos yet</span>') +
+        '</div>' +
+        '<input type="file" id="l-images" accept="image/*" multiple capture="environment"/>' +
+        '<div id="new-photo-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;"></div>' +
+        '<span style="font-size:11px;color:var(--text-faint);display:block;margin-top:6px;">Snap with your camera or pick from gallery — you can select several at once. Resized automatically before upload.</span>' +
+      '</div>' +
+      '<div class="field"><label>Brand</label><input id="l-brand" value="'+escapeAttr(p.brand)+'" placeholder="e.g. HP, Dell, Apple, Lenovo"/></div>' +
+      '<div class="field"><label>Model</label><input id="l-model" value="'+escapeAttr(p.model)+'" placeholder="e.g. EliteBook 840 G7"/></div>' +
+      '<div class="field"><label>Processor (CPU)</label><input id="l-cpu" value="'+escapeAttr(p.cpu)+'" placeholder="e.g. Intel Core i7-1165G7"/></div>' +
+      '<div class="field"><label>RAM</label><input id="l-ram" value="'+escapeAttr(p.ram)+'" placeholder="e.g. 16GB"/></div>' +
+      '<div class="field"><label>Storage</label><input id="l-storage" value="'+escapeAttr(p.storage)+'" placeholder="e.g. 512GB SSD"/></div>' +
+      '<div class="field"><label>Screen size</label><input id="l-screen" value="'+escapeAttr(p.screen_size)+'" placeholder="e.g. 14&quot;"/></div>' +
+      '<div class="field"><label>Graphics (GPU, optional)</label><input id="l-gpu" value="'+escapeAttr(p.gpu)+'" placeholder="e.g. Intel Iris Xe, RTX 3050"/></div>' +
+      '<div class="field"><label>Color</label><input id="l-color" value="'+escapeAttr(p.color)+'"/></div>' +
+      '<div class="field"><label>Condition</label><select id="l-condition"><option '+(p.condition==='New'?'selected':'')+'>New</option><option '+(p.condition==='Used'?'selected':'')+'>Used</option></select></div>' +
+      '<div class="field"><label>Battery health %</label><input type="number" id="l-battery" value="'+(p.battery!=null?p.battery:100)+'"/></div>' +
+      '<div class="field"><label>Supplier contact (optional)</label><select id="l-supplier-id"><option value="">— none / type below —</option>' +
+        state.suppliers.map(function(s){ return '<option value="'+s.id+'" '+(p.supplier_id===s.id?'selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('') +
+      '</select></div>' +
+      '<div class="field"><label>Supplier / source label</label><input id="l-supplier" value="'+escapeAttr(p.supplier)+'" placeholder="e.g. UK import batch, or contact name"/></div>' +
+      '<div class="field mono"><label>Cost price (₦)</label><input type="number" id="l-cost" value="'+(p.cost||'')+'"/></div>' +
+      '<div class="field mono"><label>Selling price (₦)</label><input type="number" id="l-price" value="'+(p.price||'')+'"/></div>' +
+      '<div class="field"><label>Status</label><select id="l-status">'+['In Stock','Reserved','Sold','In Repair','Consigned'].map(function(s){ return '<option '+(p.status===s?'selected':'')+'>'+s+'</option>'; }).join('')+'</select></div>' +
+      '<div class="field"><label>Shelf location</label><input id="l-shelf" value="'+escapeAttr(p.shelf)+'"/></div>' +
+      '<div class="field full"><label>Notes</label><textarea id="l-notes" rows="2">'+escapeHtml(p.notes)+'</textarea></div>' +
+    '</div></div>' +
+    '<div class="modal-foot">' +
+      (editing ? ('<button class="btn btn-danger" data-delete-phone="'+p.id+'">Delete</button>') : '') +
+      '<button class="btn" data-close-modal="1">Cancel</button>' +
+      '<button class="btn btn-accent" data-save-laptop="'+(editing?p.id:'')+'">'+(editing?'Save changes':'Add to inventory')+'</button>' +
     '</div></div></div>';
 }
 
@@ -7508,7 +8186,7 @@ function renderSaleModal(){
     '<div class="modal-head"><h3>Log a sale</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body"><div class="form-grid">' +
       '<div class="field full"><label>Phone (in stock only)</label><select id="s-inventory-id"><option value="">Select a phone…</option>' +
-        available.map(function(p){ return '<option value="'+p.id+'">'+escapeHtml(p.model)+' · '+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+' — '+(p.price?naira(p.price):'no price set yet')+(p.quantity>1?(' ('+p.quantity+' in stock)'):'')+'</option>'; }).join('') +
+        available.map(function(p){ return '<option value="'+p.id+'">'+(p.item_type==='Laptop'?'💻 ':'📱 ')+escapeHtml(itemLabel(p))+' — '+(p.price?naira(p.price):'no price set yet')+(p.quantity>1?(' ('+p.quantity+' in stock)'):'')+'</option>'; }).join('') +
       '</select></div>' +
       '<div class="field"><label>Sale date</label><input type="date" id="s-date" value="'+todayISO()+'"/></div>' +
       '<div class="field mono"><label>Sale price (₦)</label><input type="number" id="s-price"/></div>' +
@@ -7558,7 +8236,7 @@ function renderConsignmentModal(m){
         '<div class="field"><label>Colleague name</label><input id="cn-name" value="'+escapeAttr(c.contact_name||'')+'"/></div>' +
         '<div class="field"><label>Colleague phone</label><input id="cn-phone" value="'+escapeAttr(c.contact_phone||'')+'"/></div>' +
         '<div class="field"><label>Link to inventory phone (optional)</label><select id="cn-inventory-id"><option value="">— none / type below —</option>' +
-          state.inventory.filter(function(p){ return p.status==='In Stock' || p.id===c.inventory_id; }).map(function(p){ return '<option value="'+p.id+'" '+(c.inventory_id===p.id?'selected':'')+'>'+escapeHtml(p.model)+' · '+escapeHtml(p.storage)+' · '+escapeHtml(p.color)+'</option>'; }).join('') +
+          state.inventory.filter(function(p){ return p.status==='In Stock' || p.id===c.inventory_id; }).map(function(p){ return '<option value="'+p.id+'" '+(c.inventory_id===p.id?'selected':'')+'>'+(p.item_type==='Laptop'?'💻 ':'📱 ')+escapeHtml(itemLabel(p))+'</option>'; }).join('') +
         '</select></div>' +
         '<div class="field"><label>Phone model</label><input id="cn-model" value="'+escapeAttr(c.model||'')+'" placeholder="e.g. iPhone 13 Pro"/></div>' +
         '<div class="field"><label>Storage</label><input id="cn-storage" value="'+escapeAttr(c.storage||'')+'"/></div>' +
@@ -7634,7 +8312,7 @@ function renderConsignmentPaymentModal(m){
 
 function defaultBroadcastMessage(items){
   const shopName = state.profile ? state.profile.shop_name : 'our shop';
-  const lines = items.map(function(p){ return '• '+p.model+(p.storage?(' '+p.storage):'')+(p.color?(' · '+p.color):'')+' — '+(p.price?naira(p.price):'price on request'); });
+  const lines = items.map(function(p){ return '• '+itemLabel(p)+' — '+(p.price?naira(p.price):'price on request'); });
   return 'New stock available at '+shopName+':\n\n'+lines.join('\n')+'\n\nReply or call to grab it!';
 }
 
@@ -7649,7 +8327,7 @@ function renderBroadcastComposerModal(m){
     '<div class="modal-body">' +
       '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;">' +
         items.map(function(p){ return '<div style="display:flex;align-items:center;gap:8px;background:var(--panel-2);border:1px solid var(--border);border-radius:20px;padding:5px 12px 5px 5px;">'+
-          thumbHTML(p.image_url)+'<span style="font-size:12px;">'+escapeHtml(p.model)+(p.storage?(' · '+escapeHtml(p.storage)):'')+' — '+(p.price?naira(p.price):'no price')+'</span></div>'; }).join('') +
+          thumbHTML(p.image_url)+'<span style="font-size:12px;">'+escapeHtml(itemLabel(p))+' — '+(p.price?naira(p.price):'no price')+'</span></div>'; }).join('') +
       '</div>' +
       '<div class="pill-tabs" style="margin-bottom:16px;">' +
         '<div class="pill-tab '+(target==='network'?'active':'')+'" data-broadcast-target="network">📡 Open market (all dealers)</div>' +
@@ -7733,6 +8411,11 @@ function attachHandlers(){
 
   const notifBellBtn = document.getElementById('notifBellBtn');
   if(notifBellBtn) notifBellBtn.addEventListener('click', function(){ openModal('notifSettings'); });
+
+  const themeSettingsBtn = document.getElementById('themeSettingsBtn');
+  if(themeSettingsBtn) themeSettingsBtn.addEventListener('click', function(){ openModal('themeSettings'); });
+  app.querySelectorAll('[data-set-theme]').forEach(function(el){ el.addEventListener('click', function(){ setTheme(el.getAttribute('data-set-theme')); }); });
+  
   const enablePushInline = document.getElementById('enablePushInline');
   if(enablePushInline) enablePushInline.addEventListener('click', enablePush);
   const enablePushBtn = document.getElementById('enablePushBtn');
@@ -7747,13 +8430,24 @@ function attachHandlers(){
       const el = document.getElementById('globalSearch'); el.focus(); el.selectionStart = el.selectionEnd = state.searchQuery.length;
     });
   }
-  app.querySelectorAll('[data-open-phone]').forEach(function(el){ el.addEventListener('click', function(){ state.searchQuery=''; openModal('editPhone',{id:el.getAttribute('data-open-phone')}); }); });
+  app.querySelectorAll('[data-open-phone]').forEach(function(el){ el.addEventListener('click', function(){
+    state.searchQuery='';
+    const type = el.getAttribute('data-open-item-type')==='Laptop' ? 'editLaptop' : 'editPhone';
+    openModal(type,{id:el.getAttribute('data-open-phone')});
+  }); });
   app.querySelectorAll('[data-open-modal]').forEach(function(el){ el.addEventListener('click', function(){ openModal(el.getAttribute('data-open-modal'), {id:el.getAttribute('data-id')}); }); });
   app.querySelectorAll('[data-close-modal]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-close-overlay]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-stop]').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); });
   app.querySelectorAll('[data-network-view]').forEach(function(el){ el.addEventListener('click', function(){ state.networkView = el.getAttribute('data-network-view'); render(); }); });
+  app.querySelectorAll('[data-inventory-item-tab]').forEach(function(el){ el.addEventListener('click', function(){
+    state.inventoryItemTab = el.getAttribute('data-inventory-item-tab');
+    state.selectedInventoryIds = [];
+    state.inventorySupplierFilter = null; state.supplierFilterName = '';
+    render();
+  }); });
   app.querySelectorAll('[data-broadcast-type-filter]').forEach(function(el){ el.addEventListener('click', function(){ state.networkBroadcastTypeFilter = el.getAttribute('data-broadcast-type-filter'); render(); }); });
+  app.querySelectorAll('[data-network-category-filter]').forEach(function(el){ el.addEventListener('click', function(){ state.networkCategoryFilter = el.getAttribute('data-network-category-filter'); render(); }); });
   app.querySelectorAll('[data-toggle-status]').forEach(function(el){ el.addEventListener('click', function(){ toggleStatus(el.getAttribute('data-toggle-status')); }); });
   app.querySelectorAll('[data-view-stock-item]').forEach(function(el){ el.addEventListener('click', function(){
     openModal('viewStockItem', { broadcastId: el.getAttribute('data-view-stock-item'), itemIndex: Number(el.getAttribute('data-item-index')) });
@@ -7835,12 +8529,13 @@ function attachHandlers(){
     const items = state.inventory.filter(function(p){ return ids.indexOf(p.id)>-1; });
     if(!items.length){ showToast('Nothing to broadcast', true); return; }
     const itemsPayload = items.map(function(p){ return {
-      inventory_id:p.id, model:p.model, storage:p.storage, color:p.color, condition:p.condition, price:p.price,
+      inventory_id:p.id, item_type:p.item_type||'Phone', model:p.model, brand:p.brand, storage:p.storage, color:p.color,
+      condition:p.condition, price:p.price, cpu:p.cpu, ram:p.ram, screen_size:p.screen_size, gpu:p.gpu,
       image_url:p.image_url, image_urls: imagesFor(p)
     }; });
     const data = {
       dealer_id: state.profile.id, type:'Stock', status:'Open',
-      model: items.length===1 ? items[0].model : (items.length+' phones'),
+      model: items.length===1 ? items[0].model : (items.length+' items'),
       items: itemsPayload, message: state.broadcastComposer.message || null
     };
     try{
@@ -7859,7 +8554,8 @@ function attachHandlers(){
     if(!contactIds.length){ showToast('Select at least one saved contact', true); return; }
     const names = contactIds.map(function(id){ const s = state.suppliers.find(function(x){ return x.id===id; }); return s?s.name:''; }).filter(Boolean);
     const itemsPayload = items.map(function(p){ return {
-      inventory_id:p.id, model:p.model, storage:p.storage, color:p.color, condition:p.condition, price:p.price,
+      inventory_id:p.id, item_type:p.item_type||'Phone', model:p.model, brand:p.brand, storage:p.storage, color:p.color,
+      condition:p.condition, price:p.price, cpu:p.cpu, ram:p.ram, screen_size:p.screen_size, gpu:p.gpu,
       image_url:p.image_url, image_urls: imagesFor(p)
     }; });
     try{
@@ -7927,6 +8623,12 @@ function attachHandlers(){
     const fSupplier = document.getElementById('f-supplier');
     if(s && fSupplier) fSupplier.value = s.name;
   });
+  const lSupplierId = document.getElementById('l-supplier-id');
+  if(lSupplierId) lSupplierId.addEventListener('change', function(){
+    const s = state.suppliers.find(function(x){ return x.id === lSupplierId.value; });
+    const lSupplier = document.getElementById('l-supplier');
+    if(s && lSupplier) lSupplier.value = s.name;
+  });
 
   app.querySelectorAll('[data-remove-existing-image]').forEach(function(el){ el.addEventListener('click', function(){
     const url = el.getAttribute('data-remove-existing-image');
@@ -7934,22 +8636,28 @@ function attachHandlers(){
     state.photoModalRemovedUrls.push(url);
     render();
   }); });
-  const fImages = document.getElementById('f-images');
-  if(fImages) fImages.addEventListener('change', function(){
-    const preview = document.getElementById('new-photo-preview');
-    if(!preview) return;
-    preview.innerHTML = '';
-    Array.from(fImages.files||[]).forEach(function(file){
-      const img = document.createElement('img');
-      img.className = 'photo-preview'; img.style.width='72px'; img.style.height='72px';
-      img.src = URL.createObjectURL(file);
-      preview.appendChild(img);
+  function wirePhotoPreview(inputId){
+    const input = document.getElementById(inputId);
+    if(!input) return;
+    input.addEventListener('change', function(){
+      const preview = document.getElementById('new-photo-preview');
+      if(!preview) return;
+      preview.innerHTML = '';
+      Array.from(input.files||[]).forEach(function(file){
+        const img = document.createElement('img');
+        img.className = 'photo-preview'; img.style.width='72px'; img.style.height='72px';
+        img.src = URL.createObjectURL(file);
+        preview.appendChild(img);
+      });
     });
-  });
+  }
+  wirePhotoPreview('f-images');
+  wirePhotoPreview('l-images');
 
   app.querySelectorAll('[data-save-phone]').forEach(function(el){ el.addEventListener('click', async function(){
     const id = el.getAttribute('data-save-phone');
     const data = {
+      item_type: 'Phone',
       imei: val('f-imei')||null, imei2: val('f-imei2')||null, model: val('f-model'), storage: val('f-storage'),
       color: val('f-color'), condition: val('f-condition'), battery: Number(val('f-battery')),
       supplier: val('f-supplier'), supplier_id: val('f-supplier-id')||null, purchase_date: todayISO(), cost: Number(val('f-cost')), price: Number(val('f-price')),
@@ -7977,6 +8685,41 @@ function attachHandlers(){
       await refreshAll();
       state.photoModalRemovedUrls = [];
       closeModal(); showToast(id?'Phone updated':'Phone added to inventory');
+    } catch(e){ showToast('Save failed: '+(e.message||e), true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-save-laptop]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-save-laptop');
+    const data = {
+      item_type: 'Laptop',
+      brand: val('l-brand')||null, model: val('l-model'), cpu: val('l-cpu')||null, ram: val('l-ram')||null,
+      storage: val('l-storage'), screen_size: val('l-screen')||null, gpu: val('l-gpu')||null,
+      color: val('l-color'), condition: val('l-condition'), battery: val('l-battery')?Number(val('l-battery')):null,
+      supplier: val('l-supplier'), supplier_id: val('l-supplier-id')||null, purchase_date: todayISO(), cost: Number(val('l-cost')), price: Number(val('l-price')),
+      status: val('l-status'), shelf: val('l-shelf'), notes: val('l-notes')
+    };
+    if(!data.model){ showToast('Laptop model is required', true); return; }
+    const existingLaptop = id ? state.inventory.find(function(x){ return x.id===id; }) : null;
+    const existingImages = imagesFor(existingLaptop);
+    const removed = state.photoModalRemovedUrls || [];
+    let keptImages = existingImages.filter(function(u){ return removed.indexOf(u)===-1; });
+    const lImagesEl = document.getElementById('l-images');
+    const newFiles = lImagesEl && lImagesEl.files ? Array.from(lImagesEl.files) : [];
+    try{
+      if(newFiles.length){
+        showToast('Uploading '+newFiles.length+' photo'+(newFiles.length===1?'':'s')+'…');
+        for(let i=0;i<newFiles.length;i++){
+          const url = await uploadPhoneImage(newFiles[i]);
+          keptImages.push(url);
+        }
+      }
+      data.image_urls = keptImages;
+      data.image_url = keptImages.length ? keptImages[0] : null;
+      if(id){ const { error } = await sb.from('inventory').update(data).eq('id', id); if(error) throw error; }
+      else{ data.dealer_id = state.profile.id; const { error } = await sb.from('inventory').insert(data); if(error) throw error; }
+      await refreshAll();
+      state.photoModalRemovedUrls = [];
+      closeModal(); showToast(id?'Laptop updated':'Laptop added to inventory');
     } catch(e){ showToast('Save failed: '+(e.message||e), true); render(); }
   }); });
 
@@ -8266,6 +9009,7 @@ function attachHandlers(){
   window.addEventListener('hashchange', applyHashTab);
 }
 
+applyTheme();
 init();
 })();
 </script>
@@ -8421,7 +9165,24 @@ alter table inventory add column if not exists image_urls jsonb not null default
 update inventory set image_urls = jsonb_build_array(image_url)
   where image_url is not null and jsonb_array_length(image_urls) = 0;
 
+-- Laptop support: inventory now holds both phones and laptops, distinguished
+-- by item_type. Laptops reuse the shared fields above (model, color, condition,
+-- battery, cost, price, status, quantity, shelf, notes, photos, supplier, IMEI
+-- left blank) plus a few laptop-only spec columns below. Keeping laptops in the
+-- same table means they automatically flow through sales, the dealer network,
+-- broadcasts, consignments ("Owed to you"), and the Customer App catalog —
+-- nothing else needs a parallel table.
+alter table inventory add column if not exists item_type text not null default 'Phone';
+alter table inventory drop constraint if exists inventory_item_type_check;
+alter table inventory add constraint inventory_item_type_check check (item_type in ('Phone','Laptop'));
+alter table inventory add column if not exists brand text;       -- laptop brand, e.g. HP, Dell, Apple
+alter table inventory add column if not exists cpu text;         -- e.g. Intel Core i7-1165G7
+alter table inventory add column if not exists ram text;         -- e.g. 16GB
+alter table inventory add column if not exists screen_size text; -- e.g. 15.6"
+alter table inventory add column if not exists gpu text;         -- optional, e.g. RTX 3050
+
 create index if not exists idx_inventory_dealer on inventory(dealer_id);
+create index if not exists idx_inventory_item_type on inventory(item_type);
 create index if not exists idx_inventory_model on inventory using gin (to_tsvector('simple', model));
 
 alter table inventory enable row level security;
@@ -8440,19 +9201,21 @@ create or replace view dealer_network_view
   with (security_invoker = false) as
   select
     i.id, i.dealer_id, d.shop_name as dealer_name, d.phone as dealer_phone,
-    i.model, i.storage, i.color, i.condition, i.battery, i.price, i.updated_at,
+    i.item_type, i.model, i.storage, i.color, i.condition, i.battery, i.price, i.updated_at,
+    i.brand, i.cpu, i.ram, i.screen_size, i.gpu,
     i.image_url, i.image_urls
   from inventory i
   join dealers d on d.id = i.dealer_id
   where i.status = 'In Stock';
 grant select on dealer_network_view to authenticated;
 
--- Public storefront catalog for the Customer App (one dealer's in-stock phones only,
--- no cost/supplier/IMEI exposed).
+-- Public storefront catalog for the Customer App (one dealer's in-stock phones
+-- and laptops only, no cost/supplier/IMEI exposed).
 drop view if exists public_catalog;
 create or replace view public_catalog
   with (security_invoker = false) as
-  select id, dealer_id, model, storage, color, condition, battery, price, status, image_url, image_urls
+  select id, dealer_id, item_type, model, storage, color, condition, battery, price, status,
+         brand, cpu, ram, screen_size, gpu, image_url, image_urls
   from inventory
   where status = 'In Stock';
 grant select on public_catalog to anon, authenticated;
@@ -8779,35 +9542,6 @@ create policy "phone_images_delete_own" on storage.objects for delete
 -- 2. Run:  update dealers set is_admin = true where shop_slug = 'your-shop-slug';
 --    (or `where id = 'your-auth-user-id'` — find it in Authentication > Users)
 -- ============================================================
-
-======================================================================================================================================================
-
-.vscode\settings.json
-
-{
-  "deno.enablePaths": [
-    "supabase/functions"
-  ],
-  "deno.lint": true,
-  "deno.unstable": [
-    "bare-node-builtins",
-    "byonm",
-    "sloppy-imports",
-    "unsafe-proto",
-    "webgpu",
-    "broadcast-channel",
-    "worker-options",
-    "cron",
-    "kv",
-    "ffi",
-    "fs",
-    "http",
-    "net"
-  ],
-  "[typescript]": {
-    "editor.defaultFormatter": "denoland.vscode-deno"
-  }
-}
 
 ======================================================================================================================================================
 

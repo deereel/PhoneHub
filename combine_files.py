@@ -13,7 +13,14 @@ import argparse
 import os
 
 # Which file extensions to include. Add/remove as needed.
-EXTENSIONS = {".gs", ".html", ".js", ".json", ".sql", ".css", ".md", ".txt", ".ts"}
+EXTENSIONS = {".gs", ".html", ".js", ".json", ".sql", ".css", ".md", ".txt", ".ts", ".py"}
+
+
+# Never walk into these - huge, binary-heavy, or not yours to index.
+# This is what caused venv/site-packages to end up in a combined dump before.
+EXCLUDE_DIRS = {"node_modules", ".git", "venv", ".venv", "env", "__pycache__",
+                 "dist", "build", ".next", "chroma_db", "site-packages",
+                 "target", "bin", "obj", "vendor", ".idea", ".vscode"}
 
 SEPARATOR = "=" * 150
 
@@ -22,7 +29,8 @@ def combine_files(folder, output_path, subfolders=True):
     # Collect matching files.
     files = []
     if subfolders:
-        for root, _, filenames in os.walk(folder):
+        for root, dirs, filenames in os.walk(folder):
+            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS and not d.startswith(".")]
             for filename in filenames:
                 if os.path.splitext(filename)[1].lower() in EXTENSIONS:
                     relative_path = os.path.relpath(os.path.join(root, filename), folder)
