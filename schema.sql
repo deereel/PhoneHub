@@ -625,6 +625,28 @@ create policy "phone_images_delete_own" on storage.objects for delete
 --    (i.e. every one of your saved contacts who has a PhoneHub account —
 --    not just the first match).
 -- ------------------------------------------------------------
+-- Prevents check_daily_alerts() from re-notifying for the same warranty/
+-- low-stock row every single day. Without these flags, a dealer gets the
+-- same "warranty expiring" or "low stock" alert daily until the underlying
+-- row changes.
+alter table sales add column if not exists warranty_alert_sent boolean not null default false;
+alter table inventory add column if not exists lowstock_alert_sent boolean not null default false;
+
+-- If a phone's quantity goes back above 1 (restocked) or it's no longer
+-- "In Stock", clear its low-stock flag so a future dip triggers a fresh alert.
+create or replace function reset_lowstock_alert_flag()
+returns trigger language plpgsql as $$
+begin
+  if (new.quantity > 1 or new.status <> 'In Stock') and new.lowstock_alert_sent then
+    new.lowstock_alert_sent := false;
+  end if;
+  return new;
+end; $$;
+
+drop trigger if exists trg_reset_lowstock_alert on inventory;
+create trigger trg_reset_lowstock_alert before update on inventory
+for each row execute function reset_lowstock_alert_flag();
+
 create table if not exists app_config (key text primary key, value text);
 insert into app_config(key, value) values
   ('edge_function_url', 'https://YOUR-PROJECT-REF.functions.supabase.co/send-push'),
@@ -684,6 +706,194 @@ as $$
   where auth.uid() is not null and d.id <> auth.uid();
 $$;
 grant execute on function find_dealers_by_phone(text[]) to authenticated;
+
+-- ------------------------------------------------------------
+-- 11. AUTO-EXPIRE — closes any broadcast still "Open" and cancels any
+--     request still "Pending" once it's more than 24 hours old.
+--     Requires pg_cron (Supabase: Database > Extensions > pg_cron).
+--     Safe to re-run: unschedules the old job before recreating it.
+-- ------------------------------------------------------------
+create extension if not exists pg_cron;
+
+create or replace function auto_expire_open_items()
+returns void
+language sql
+security definer set search_path = public
+as $$
+  update broadcasts
+    set status = 'Closed'
+    where status = 'Open' and created_at < now() - interval '24 hours';
+
+  update requests
+    set status = 'Cancelled'
+    where status = 'Pending' and created_at < now() - interval '24 hours';
+$$;
+
+do $$
+begin
+  if exists (select 1 from cron.job where jobname = 'auto-expire-open-items') then
+    perform cron.unschedule('auto-expire-open-items');
+  end if;
+end $$;
+
+select cron.schedule(
+  'auto-expire-open-items',
+  '*/15 * * * *',   -- checks every 15 minutes
+  $$select auto_expire_open_items();$$
+);
+
+-- ------------------------------------------------------------
+-- 12. PUSH NOTIFICATION TRIGGER FOR NEW CUSTOMER REQUESTS
+--     Fires exactly once per newly inserted request row — this is what
+--     stops old, already-seen "Pending" requests from re-notifying every
+--     time a new one comes in. If notifications were previously resending
+--     for old requests, it's almost certainly because something (a cron
+--     job or Edge Function) was periodically re-scanning
+--     `requests where status = 'Pending'` and re-sending for all of them.
+--     Check Database > Cron Jobs (`select * from cron.job;`) and any Edge
+--     Function that queries pending requests on a schedule, and disable
+--     it — this insert-trigger should be the only thing sending request
+--     notifications going forward.
+-- ------------------------------------------------------------
+create or replace function notify_new_request_push()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare v_url text; v_secret text;
+begin
+  select value into v_url from app_config where key='edge_function_url';
+  select value into v_secret from app_config where key='edge_function_secret';
+  if v_url is null then return new; end if;
+
+  perform net.http_post(
+    url := v_url,
+    headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
+    body := jsonb_build_object(
+      'dealer_id', new.dealer_id,
+      'title', 'New customer request',
+      'body', new.model || coalesce(' · '||new.storage,'') || ' — ' || coalesce(new.customer_name,'A customer'),
+      'url', './#tab=requests', 'type', 'request'
+    )
+  );
+  return new;
+end; $$;
+
+drop trigger if exists trg_notify_new_request_push on requests;
+create trigger trg_notify_new_request_push after insert on requests
+for each row execute function notify_new_request_push();
+
+
+
+-- ------------------------------------------------------------
+-- 13. DAILY ALERT SYSTEM — warranty expiry + low stock, deduplicated
+--     so each alertable row only ever notifies once.
+-- ------------------------------------------------------------
+create or replace function notify_edge_function(payload jsonb)
+returns void
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_url text;
+  v_secret text;
+begin
+  select value into v_url from app_config where key = 'edge_function_url';
+  if v_url is null or v_url = '' then
+    return; -- not configured yet — silently skip instead of erroring out every insert
+  end if;
+  select value into v_secret from app_config where key = 'edge_function_secret';
+
+  perform net.http_post(
+    url := v_url,
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-webhook-secret', coalesce(v_secret, '')
+    ),
+    body := payload
+  );
+end;
+$$;
+
+alter table sales add column if not exists warranty_alert_sent boolean not null default false;
+alter table inventory add column if not exists lowstock_alert_sent boolean not null default false;
+
+create or replace function reset_lowstock_alert_flag()
+returns trigger language plpgsql as $$
+begin
+  if (new.quantity > 1 or new.status <> 'In Stock') and new.lowstock_alert_sent then
+    new.lowstock_alert_sent := false;
+  end if;
+  return new;
+end; $$;
+
+drop trigger if exists trg_reset_lowstock_alert on inventory;
+create trigger trg_reset_lowstock_alert before update on inventory
+for each row execute function reset_lowstock_alert_flag();
+
+create or replace function check_daily_alerts()
+returns void
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  d record;
+  warranty_count int;
+  lowstock_count int;
+begin
+  for d in select id from dealers loop
+
+    select count(*) into warranty_count
+    from sales s
+    where s.dealer_id = d.id
+      and s.warranty_days > 0
+      and not s.warranty_alert_sent
+      and (s.date + (s.warranty_days || ' days')::interval)::date
+          between current_date and current_date + 2;
+
+    if warranty_count > 0 then
+      perform notify_edge_function(jsonb_build_object(
+        'type', 'warranty',
+        'dealer_id', d.id,
+        'title', 'Warranty expiring soon',
+        'body', warranty_count || ' warrant' || (case when warranty_count = 1 then 'y' else 'ies' end) ||
+                ' expiring within 2 days',
+        'url', './#sales'
+      ));
+
+      update sales s
+        set warranty_alert_sent = true
+        where s.dealer_id = d.id
+          and s.warranty_days > 0
+          and not s.warranty_alert_sent
+          and (s.date + (s.warranty_days || ' days')::interval)::date
+              between current_date and current_date + 2;
+    end if;
+
+    select count(*) into lowstock_count
+    from inventory i
+    where i.dealer_id = d.id and i.status = 'In Stock' and i.quantity <= 1
+      and not i.lowstock_alert_sent;
+
+    if lowstock_count > 0 then
+      perform notify_edge_function(jsonb_build_object(
+        'type', 'lowstock',
+        'dealer_id', d.id,
+        'title', 'Low stock alert',
+        'body', lowstock_count || ' phone' || (case when lowstock_count = 1 then '' else 's' end) ||
+                ' down to the last unit',
+        'url', './#inventory'
+      ));
+
+      update inventory i
+        set lowstock_alert_sent = true
+        where i.dealer_id = d.id and i.status = 'In Stock' and i.quantity <= 1
+          and not i.lowstock_alert_sent;
+    end if;
+
+  end loop;
+end;
+$$;
+
+-- Confirm your phonehub-daily-alerts cron job still points at this function
+-- (select * from cron.job;) — nothing here changes the schedule itself.
 
 -- ============================================================
 -- After running this file:

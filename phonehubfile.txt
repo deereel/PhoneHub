@@ -1999,7 +1999,7 @@ let state = {
   broadcastComposer:{ids:[], target:'network', message:'', selectedContactIds:[]},
   networkBroadcastTypeFilter:'All', // All | Need | Stock — filter for the Network > Broadcasts view
   photoModalRemovedUrls:[], // urls marked for removal while editing a phone's photos (until Save)
-  galleryIndex:0 // current slide index for the image gallery inside view modals
+  galleryIndex:0, // current slide index for the image gallery inside view modals
   supplierLinkedDealerId: null, supplierLinkedDealerName: '',
   supplierSuggestions: [], supplierSuggestOpen: false,
 };
@@ -2105,13 +2105,22 @@ async function uploadPhoneImage(file){
 }
 
 async function searchDealerDirectory(q){
-  if(!q || q.trim().length<2){ state.supplierSuggestions = []; render(); return; }
+  if(!q || q.trim().length<2){ state.supplierSuggestions = []; render(); refocusSupName(); return; }
   try{
     const { data, error } = await sb.from('public_shops').select('*').ilike('shop_name', '%'+q.trim()+'%').limit(8);
     if(error) throw error;
     state.supplierSuggestions = (data||[]).filter(function(d){ return d.id !== state.profile.id; });
   } catch(e){ state.supplierSuggestions = []; }
   render();
+  refocusSupName();
+}
+// Re-focuses the "Add contact" name field after render(), since render()
+// rebuilds the whole modal's DOM (including this input) once the async
+// dealer-directory lookup resolves — without this, focus silently drops
+// out of the field mid-keystroke.
+function refocusSupName(){
+  const el = document.getElementById('sup-name');
+  if(el){ el.focus(); const v = el.value; el.selectionStart = el.selectionEnd = v.length; }
 }
 
 /* ---------- invoice / warranty card PDF ---------- */
@@ -2869,15 +2878,14 @@ function openModal(name, payload){
   if(name==='addSupplier' || name==='editSupplier'){
     state.supplierSuggestions = []; state.supplierSuggestOpen = false;
     state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = '';
-    if(name==='editSupplier'){
-      const s = state.suppliers.find(function(x){ return x.id === (payload&&payload.id); });
-      if(s && s.linked_dealer_id){
-        state.supplierLinkedDealerId = s.linked_dealer_id;
-        sb.from('public_shops').select('shop_name').eq('id', s.linked_dealer_id).maybeSingle().then(function(res){
-          state.supplierLinkedDealerName = (res && res.data && res.data.shop_name) || '';
-          render();
-        });
-      }
+    const s = name==='editSupplier' ? state.suppliers.find(function(x){ return x.id === (payload&&payload.id); }) : null;
+    state.supplierNameDraft = s ? (s.name||'') : '';
+    if(s && s.linked_dealer_id){
+      state.supplierLinkedDealerId = s.linked_dealer_id;
+      sb.from('public_shops').select('shop_name').eq('id', s.linked_dealer_id).maybeSingle().then(function(res){
+        state.supplierLinkedDealerName = (res && res.data && res.data.shop_name) || '';
+        render();
+      });
     }
   }
   state.modal = {name:name, payload: payload||{}}; render();
@@ -3982,7 +3990,7 @@ function renderSupplierModal(m){
     '<div class="modal-body"><div class="form-grid">' +
       '<div class="field full" style="position:relative;">' +
         '<label>Name</label>' +
-        '<input id="sup-name" autocomplete="off" value="'+escapeAttr(p.name||'')+'" placeholder="Type to search registered dealers, or enter any name"/>' +
+        '<input id="sup-name" autocomplete="off" value="'+escapeAttr(state.supplierNameDraft||'')+'" placeholder="Type to search registered dealers, or enter any name"/>' +
         (state.supplierSuggestOpen ? (
           '<div style="position:absolute;top:100%;left:0;right:0;background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:220px;overflow-y:auto;z-index:60;box-shadow:0 12px 28px rgba(0,0,0,.45);margin-top:4px;">' +
             (state.supplierSuggestions.length ? state.supplierSuggestions.map(function(d){ return '<div class="search-row" data-select-supplier-suggestion="'+d.id+'" data-suggestion-name="'+escapeAttr(d.shop_name)+'" data-suggestion-phone="'+escapeAttr(d.phone||'')+'">' +
@@ -4464,13 +4472,17 @@ function attachHandlers(){
     supNameInput.addEventListener('input', function(e){
       if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
       state.supplierSuggestOpen = true;
+      state.supplierNameDraft = e.target.value;   // ← add this line
       if(state.supplierLinkedDealerId){ state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = ''; }
       searchDealerDirectory(e.target.value);
       const el = document.getElementById('sup-name'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = e.target.value.length; }
     });
     supNameInput.addEventListener('focus', function(){
       if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
-      state.supplierSuggestOpen = true; render();
+      if(!state.supplierSuggestOpen){
+        state.supplierSuggestOpen = true; render();
+        refocusSupName();
+      }
     });
     supNameInput.addEventListener('blur', function(){
       if(supplierSuggestBlurTimer) clearTimeout(supplierSuggestBlurTimer);
@@ -4483,6 +4495,7 @@ function attachHandlers(){
       if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
       state.supplierLinkedDealerId = el.getAttribute('data-select-supplier-suggestion');
       state.supplierLinkedDealerName = el.getAttribute('data-suggestion-name');
+      state.supplierNameDraft = el.getAttribute('data-suggestion-name');   // ← add this line
       const nameEl = document.getElementById('sup-name'), phoneEl = document.getElementById('sup-phone');
       if(nameEl) nameEl.value = el.getAttribute('data-suggestion-name');
       const suggestedPhone = el.getAttribute('data-suggestion-phone');
@@ -7125,7 +7138,7 @@ let state = {
   broadcastComposer:{ids:[], target:'network', message:'', selectedContactIds:[]},
   networkBroadcastTypeFilter:'All', // All | Need | Stock — filter for the Network > Broadcasts view
   photoModalRemovedUrls:[], // urls marked for removal while editing a phone's photos (until Save)
-  galleryIndex:0 // current slide index for the image gallery inside view modals
+  galleryIndex:0, // current slide index for the image gallery inside view modals
   supplierLinkedDealerId: null, supplierLinkedDealerName: '',
   supplierSuggestions: [], supplierSuggestOpen: false,
 };
@@ -7231,13 +7244,22 @@ async function uploadPhoneImage(file){
 }
 
 async function searchDealerDirectory(q){
-  if(!q || q.trim().length<2){ state.supplierSuggestions = []; render(); return; }
+  if(!q || q.trim().length<2){ state.supplierSuggestions = []; render(); refocusSupName(); return; }
   try{
     const { data, error } = await sb.from('public_shops').select('*').ilike('shop_name', '%'+q.trim()+'%').limit(8);
     if(error) throw error;
     state.supplierSuggestions = (data||[]).filter(function(d){ return d.id !== state.profile.id; });
   } catch(e){ state.supplierSuggestions = []; }
   render();
+  refocusSupName();
+}
+// Re-focuses the "Add contact" name field after render(), since render()
+// rebuilds the whole modal's DOM (including this input) once the async
+// dealer-directory lookup resolves — without this, focus silently drops
+// out of the field mid-keystroke.
+function refocusSupName(){
+  const el = document.getElementById('sup-name');
+  if(el){ el.focus(); const v = el.value; el.selectionStart = el.selectionEnd = v.length; }
 }
 
 /* ---------- invoice / warranty card PDF ---------- */
@@ -7995,15 +8017,14 @@ function openModal(name, payload){
   if(name==='addSupplier' || name==='editSupplier'){
     state.supplierSuggestions = []; state.supplierSuggestOpen = false;
     state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = '';
-    if(name==='editSupplier'){
-      const s = state.suppliers.find(function(x){ return x.id === (payload&&payload.id); });
-      if(s && s.linked_dealer_id){
-        state.supplierLinkedDealerId = s.linked_dealer_id;
-        sb.from('public_shops').select('shop_name').eq('id', s.linked_dealer_id).maybeSingle().then(function(res){
-          state.supplierLinkedDealerName = (res && res.data && res.data.shop_name) || '';
-          render();
-        });
-      }
+    const s = name==='editSupplier' ? state.suppliers.find(function(x){ return x.id === (payload&&payload.id); }) : null;
+    state.supplierNameDraft = s ? (s.name||'') : '';
+    if(s && s.linked_dealer_id){
+      state.supplierLinkedDealerId = s.linked_dealer_id;
+      sb.from('public_shops').select('shop_name').eq('id', s.linked_dealer_id).maybeSingle().then(function(res){
+        state.supplierLinkedDealerName = (res && res.data && res.data.shop_name) || '';
+        render();
+      });
     }
   }
   state.modal = {name:name, payload: payload||{}}; render();
@@ -9108,7 +9129,7 @@ function renderSupplierModal(m){
     '<div class="modal-body"><div class="form-grid">' +
       '<div class="field full" style="position:relative;">' +
         '<label>Name</label>' +
-        '<input id="sup-name" autocomplete="off" value="'+escapeAttr(p.name||'')+'" placeholder="Type to search registered dealers, or enter any name"/>' +
+        '<input id="sup-name" autocomplete="off" value="'+escapeAttr(state.supplierNameDraft||'')+'" placeholder="Type to search registered dealers, or enter any name"/>' +
         (state.supplierSuggestOpen ? (
           '<div style="position:absolute;top:100%;left:0;right:0;background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:220px;overflow-y:auto;z-index:60;box-shadow:0 12px 28px rgba(0,0,0,.45);margin-top:4px;">' +
             (state.supplierSuggestions.length ? state.supplierSuggestions.map(function(d){ return '<div class="search-row" data-select-supplier-suggestion="'+d.id+'" data-suggestion-name="'+escapeAttr(d.shop_name)+'" data-suggestion-phone="'+escapeAttr(d.phone||'')+'">' +
@@ -9590,13 +9611,17 @@ function attachHandlers(){
     supNameInput.addEventListener('input', function(e){
       if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
       state.supplierSuggestOpen = true;
+      state.supplierNameDraft = e.target.value;   // ← add this line
       if(state.supplierLinkedDealerId){ state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = ''; }
       searchDealerDirectory(e.target.value);
       const el = document.getElementById('sup-name'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = e.target.value.length; }
     });
     supNameInput.addEventListener('focus', function(){
       if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
-      state.supplierSuggestOpen = true; render();
+      if(!state.supplierSuggestOpen){
+        state.supplierSuggestOpen = true; render();
+        refocusSupName();
+      }
     });
     supNameInput.addEventListener('blur', function(){
       if(supplierSuggestBlurTimer) clearTimeout(supplierSuggestBlurTimer);
@@ -9609,6 +9634,7 @@ function attachHandlers(){
       if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
       state.supplierLinkedDealerId = el.getAttribute('data-select-supplier-suggestion');
       state.supplierLinkedDealerName = el.getAttribute('data-suggestion-name');
+      state.supplierNameDraft = el.getAttribute('data-suggestion-name');   // ← add this line
       const nameEl = document.getElementById('sup-name'), phoneEl = document.getElementById('sup-phone');
       if(nameEl) nameEl.value = el.getAttribute('data-suggestion-name');
       const suggestedPhone = el.getAttribute('data-suggestion-phone');
@@ -10735,6 +10761,28 @@ create policy "phone_images_delete_own" on storage.objects for delete
 --    (i.e. every one of your saved contacts who has a PhoneHub account —
 --    not just the first match).
 -- ------------------------------------------------------------
+-- Prevents check_daily_alerts() from re-notifying for the same warranty/
+-- low-stock row every single day. Without these flags, a dealer gets the
+-- same "warranty expiring" or "low stock" alert daily until the underlying
+-- row changes.
+alter table sales add column if not exists warranty_alert_sent boolean not null default false;
+alter table inventory add column if not exists lowstock_alert_sent boolean not null default false;
+
+-- If a phone's quantity goes back above 1 (restocked) or it's no longer
+-- "In Stock", clear its low-stock flag so a future dip triggers a fresh alert.
+create or replace function reset_lowstock_alert_flag()
+returns trigger language plpgsql as $$
+begin
+  if (new.quantity > 1 or new.status <> 'In Stock') and new.lowstock_alert_sent then
+    new.lowstock_alert_sent := false;
+  end if;
+  return new;
+end; $$;
+
+drop trigger if exists trg_reset_lowstock_alert on inventory;
+create trigger trg_reset_lowstock_alert before update on inventory
+for each row execute function reset_lowstock_alert_flag();
+
 create table if not exists app_config (key text primary key, value text);
 insert into app_config(key, value) values
   ('edge_function_url', 'https://YOUR-PROJECT-REF.functions.supabase.co/send-push'),
@@ -10794,6 +10842,79 @@ as $$
   where auth.uid() is not null and d.id <> auth.uid();
 $$;
 grant execute on function find_dealers_by_phone(text[]) to authenticated;
+
+-- ------------------------------------------------------------
+-- 11. AUTO-EXPIRE — closes any broadcast still "Open" and cancels any
+--     request still "Pending" once it's more than 24 hours old.
+--     Requires pg_cron (Supabase: Database > Extensions > pg_cron).
+--     Safe to re-run: unschedules the old job before recreating it.
+-- ------------------------------------------------------------
+create extension if not exists pg_cron;
+
+create or replace function auto_expire_open_items()
+returns void
+language sql
+security definer set search_path = public
+as $$
+  update broadcasts
+    set status = 'Closed'
+    where status = 'Open' and created_at < now() - interval '24 hours';
+
+  update requests
+    set status = 'Cancelled'
+    where status = 'Pending' and created_at < now() - interval '24 hours';
+$$;
+
+do $$
+begin
+  if exists (select 1 from cron.job where jobname = 'auto-expire-open-items') then
+    perform cron.unschedule('auto-expire-open-items');
+  end if;
+end $$;
+
+select cron.schedule(
+  'auto-expire-open-items',
+  '*/15 * * * *',   -- checks every 15 minutes
+  $$select auto_expire_open_items();$$
+);
+
+-- ------------------------------------------------------------
+-- 12. PUSH NOTIFICATION TRIGGER FOR NEW CUSTOMER REQUESTS
+--     Fires exactly once per newly inserted request row — this is what
+--     stops old, already-seen "Pending" requests from re-notifying every
+--     time a new one comes in. If notifications were previously resending
+--     for old requests, it's almost certainly because something (a cron
+--     job or Edge Function) was periodically re-scanning
+--     `requests where status = 'Pending'` and re-sending for all of them.
+--     Check Database > Cron Jobs (`select * from cron.job;`) and any Edge
+--     Function that queries pending requests on a schedule, and disable
+--     it — this insert-trigger should be the only thing sending request
+--     notifications going forward.
+-- ------------------------------------------------------------
+create or replace function notify_new_request_push()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare v_url text; v_secret text;
+begin
+  select value into v_url from app_config where key='edge_function_url';
+  select value into v_secret from app_config where key='edge_function_secret';
+  if v_url is null then return new; end if;
+
+  perform net.http_post(
+    url := v_url,
+    headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
+    body := jsonb_build_object(
+      'dealer_id', new.dealer_id,
+      'title', 'New customer request',
+      'body', new.model || coalesce(' · '||new.storage,'') || ' — ' || coalesce(new.customer_name,'A customer'),
+      'url', './#tab=requests', 'type', 'request'
+    )
+  );
+  return new;
+end; $$;
+
+drop trigger if exists trg_notify_new_request_push on requests;
+create trigger trg_notify_new_request_push after insert on requests
+for each row execute function notify_new_request_push();
 
 -- ============================================================
 -- After running this file:
