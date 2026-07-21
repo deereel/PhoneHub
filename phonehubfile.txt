@@ -1975,6 +1975,7 @@ const VAPID_PUBLIC_KEY = 'BBaI8oRyneg29btIHbptXiW5JA8oAXDk5V3MehmsvJXHvsQXn97QVC
 
 let sb = null;
 let dealerFilterBlurTimer = null;
+let supplierSuggestBlurTimer = null;
 
 let state = {
   stage:'loading', // loading -> configure -> auth -> app
@@ -1999,6 +2000,8 @@ let state = {
   networkBroadcastTypeFilter:'All', // All | Need | Stock — filter for the Network > Broadcasts view
   photoModalRemovedUrls:[], // urls marked for removal while editing a phone's photos (until Save)
   galleryIndex:0 // current slide index for the image gallery inside view modals
+  supplierLinkedDealerId: null, supplierLinkedDealerName: '',
+  supplierSuggestions: [], supplierSuggestOpen: false,
 };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -2099,6 +2102,16 @@ async function uploadPhoneImage(file){
   if(error) throw error;
   const { data } = sb.storage.from('phone-images').getPublicUrl(path);
   return data.publicUrl;
+}
+
+async function searchDealerDirectory(q){
+  if(!q || q.trim().length<2){ state.supplierSuggestions = []; render(); return; }
+  try{
+    const { data, error } = await sb.from('public_shops').select('*').ilike('shop_name', '%'+q.trim()+'%').limit(8);
+    if(error) throw error;
+    state.supplierSuggestions = (data||[]).filter(function(d){ return d.id !== state.profile.id; });
+  } catch(e){ state.supplierSuggestions = []; }
+  render();
 }
 
 /* ---------- invoice / warranty card PDF ---------- */
@@ -2853,8 +2866,23 @@ function applyHashTab(){
 function openModal(name, payload){
   if(name==='addPhone' || name==='editPhone' || name==='addLaptop' || name==='editLaptop') state.photoModalRemovedUrls = [];
   if(name==='viewNetworkItem' || name==='viewStockItem') state.galleryIndex = 0;
+  if(name==='addSupplier' || name==='editSupplier'){
+    state.supplierSuggestions = []; state.supplierSuggestOpen = false;
+    state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = '';
+    if(name==='editSupplier'){
+      const s = state.suppliers.find(function(x){ return x.id === (payload&&payload.id); });
+      if(s && s.linked_dealer_id){
+        state.supplierLinkedDealerId = s.linked_dealer_id;
+        sb.from('public_shops').select('shop_name').eq('id', s.linked_dealer_id).maybeSingle().then(function(res){
+          state.supplierLinkedDealerName = (res && res.data && res.data.shop_name) || '';
+          render();
+        });
+      }
+    }
+  }
   state.modal = {name:name, payload: payload||{}}; render();
 }
+
 function closeModal(){ state.modal = null; render(); }
 function openBroadcastComposer(ids){
   if(!ids || !ids.length){ showToast('Select at least one phone first', true); return; }
@@ -3948,10 +3976,25 @@ function renderSaleModal(){
 function renderSupplierModal(m){
   const editing = m && m.name === 'editSupplier';
   const p = editing ? (state.suppliers.find(function(x){ return x.id === m.payload.id; }) || {}) : {};
+  const linked = !!state.supplierLinkedDealerId;
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>'+(editing?'Edit contact':'Add supplier / colleague')+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body"><div class="form-grid">' +
-      '<div class="field"><label>Name</label><input id="sup-name" value="'+escapeAttr(p.name||'')+'"/></div>' +
+      '<div class="field full" style="position:relative;">' +
+        '<label>Name</label>' +
+        '<input id="sup-name" autocomplete="off" value="'+escapeAttr(p.name||'')+'" placeholder="Type to search registered dealers, or enter any name"/>' +
+        (state.supplierSuggestOpen ? (
+          '<div style="position:absolute;top:100%;left:0;right:0;background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:220px;overflow-y:auto;z-index:60;box-shadow:0 12px 28px rgba(0,0,0,.45);margin-top:4px;">' +
+            (state.supplierSuggestions.length ? state.supplierSuggestions.map(function(d){ return '<div class="search-row" data-select-supplier-suggestion="'+d.id+'" data-suggestion-name="'+escapeAttr(d.shop_name)+'" data-suggestion-phone="'+escapeAttr(d.phone||'')+'">' +
+                '<div><span class="sr-main">'+escapeHtml(d.shop_name)+'</span><div class="sr-sub">'+escapeHtml(d.location||'')+'</div></div>' +
+                '<span class="badge badge-stock">On PhoneHub</span>' +
+              '</div>'; }).join('') :
+              '<div style="padding:12px 14px;color:var(--text-faint);font-size:12.5px;">No matching dealers — this will just be saved as a regular contact.</div>') +
+          '</div>'
+        ) : '') +
+        (linked ? ('<div style="margin-top:8px;"><span class="badge badge-stock">✓ Linked to '+escapeHtml(state.supplierLinkedDealerName||'a PhoneHub dealer')+'</span> <button type="button" id="unlinkSupplierBtn" class="btn btn-sm" style="margin-left:8px;">Unlink</button></div>') :
+          '<div style="font-size:11px;color:var(--text-faint);margin-top:6px;">Pick a match above to link this contact to their PhoneHub account, so broadcasts reach them directly. Not on PhoneHub? Just type a name and phone — they simply won\'t get in-app alerts.</div>') +
+      '</div>' +
       '<div class="field"><label>Phone</label><input id="sup-phone" value="'+escapeAttr(p.phone||'')+'"/></div>' +
       '<div class="field"><label>Location</label><input id="sup-location" value="'+escapeAttr(p.location||'')+'"/></div>' +
       '<div class="field"><label>Amount owed (₦)</label><input type="number" id="sup-owed" value="'+(p.owed!=null?p.owed:0)+'"/></div>' +
@@ -4080,10 +4123,17 @@ function renderBroadcastComposerModal(m){
         '<div class="field full"><label>Note (optional)</label><textarea id="bc-message" rows="3" placeholder="e.g. Fresh UK arrivals, negotiable">'+escapeHtml(state.broadcastComposer.message)+'</textarea></div>'
       ) : (
         '<p style="color:var(--text-dim);font-size:13px;">Pick which saved contacts to notify. This sends through PhoneHub itself, the same way an open-market broadcast does — only these contacts will see it or get a notification. A contact needs their own PhoneHub account (matched by the phone number saved on their contact card) to receive it; you\'ll be told after sending if any don\'t.</p>' +
-        (state.suppliers.length ? ('<div style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;margin-bottom:14px;">' +
+        (state.suppliers.length ? (
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
+            '<span style="font-size:11.5px;color:var(--text-faint);">'+state.broadcastComposer.selectedContactIds.length+' of '+state.suppliers.length+' selected</span>' +
+            '<div style="display:flex;gap:8px;"><button type="button" class="btn btn-sm" id="selectAllContactsBtn">Select all</button><button type="button" class="btn btn-sm" id="deselectAllContactsBtn">Deselect all</button></div>' +
+          '</div>' +
+          '<div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;margin-bottom:14px;">' +
           state.suppliers.map(function(s){ return '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;border-bottom:1px solid var(--border);">' +
             '<input type="checkbox" data-broadcast-contact="'+s.id+'" '+(state.broadcastComposer.selectedContactIds.indexOf(s.id)>-1?'checked':'')+'/>' +
-            '<span class="strong">'+escapeHtml(s.name)+'</span><span class="mono" style="color:var(--text-faint);font-size:11px;">'+escapeHtml(s.phone||'no phone saved')+'</span>' +
+            '<span class="strong">'+escapeHtml(s.name)+'</span>' +
+            (s.linked_dealer_id ? '<span class="badge badge-stock">On PhoneHub</span>' : '<span class="badge badge-new">Not on PhoneHub</span>') +
+            '<span class="mono" style="color:var(--text-faint);font-size:11px;margin-left:auto;">'+escapeHtml(s.phone||'no phone saved')+'</span>' +
           '</label>'; }).join('') +
         '</div>') : '<div class="empty">No saved contacts yet — add one under Network → My contacts.</div>') +
         '<div class="field full"><label>Note (optional)</label><textarea id="bc-message" rows="3" placeholder="e.g. Fresh UK arrivals, negotiable">'+escapeHtml(state.broadcastComposer.message)+'</textarea></div>'
@@ -4288,21 +4338,41 @@ function attachHandlers(){
       closeModal(); showToast('Stock advert sent to the network');
     } catch(e){ showToast('Broadcast failed: '+(e.message||e), true); render(); }
   });
+
+  const selectAllContactsBtn = document.getElementById('selectAllContactsBtn');
+  if(selectAllContactsBtn) selectAllContactsBtn.addEventListener('click', function(){
+    state.broadcastComposer.selectedContactIds = state.suppliers.map(function(s){ return s.id; });
+    render();
+  });
+  const deselectAllContactsBtn = document.getElementById('deselectAllContactsBtn');
+  if(deselectAllContactsBtn) deselectAllContactsBtn.addEventListener('click', function(){
+    state.broadcastComposer.selectedContactIds = [];
+    render();
+  });
   const sendContactsBroadcastBtn = document.getElementById('sendContactsBroadcastBtn');
   if(sendContactsBroadcastBtn) sendContactsBroadcastBtn.addEventListener('click', async function(){
     const ids = state.broadcastComposer.ids;
     const items = state.inventory.filter(function(p){ return ids.indexOf(p.id)>-1; });
     const contactIds = state.broadcastComposer.selectedContactIds;
     if(!contactIds.length){ showToast('Select at least one saved contact', true); return; }
-    const contacts = contactIds.map(function(id){ return state.suppliers.find(function(x){ return x.id===id; }); }).filter(function(s){ return s && s.phone; });
-    if(!contacts.length){ showToast('None of the selected contacts have a phone number saved', true); return; }
+    const contacts = contactIds.map(function(id){ return state.suppliers.find(function(x){ return x.id===id; }); }).filter(Boolean);
+    if(!contacts.length){ showToast('Select at least one saved contact', true); return; }
 
     try{
-      const { data: matches, error: matchErr } = await sb.rpc('find_dealers_by_phone', { p_phones: contacts.map(function(c){ return c.phone; }) });
-      if(matchErr) throw matchErr;
-      const targetIds = Array.from(new Set((matches||[]).map(function(mm){ return mm.dealer_id; })));
+      // Contacts linked at save-time (via the name autocomplete) go straight through —
+      // no phone matching needed. Phone lookup only runs as a fallback for older
+      // contacts saved before linking existed.
+      const linkedIds = contacts.filter(function(c){ return c.linked_dealer_id; }).map(function(c){ return c.linked_dealer_id; });
+      const unlinkedWithPhone = contacts.filter(function(c){ return !c.linked_dealer_id && c.phone; });
+      let phoneMatchedIds = [];
+      if(unlinkedWithPhone.length){
+        const { data: matches, error: matchErr } = await sb.rpc('find_dealers_by_phone', { p_phones: unlinkedWithPhone.map(function(c){ return c.phone; }) });
+        if(matchErr) throw matchErr;
+        phoneMatchedIds = (matches||[]).map(function(mm){ return mm.dealer_id; });
+      }
+      const targetIds = Array.from(new Set(linkedIds.concat(phoneMatchedIds)));
       if(!targetIds.length){
-        showToast('None of the selected contacts have a PhoneHub account yet, so they can\'t receive this — try Open market instead', true);
+        showToast('None of the selected contacts are on PhoneHub yet — try Open market instead', true);
         return;
       }
       const itemsPayload = items.map(function(p){ return {
@@ -4322,7 +4392,7 @@ function attachHandlers(){
       const missed = contacts.length - targetIds.length;
       state.selectedInventoryIds = []; state.broadcastComposer = {ids:[], target:'network', message:'', selectedContactIds:[]};
       closeModal();
-      showToast('Sent to '+targetIds.length+' contact'+(targetIds.length===1?'':'s')+' on PhoneHub'+(missed>0?(' — '+missed+' other'+(missed===1?'':'s')+" aren't registered yet"):''));
+      showToast('Sent to '+targetIds.length+' contact'+(targetIds.length===1?'':'s')+' on PhoneHub'+(missed>0?(' — '+missed+' other'+(missed===1?'':'s')+" aren't on PhoneHub yet"):''));
     } catch(e){ showToast('Could not send: '+(e.message||e), true); render(); }
   });
 
@@ -4387,6 +4457,43 @@ function attachHandlers(){
     const s = state.suppliers.find(function(x){ return x.id === lSupplierId.value; });
     const lSupplier = document.getElementById('l-supplier');
     if(s && lSupplier) lSupplier.value = s.name;
+  });
+
+  const supNameInput = document.getElementById('sup-name');
+  if(supNameInput){
+    supNameInput.addEventListener('input', function(e){
+      if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
+      state.supplierSuggestOpen = true;
+      if(state.supplierLinkedDealerId){ state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = ''; }
+      searchDealerDirectory(e.target.value);
+      const el = document.getElementById('sup-name'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = e.target.value.length; }
+    });
+    supNameInput.addEventListener('focus', function(){
+      if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
+      state.supplierSuggestOpen = true; render();
+    });
+    supNameInput.addEventListener('blur', function(){
+      if(supplierSuggestBlurTimer) clearTimeout(supplierSuggestBlurTimer);
+      supplierSuggestBlurTimer = setTimeout(function(){ supplierSuggestBlurTimer = null; state.supplierSuggestOpen = false; render(); }, 150);
+    });
+  }
+  app.querySelectorAll('[data-select-supplier-suggestion]').forEach(function(el){
+    el.addEventListener('mousedown', function(e){ e.preventDefault(); });
+    el.addEventListener('click', function(){
+      if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
+      state.supplierLinkedDealerId = el.getAttribute('data-select-supplier-suggestion');
+      state.supplierLinkedDealerName = el.getAttribute('data-suggestion-name');
+      const nameEl = document.getElementById('sup-name'), phoneEl = document.getElementById('sup-phone');
+      if(nameEl) nameEl.value = el.getAttribute('data-suggestion-name');
+      const suggestedPhone = el.getAttribute('data-suggestion-phone');
+      if(phoneEl && suggestedPhone) phoneEl.value = suggestedPhone;
+      state.supplierSuggestOpen = false; state.supplierSuggestions = [];
+      render();
+    });
+  });
+  const unlinkSupplierBtn = document.getElementById('unlinkSupplierBtn');
+  if(unlinkSupplierBtn) unlinkSupplierBtn.addEventListener('click', function(){
+    state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = ''; render();
   });
 
   app.querySelectorAll('[data-remove-existing-image]').forEach(function(el){ el.addEventListener('click', function(){
@@ -4524,7 +4631,7 @@ function attachHandlers(){
     const id = el.getAttribute('data-save-supplier');
     const name = val('sup-name');
     if(!name){ showToast('Name is required', true); return; }
-    const data = { name:name, phone:val('sup-phone'), whatsapp:val('sup-phone'), location:val('sup-location'), supplies:val('sup-supplies'), owed:Number(val('sup-owed'))||0 };
+    const data = { name:name, phone:val('sup-phone'), whatsapp:val('sup-phone'), location:val('sup-location'), supplies:val('sup-supplies'), owed:Number(val('sup-owed'))||0, linked_dealer_id: state.supplierLinkedDealerId || null };
     try{
       if(id){
         const { error } = await sb.from('suppliers').update(data).eq('id', id);
@@ -6994,6 +7101,7 @@ const VAPID_PUBLIC_KEY = 'BBaI8oRyneg29btIHbptXiW5JA8oAXDk5V3MehmsvJXHvsQXn97QVC
 
 let sb = null;
 let dealerFilterBlurTimer = null;
+let supplierSuggestBlurTimer = null;
 
 let state = {
   stage:'loading', // loading -> configure -> auth -> app
@@ -7018,6 +7126,8 @@ let state = {
   networkBroadcastTypeFilter:'All', // All | Need | Stock — filter for the Network > Broadcasts view
   photoModalRemovedUrls:[], // urls marked for removal while editing a phone's photos (until Save)
   galleryIndex:0 // current slide index for the image gallery inside view modals
+  supplierLinkedDealerId: null, supplierLinkedDealerName: '',
+  supplierSuggestions: [], supplierSuggestOpen: false,
 };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -7118,6 +7228,16 @@ async function uploadPhoneImage(file){
   if(error) throw error;
   const { data } = sb.storage.from('phone-images').getPublicUrl(path);
   return data.publicUrl;
+}
+
+async function searchDealerDirectory(q){
+  if(!q || q.trim().length<2){ state.supplierSuggestions = []; render(); return; }
+  try{
+    const { data, error } = await sb.from('public_shops').select('*').ilike('shop_name', '%'+q.trim()+'%').limit(8);
+    if(error) throw error;
+    state.supplierSuggestions = (data||[]).filter(function(d){ return d.id !== state.profile.id; });
+  } catch(e){ state.supplierSuggestions = []; }
+  render();
 }
 
 /* ---------- invoice / warranty card PDF ---------- */
@@ -7872,8 +7992,23 @@ function applyHashTab(){
 function openModal(name, payload){
   if(name==='addPhone' || name==='editPhone' || name==='addLaptop' || name==='editLaptop') state.photoModalRemovedUrls = [];
   if(name==='viewNetworkItem' || name==='viewStockItem') state.galleryIndex = 0;
+  if(name==='addSupplier' || name==='editSupplier'){
+    state.supplierSuggestions = []; state.supplierSuggestOpen = false;
+    state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = '';
+    if(name==='editSupplier'){
+      const s = state.suppliers.find(function(x){ return x.id === (payload&&payload.id); });
+      if(s && s.linked_dealer_id){
+        state.supplierLinkedDealerId = s.linked_dealer_id;
+        sb.from('public_shops').select('shop_name').eq('id', s.linked_dealer_id).maybeSingle().then(function(res){
+          state.supplierLinkedDealerName = (res && res.data && res.data.shop_name) || '';
+          render();
+        });
+      }
+    }
+  }
   state.modal = {name:name, payload: payload||{}}; render();
 }
+
 function closeModal(){ state.modal = null; render(); }
 function openBroadcastComposer(ids){
   if(!ids || !ids.length){ showToast('Select at least one phone first', true); return; }
@@ -8967,10 +9102,25 @@ function renderSaleModal(){
 function renderSupplierModal(m){
   const editing = m && m.name === 'editSupplier';
   const p = editing ? (state.suppliers.find(function(x){ return x.id === m.payload.id; }) || {}) : {};
+  const linked = !!state.supplierLinkedDealerId;
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>'+(editing?'Edit contact':'Add supplier / colleague')+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body"><div class="form-grid">' +
-      '<div class="field"><label>Name</label><input id="sup-name" value="'+escapeAttr(p.name||'')+'"/></div>' +
+      '<div class="field full" style="position:relative;">' +
+        '<label>Name</label>' +
+        '<input id="sup-name" autocomplete="off" value="'+escapeAttr(p.name||'')+'" placeholder="Type to search registered dealers, or enter any name"/>' +
+        (state.supplierSuggestOpen ? (
+          '<div style="position:absolute;top:100%;left:0;right:0;background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:220px;overflow-y:auto;z-index:60;box-shadow:0 12px 28px rgba(0,0,0,.45);margin-top:4px;">' +
+            (state.supplierSuggestions.length ? state.supplierSuggestions.map(function(d){ return '<div class="search-row" data-select-supplier-suggestion="'+d.id+'" data-suggestion-name="'+escapeAttr(d.shop_name)+'" data-suggestion-phone="'+escapeAttr(d.phone||'')+'">' +
+                '<div><span class="sr-main">'+escapeHtml(d.shop_name)+'</span><div class="sr-sub">'+escapeHtml(d.location||'')+'</div></div>' +
+                '<span class="badge badge-stock">On PhoneHub</span>' +
+              '</div>'; }).join('') :
+              '<div style="padding:12px 14px;color:var(--text-faint);font-size:12.5px;">No matching dealers — this will just be saved as a regular contact.</div>') +
+          '</div>'
+        ) : '') +
+        (linked ? ('<div style="margin-top:8px;"><span class="badge badge-stock">✓ Linked to '+escapeHtml(state.supplierLinkedDealerName||'a PhoneHub dealer')+'</span> <button type="button" id="unlinkSupplierBtn" class="btn btn-sm" style="margin-left:8px;">Unlink</button></div>') :
+          '<div style="font-size:11px;color:var(--text-faint);margin-top:6px;">Pick a match above to link this contact to their PhoneHub account, so broadcasts reach them directly. Not on PhoneHub? Just type a name and phone — they simply won\'t get in-app alerts.</div>') +
+      '</div>' +
       '<div class="field"><label>Phone</label><input id="sup-phone" value="'+escapeAttr(p.phone||'')+'"/></div>' +
       '<div class="field"><label>Location</label><input id="sup-location" value="'+escapeAttr(p.location||'')+'"/></div>' +
       '<div class="field"><label>Amount owed (₦)</label><input type="number" id="sup-owed" value="'+(p.owed!=null?p.owed:0)+'"/></div>' +
@@ -9099,10 +9249,17 @@ function renderBroadcastComposerModal(m){
         '<div class="field full"><label>Note (optional)</label><textarea id="bc-message" rows="3" placeholder="e.g. Fresh UK arrivals, negotiable">'+escapeHtml(state.broadcastComposer.message)+'</textarea></div>'
       ) : (
         '<p style="color:var(--text-dim);font-size:13px;">Pick which saved contacts to notify. This sends through PhoneHub itself, the same way an open-market broadcast does — only these contacts will see it or get a notification. A contact needs their own PhoneHub account (matched by the phone number saved on their contact card) to receive it; you\'ll be told after sending if any don\'t.</p>' +
-        (state.suppliers.length ? ('<div style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;margin-bottom:14px;">' +
+        (state.suppliers.length ? (
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
+            '<span style="font-size:11.5px;color:var(--text-faint);">'+state.broadcastComposer.selectedContactIds.length+' of '+state.suppliers.length+' selected</span>' +
+            '<div style="display:flex;gap:8px;"><button type="button" class="btn btn-sm" id="selectAllContactsBtn">Select all</button><button type="button" class="btn btn-sm" id="deselectAllContactsBtn">Deselect all</button></div>' +
+          '</div>' +
+          '<div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;margin-bottom:14px;">' +
           state.suppliers.map(function(s){ return '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;border-bottom:1px solid var(--border);">' +
             '<input type="checkbox" data-broadcast-contact="'+s.id+'" '+(state.broadcastComposer.selectedContactIds.indexOf(s.id)>-1?'checked':'')+'/>' +
-            '<span class="strong">'+escapeHtml(s.name)+'</span><span class="mono" style="color:var(--text-faint);font-size:11px;">'+escapeHtml(s.phone||'no phone saved')+'</span>' +
+            '<span class="strong">'+escapeHtml(s.name)+'</span>' +
+            (s.linked_dealer_id ? '<span class="badge badge-stock">On PhoneHub</span>' : '<span class="badge badge-new">Not on PhoneHub</span>') +
+            '<span class="mono" style="color:var(--text-faint);font-size:11px;margin-left:auto;">'+escapeHtml(s.phone||'no phone saved')+'</span>' +
           '</label>'; }).join('') +
         '</div>') : '<div class="empty">No saved contacts yet — add one under Network → My contacts.</div>') +
         '<div class="field full"><label>Note (optional)</label><textarea id="bc-message" rows="3" placeholder="e.g. Fresh UK arrivals, negotiable">'+escapeHtml(state.broadcastComposer.message)+'</textarea></div>'
@@ -9307,21 +9464,41 @@ function attachHandlers(){
       closeModal(); showToast('Stock advert sent to the network');
     } catch(e){ showToast('Broadcast failed: '+(e.message||e), true); render(); }
   });
+
+  const selectAllContactsBtn = document.getElementById('selectAllContactsBtn');
+  if(selectAllContactsBtn) selectAllContactsBtn.addEventListener('click', function(){
+    state.broadcastComposer.selectedContactIds = state.suppliers.map(function(s){ return s.id; });
+    render();
+  });
+  const deselectAllContactsBtn = document.getElementById('deselectAllContactsBtn');
+  if(deselectAllContactsBtn) deselectAllContactsBtn.addEventListener('click', function(){
+    state.broadcastComposer.selectedContactIds = [];
+    render();
+  });
   const sendContactsBroadcastBtn = document.getElementById('sendContactsBroadcastBtn');
   if(sendContactsBroadcastBtn) sendContactsBroadcastBtn.addEventListener('click', async function(){
     const ids = state.broadcastComposer.ids;
     const items = state.inventory.filter(function(p){ return ids.indexOf(p.id)>-1; });
     const contactIds = state.broadcastComposer.selectedContactIds;
     if(!contactIds.length){ showToast('Select at least one saved contact', true); return; }
-    const contacts = contactIds.map(function(id){ return state.suppliers.find(function(x){ return x.id===id; }); }).filter(function(s){ return s && s.phone; });
-    if(!contacts.length){ showToast('None of the selected contacts have a phone number saved', true); return; }
+    const contacts = contactIds.map(function(id){ return state.suppliers.find(function(x){ return x.id===id; }); }).filter(Boolean);
+    if(!contacts.length){ showToast('Select at least one saved contact', true); return; }
 
     try{
-      const { data: matches, error: matchErr } = await sb.rpc('find_dealers_by_phone', { p_phones: contacts.map(function(c){ return c.phone; }) });
-      if(matchErr) throw matchErr;
-      const targetIds = Array.from(new Set((matches||[]).map(function(mm){ return mm.dealer_id; })));
+      // Contacts linked at save-time (via the name autocomplete) go straight through —
+      // no phone matching needed. Phone lookup only runs as a fallback for older
+      // contacts saved before linking existed.
+      const linkedIds = contacts.filter(function(c){ return c.linked_dealer_id; }).map(function(c){ return c.linked_dealer_id; });
+      const unlinkedWithPhone = contacts.filter(function(c){ return !c.linked_dealer_id && c.phone; });
+      let phoneMatchedIds = [];
+      if(unlinkedWithPhone.length){
+        const { data: matches, error: matchErr } = await sb.rpc('find_dealers_by_phone', { p_phones: unlinkedWithPhone.map(function(c){ return c.phone; }) });
+        if(matchErr) throw matchErr;
+        phoneMatchedIds = (matches||[]).map(function(mm){ return mm.dealer_id; });
+      }
+      const targetIds = Array.from(new Set(linkedIds.concat(phoneMatchedIds)));
       if(!targetIds.length){
-        showToast('None of the selected contacts have a PhoneHub account yet, so they can\'t receive this — try Open market instead', true);
+        showToast('None of the selected contacts are on PhoneHub yet — try Open market instead', true);
         return;
       }
       const itemsPayload = items.map(function(p){ return {
@@ -9341,7 +9518,7 @@ function attachHandlers(){
       const missed = contacts.length - targetIds.length;
       state.selectedInventoryIds = []; state.broadcastComposer = {ids:[], target:'network', message:'', selectedContactIds:[]};
       closeModal();
-      showToast('Sent to '+targetIds.length+' contact'+(targetIds.length===1?'':'s')+' on PhoneHub'+(missed>0?(' — '+missed+' other'+(missed===1?'':'s')+" aren't registered yet"):''));
+      showToast('Sent to '+targetIds.length+' contact'+(targetIds.length===1?'':'s')+' on PhoneHub'+(missed>0?(' — '+missed+' other'+(missed===1?'':'s')+" aren't on PhoneHub yet"):''));
     } catch(e){ showToast('Could not send: '+(e.message||e), true); render(); }
   });
 
@@ -9406,6 +9583,43 @@ function attachHandlers(){
     const s = state.suppliers.find(function(x){ return x.id === lSupplierId.value; });
     const lSupplier = document.getElementById('l-supplier');
     if(s && lSupplier) lSupplier.value = s.name;
+  });
+
+  const supNameInput = document.getElementById('sup-name');
+  if(supNameInput){
+    supNameInput.addEventListener('input', function(e){
+      if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
+      state.supplierSuggestOpen = true;
+      if(state.supplierLinkedDealerId){ state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = ''; }
+      searchDealerDirectory(e.target.value);
+      const el = document.getElementById('sup-name'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = e.target.value.length; }
+    });
+    supNameInput.addEventListener('focus', function(){
+      if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
+      state.supplierSuggestOpen = true; render();
+    });
+    supNameInput.addEventListener('blur', function(){
+      if(supplierSuggestBlurTimer) clearTimeout(supplierSuggestBlurTimer);
+      supplierSuggestBlurTimer = setTimeout(function(){ supplierSuggestBlurTimer = null; state.supplierSuggestOpen = false; render(); }, 150);
+    });
+  }
+  app.querySelectorAll('[data-select-supplier-suggestion]').forEach(function(el){
+    el.addEventListener('mousedown', function(e){ e.preventDefault(); });
+    el.addEventListener('click', function(){
+      if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
+      state.supplierLinkedDealerId = el.getAttribute('data-select-supplier-suggestion');
+      state.supplierLinkedDealerName = el.getAttribute('data-suggestion-name');
+      const nameEl = document.getElementById('sup-name'), phoneEl = document.getElementById('sup-phone');
+      if(nameEl) nameEl.value = el.getAttribute('data-suggestion-name');
+      const suggestedPhone = el.getAttribute('data-suggestion-phone');
+      if(phoneEl && suggestedPhone) phoneEl.value = suggestedPhone;
+      state.supplierSuggestOpen = false; state.supplierSuggestions = [];
+      render();
+    });
+  });
+  const unlinkSupplierBtn = document.getElementById('unlinkSupplierBtn');
+  if(unlinkSupplierBtn) unlinkSupplierBtn.addEventListener('click', function(){
+    state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = ''; render();
   });
 
   app.querySelectorAll('[data-remove-existing-image]').forEach(function(el){ el.addEventListener('click', function(){
@@ -9543,7 +9757,7 @@ function attachHandlers(){
     const id = el.getAttribute('data-save-supplier');
     const name = val('sup-name');
     if(!name){ showToast('Name is required', true); return; }
-    const data = { name:name, phone:val('sup-phone'), whatsapp:val('sup-phone'), location:val('sup-location'), supplies:val('sup-supplies'), owed:Number(val('sup-owed'))||0 };
+    const data = { name:name, phone:val('sup-phone'), whatsapp:val('sup-phone'), location:val('sup-location'), supplies:val('sup-supplies'), owed:Number(val('sup-owed'))||0, linked_dealer_id: state.supplierLinkedDealerId || null };
     try{
       if(id){
         const { error } = await sb.from('suppliers').update(data).eq('id', id);
@@ -9896,13 +10110,18 @@ schema.sql
 
 -- ============================================================
 -- PhoneHub Pro — Supabase Schema (Phase 2, multi-tenant)
+-- Includes: broadcast visibility scoping (private broadcasts to
+-- saved contacts) + dealer-linked contacts (no phone-matching needed)
 -- ============================================================
 -- Run this whole file once in Supabase: Dashboard > SQL Editor > New query > paste > Run.
--- Safe to re-run top-to-bottom on a fresh project.
+-- Safe to re-run top-to-bottom on a fresh project, and safe to re-run on an
+-- existing project that already has the base schema — every statement below
+-- uses IF NOT EXISTS / CREATE OR REPLACE / DROP ... IF EXISTS.
 -- ============================================================
 
 -- Needed for gen_random_uuid()
 create extension if not exists "pgcrypto";
+create extension if not exists pg_net;
 
 -- ------------------------------------------------------------
 -- 1. DEALERS  (one row per registered seller, linked to their auth account)
@@ -9934,12 +10153,15 @@ as $$
 $$;
 
 -- Dealers can see & edit their own profile row.
+drop policy if exists "dealers_select_own" on dealers;
 create policy "dealers_select_own" on dealers for select
   using (id = auth.uid());
+drop policy if exists "dealers_update_own" on dealers;
 create policy "dealers_update_own" on dealers for update
   using (id = auth.uid());
 
 -- Admins (you) can see every dealer's profile.
+drop policy if exists "dealers_select_admin" on dealers;
 create policy "dealers_select_admin" on dealers for select
   using (is_admin());
 
@@ -9969,11 +10191,11 @@ create trigger on_auth_user_created
   for each row execute function handle_new_dealer();
 
 -- Public, read-only directory so the Customer App can resolve a shop_slug to a dealer
--- without exposing anything private. Runs as the (trusted) view owner, so it works
--- even though the requester (a customer) isn't logged in.
+-- without exposing anything private. Also doubles as the source list for the
+-- "suggest registered dealers while typing a contact name" picker in the Seller App.
 create or replace view public_shops
   with (security_invoker = false) as
-  select id, shop_name, shop_slug, location from dealers;
+  select id, shop_name, shop_slug, location, phone from dealers;
 grant select on public_shops to anon, authenticated;
 
 -- ------------------------------------------------------------
@@ -10032,10 +10254,12 @@ create index if not exists idx_inventory_model on inventory using gin (to_tsvect
 
 alter table inventory enable row level security;
 
+drop policy if exists "inventory_all_own" on inventory;
 create policy "inventory_all_own" on inventory for all
   using (dealer_id = auth.uid())
   with check (dealer_id = auth.uid());
 
+drop policy if exists "inventory_select_admin" on inventory;
 create policy "inventory_select_admin" on inventory for select
   using (is_admin());
 
@@ -10091,10 +10315,12 @@ create index if not exists idx_sales_customer_phone on sales(customer_phone);
 
 alter table sales enable row level security;
 
+drop policy if exists "sales_all_own" on sales;
 create policy "sales_all_own" on sales for all
   using (dealer_id = auth.uid())
   with check (dealer_id = auth.uid());
 
+drop policy if exists "sales_select_admin" on sales;
 create policy "sales_select_admin" on sales for select
   using (is_admin());
 
@@ -10116,6 +10342,7 @@ grant execute on function lookup_my_purchases(text) to anon, authenticated;
 -- still applies — a dealer can only ever sell their own in-stock phones.
 -- Matches by inventory id (not IMEI) since IMEI is optional and multiple
 -- IMEI-less phones would otherwise be indistinguishable.
+drop function if exists sell_phone(text,numeric,text,text,text,text,int,text,text);
 drop function if exists sell_phone(uuid,numeric,text,text,text,text,int,text,text);
 
 create or replace function sell_phone(
@@ -10188,14 +10415,18 @@ create index if not exists idx_requests_dealer on requests(dealer_id);
 alter table requests enable row level security;
 
 -- Anyone (a customer, not logged in) can submit a request to a specific shop.
+drop policy if exists "requests_insert_anyone" on requests;
 create policy "requests_insert_anyone" on requests for insert
   with check (true);
 
 -- Only the shop it was sent to (or an admin) can read/manage it.
+drop policy if exists "requests_select_own" on requests;
 create policy "requests_select_own" on requests for select
   using (dealer_id = auth.uid());
+drop policy if exists "requests_update_own" on requests;
 create policy "requests_update_own" on requests for update
   using (dealer_id = auth.uid());
+drop policy if exists "requests_select_admin" on requests;
 create policy "requests_select_admin" on requests for select
   using (is_admin());
 
@@ -10215,10 +10446,21 @@ create table if not exists suppliers (
   due date,
   created_at timestamptz not null default now()
 );
+
+-- Links a saved contact directly to their PhoneHub account, when they have
+-- one. Set by the "pick from registered dealers" suggestion dropdown when
+-- adding/editing a contact. This is the reliable way to target a private
+-- broadcast — no phone-number matching required, and it can't break if a
+-- dealer's saved phone number is formatted differently from their account.
+alter table suppliers add column if not exists linked_dealer_id uuid references dealers(id) on delete set null;
+create index if not exists idx_suppliers_linked_dealer on suppliers(linked_dealer_id);
+
 alter table suppliers enable row level security;
+drop policy if exists "suppliers_all_own" on suppliers;
 create policy "suppliers_all_own" on suppliers for all
   using (dealer_id = auth.uid())
   with check (dealer_id = auth.uid());
+drop policy if exists "suppliers_select_admin" on suppliers;
 create policy "suppliers_select_admin" on suppliers for select
   using (is_admin());
 
@@ -10240,7 +10482,10 @@ where i.supplier_id is null
 
 -- ------------------------------------------------------------
 -- 6. BROADCASTS + RESPONSES  (network-wide "need this phone urgently", or a
---    "Stock" advert for one or more inventory items being offered for sale)
+--    "Stock" advert for one or more inventory items being offered for sale —
+--    now with a visibility scope so a stock advert can be sent either to the
+--    whole network or privately to a specific list of dealers, e.g. your
+--    saved contacts who have PhoneHub accounts)
 -- ------------------------------------------------------------
 create table if not exists broadcasts (
   id uuid primary key default gen_random_uuid(),
@@ -10254,15 +10499,37 @@ create table if not exists broadcasts (
   items jsonb not null default '[]'::jsonb,   -- type='Stock': [{inventory_id, model, storage, color, condition, price, image_url, image_urls}, ...]
   message text,                                -- optional free-text note shown with a Stock advert
   status text not null default 'Open' check (status in ('Open','Closed')),
+  accepted_response_id uuid,
   created_at timestamptz not null default now()
 );
+
+-- Visibility scope: 'network' (default, everyone sees it — the old behavior)
+-- or 'private' (only the dealers listed in target_dealer_ids can see/be
+-- notified about it — used for "send to my saved contacts").
+alter table broadcasts add column if not exists visibility text not null default 'network'
+  check (visibility in ('network','private'));
+alter table broadcasts add column if not exists target_dealer_ids uuid[] not null default '{}';
+
 alter table broadcasts enable row level security;
 
--- Every registered dealer can see every open broadcast — that's the point of the network.
-create policy "broadcasts_select_all" on broadcasts for select
-  using (auth.uid() is not null);
+-- Every registered dealer can see every OPEN-MARKET broadcast (the old
+-- behavior). Private broadcasts are only visible to: the sender, and any
+-- dealer whose id appears in target_dealer_ids — so a broadcast sent to your
+-- saved contacts is only ever seen by exactly those contacts, all of them,
+-- not just one.
+drop policy if exists "broadcasts_select_all" on broadcasts;
+drop policy if exists "broadcasts_select_scoped" on broadcasts;
+create policy "broadcasts_select_scoped" on broadcasts for select
+  using (
+    dealer_id = auth.uid()
+    or (visibility = 'network' and auth.uid() is not null)
+    or (visibility = 'private' and auth.uid() = any(target_dealer_ids))
+  );
+
+drop policy if exists "broadcasts_insert_own" on broadcasts;
 create policy "broadcasts_insert_own" on broadcasts for insert
   with check (dealer_id = auth.uid());
+drop policy if exists "broadcasts_update_own" on broadcasts;
 create policy "broadcasts_update_own" on broadcasts for update
   using (dealer_id = auth.uid());
 
@@ -10277,10 +10544,38 @@ create table if not exists broadcast_responses (
 );
 alter table broadcast_responses enable row level security;
 
-create policy "broadcast_responses_select_all" on broadcast_responses for select
-  using (auth.uid() is not null);
-create policy "broadcast_responses_insert_own" on broadcast_responses for insert
-  with check (dealer_id = auth.uid());
+-- Responses are only visible to whoever can see the underlying broadcast —
+-- this keeps a private (saved-contacts) broadcast's responses private too.
+drop policy if exists "broadcast_responses_select_all" on broadcast_responses;
+drop policy if exists "broadcast_responses_select_scoped" on broadcast_responses;
+create policy "broadcast_responses_select_scoped" on broadcast_responses for select
+  using (
+    exists (
+      select 1 from broadcasts b
+      where b.id = broadcast_responses.broadcast_id
+        and (
+          b.dealer_id = auth.uid()
+          or (b.visibility = 'network' and auth.uid() is not null)
+          or (b.visibility = 'private' and auth.uid() = any(b.target_dealer_ids))
+        )
+    )
+  );
+
+drop policy if exists "broadcast_responses_insert_own" on broadcast_responses;
+drop policy if exists "broadcast_responses_insert_scoped" on broadcast_responses;
+create policy "broadcast_responses_insert_scoped" on broadcast_responses for insert
+  with check (
+    dealer_id = auth.uid()
+    and exists (
+      select 1 from broadcasts b
+      where b.id = broadcast_responses.broadcast_id
+        and b.status = 'Open'
+        and (
+          (b.visibility = 'network' and auth.uid() is not null)
+          or (b.visibility = 'private' and auth.uid() = any(b.target_dealer_ids))
+        )
+    )
+  );
 
 -- ------------------------------------------------------------
 -- 6b. CONSIGNMENTS  ("Owed to you" — phones colleagues collected from you on
@@ -10310,9 +10605,11 @@ create table if not exists consignments (
 create index if not exists idx_consignments_dealer on consignments(dealer_id);
 alter table consignments enable row level security;
 
+drop policy if exists "consignments_all_own" on consignments;
 create policy "consignments_all_own" on consignments for all
   using (dealer_id = auth.uid())
   with check (dealer_id = auth.uid());
+drop policy if exists "consignments_select_admin" on consignments;
 create policy "consignments_select_admin" on consignments for select
   using (is_admin());
 
@@ -10331,15 +10628,19 @@ create table if not exists consignment_payments (
 create index if not exists idx_consignment_payments_consignment on consignment_payments(consignment_id);
 alter table consignment_payments enable row level security;
 
+drop policy if exists "consignment_payments_all_own" on consignment_payments;
 create policy "consignment_payments_all_own" on consignment_payments for all
   using (dealer_id = auth.uid())
   with check (dealer_id = auth.uid());
+drop policy if exists "consignment_payments_select_admin" on consignment_payments;
 create policy "consignment_payments_select_admin" on consignment_payments for select
   using (is_admin());
 
 -- ------------------------------------------------------------
--- 6d. STOCK BROADCAST LOG  (private record of stock adverts sent straight to
---     saved contacts via WhatsApp — never visible to other dealers)
+-- 6d. STOCK BROADCAST LOG  — kept for backwards compatibility with any old
+--     rows, but no longer written to. "Send to saved contacts" now creates a
+--     real (private-visibility) row in `broadcasts` instead, so it shows up
+--     in-app with push notifications, the same as an open-market broadcast.
 -- ------------------------------------------------------------
 create table if not exists stock_broadcast_log (
   id uuid primary key default gen_random_uuid(),
@@ -10351,15 +10652,59 @@ create table if not exists stock_broadcast_log (
 );
 alter table stock_broadcast_log enable row level security;
 
+drop policy if exists "stock_broadcast_log_all_own" on stock_broadcast_log;
 create policy "stock_broadcast_log_all_own" on stock_broadcast_log for all
   using (dealer_id = auth.uid())
   with check (dealer_id = auth.uid());
 
 -- ------------------------------------------------------------
+-- 6e. DEALER REPUTATION VIEW
+-- ------------------------------------------------------------
+drop view if exists dealer_reputation_view;
+create or replace view dealer_reputation_view
+  with (security_invoker = false) as
+  with resp as (
+    select br.dealer_id,
+           count(*) as responses_count,
+           count(*) filter (where b.accepted_response_id = br.id) as accepted_count,
+           avg(extract(epoch from (br.created_at - b.created_at))/60.0) as avg_response_minutes
+    from broadcast_responses br
+    join broadcasts b on b.id = br.broadcast_id
+    group by br.dealer_id
+  )
+  select
+    d.id as dealer_id, d.shop_name,
+    coalesce(r.responses_count,0) as responses_count,
+    coalesce(r.accepted_count,0) as accepted_count,
+    case when coalesce(r.responses_count,0) = 0 then null
+         else round(100.0 * coalesce(r.accepted_count,0) / r.responses_count) end as fulfillment_rate_pct,
+    round(r.avg_response_minutes) as avg_response_minutes,
+    case
+      when coalesce(r.responses_count,0) = 0 then 'new'
+      when r.responses_count >= 20 and coalesce(r.accepted_count,0)::numeric / r.responses_count >= 0.5 then 'elite'
+      when r.responses_count >= 5 then 'trusted'
+      else 'active'
+    end as tier
+  from dealers d
+  left join resp r on r.dealer_id = d.id;
+grant select on dealer_reputation_view to authenticated;
+
+-- ------------------------------------------------------------
 -- 7. REALTIME  (required for the seller app's live broadcast updates)
 -- ------------------------------------------------------------
-alter publication supabase_realtime add table broadcasts;
-alter publication supabase_realtime add table broadcast_responses;
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'broadcasts'
+  ) then
+    alter publication supabase_realtime add table broadcasts;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'broadcast_responses'
+  ) then
+    alter publication supabase_realtime add table broadcast_responses;
+  end if;
+end $$;
 
 -- ------------------------------------------------------------
 -- 8. STORAGE  (phone photos — public read, dealers can only manage their own folder)
@@ -10368,24 +10713,95 @@ insert into storage.buckets (id, name, public)
   values ('phone-images', 'phone-images', true)
   on conflict (id) do nothing;
 
--- Anyone can view phone photos (needed for the public Customer App catalog).
+drop policy if exists "phone_images_public_read" on storage.objects;
 create policy "phone_images_public_read" on storage.objects for select
   using (bucket_id = 'phone-images');
 
--- A logged-in dealer can only upload/replace/delete files inside a folder
--- named after their own dealer id, e.g. phone-images/<dealer_id>/xyz.jpg
+drop policy if exists "phone_images_insert_own" on storage.objects;
 create policy "phone_images_insert_own" on storage.objects for insert
   with check (bucket_id = 'phone-images' and (storage.foldername(name))[1] = auth.uid()::text);
+drop policy if exists "phone_images_update_own" on storage.objects;
 create policy "phone_images_update_own" on storage.objects for update
   using (bucket_id = 'phone-images' and (storage.foldername(name))[1] = auth.uid()::text);
+drop policy if exists "phone_images_delete_own" on storage.objects;
 create policy "phone_images_delete_own" on storage.objects for delete
   using (bucket_id = 'phone-images' and (storage.foldername(name))[1] = auth.uid()::text);
+
+-- ------------------------------------------------------------
+-- 9. APP CONFIG + PUSH NOTIFICATION TRIGGER FOR BROADCASTS
+--    Fires the send-push Edge Function whenever a broadcast is inserted.
+--    For a 'network' broadcast: notifies every dealer except the sender.
+--    For a 'private' broadcast: notifies only the dealers in target_dealer_ids
+--    (i.e. every one of your saved contacts who has a PhoneHub account —
+--    not just the first match).
+-- ------------------------------------------------------------
+create table if not exists app_config (key text primary key, value text);
+insert into app_config(key, value) values
+  ('edge_function_url', 'https://YOUR-PROJECT-REF.functions.supabase.co/send-push'),
+  ('edge_function_secret', 'YOUR_WEBHOOK_SECRET')
+on conflict (key) do nothing;
+-- ^^^ Edit these two values to your real Edge Function URL and webhook secret.
+-- (Find them again any time with: select * from app_config;)
+
+create or replace function notify_broadcast_push()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare v_url text; v_secret text; v_title text; v_body text;
+begin
+  select value into v_url from app_config where key='edge_function_url';
+  select value into v_secret from app_config where key='edge_function_secret';
+  if v_url is null then return new; end if;
+
+  v_title := case when new.type='Need' then 'Dealer needs: '||new.model else 'New stock advert' end;
+  v_body := coalesce(new.message, new.model);
+
+  if new.visibility = 'private' then
+    if array_length(new.target_dealer_ids,1) is null then return new; end if;
+    perform net.http_post(
+      url := v_url,
+      headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
+      body := jsonb_build_object('dealer_ids', to_jsonb(new.target_dealer_ids),
+        'title', v_title, 'body', v_body, 'url', './#tab=network', 'type', 'broadcast')
+    );
+  else
+    perform net.http_post(
+      url := v_url,
+      headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
+      body := jsonb_build_object('exclude_dealer_id', new.dealer_id,
+        'title', v_title, 'body', v_body, 'url', './#tab=network', 'type', 'broadcast')
+    );
+  end if;
+  return new;
+end; $$;
+
+drop trigger if exists trg_notify_broadcast_push on broadcasts;
+create trigger trg_notify_broadcast_push after insert on broadcasts
+for each row execute function notify_broadcast_push();
+
+-- ------------------------------------------------------------
+-- 10. FALLBACK LOOKUP — matches saved-contact phone numbers to dealer
+--     accounts, for any older contacts that predate the linked_dealer_id
+--     picker. Prefer linked_dealer_id when it's set; only fall back to this
+--     for contacts that were never linked.
+-- ------------------------------------------------------------
+create or replace function find_dealers_by_phone(p_phones text[])
+returns table(input_phone text, dealer_id uuid, shop_name text)
+language sql security definer set search_path = public
+as $$
+  select ph, d.id, d.shop_name
+  from unnest(p_phones) as ph
+  join dealers d
+    on regexp_replace(d.phone, '[^0-9]', '', 'g') = regexp_replace(ph, '[^0-9]', '', 'g')
+  where auth.uid() is not null and d.id <> auth.uid();
+$$;
+grant execute on function find_dealers_by_phone(text[]) to authenticated;
 
 -- ============================================================
 -- After running this file:
 -- 1. Sign up your own account through the Seller App (this creates your dealer row).
 -- 2. Run:  update dealers set is_admin = true where shop_slug = 'your-shop-slug';
 --    (or `where id = 'your-auth-user-id'` — find it in Authentication > Users)
+-- 3. Edit the two app_config rows in section 9 with your real Edge Function
+--    URL and webhook secret (or leave them if you already have push working).
 -- ============================================================
 
 ======================================================================================================================================================

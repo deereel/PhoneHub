@@ -1,12 +1,17 @@
 -- ============================================================
 -- PhoneHub Pro — Supabase Schema (Phase 2, multi-tenant)
+-- Includes: broadcast visibility scoping (private broadcasts to
+-- saved contacts) + dealer-linked contacts (no phone-matching needed)
 -- ============================================================
 -- Run this whole file once in Supabase: Dashboard > SQL Editor > New query > paste > Run.
--- Safe to re-run top-to-bottom on a fresh project.
+-- Safe to re-run top-to-bottom on a fresh project, and safe to re-run on an
+-- existing project that already has the base schema — every statement below
+-- uses IF NOT EXISTS / CREATE OR REPLACE / DROP ... IF EXISTS.
 -- ============================================================
 
 -- Needed for gen_random_uuid()
 create extension if not exists "pgcrypto";
+create extension if not exists pg_net;
 
 -- ------------------------------------------------------------
 -- 1. DEALERS  (one row per registered seller, linked to their auth account)
@@ -38,12 +43,15 @@ as $$
 $$;
 
 -- Dealers can see & edit their own profile row.
+drop policy if exists "dealers_select_own" on dealers;
 create policy "dealers_select_own" on dealers for select
   using (id = auth.uid());
+drop policy if exists "dealers_update_own" on dealers;
 create policy "dealers_update_own" on dealers for update
   using (id = auth.uid());
 
 -- Admins (you) can see every dealer's profile.
+drop policy if exists "dealers_select_admin" on dealers;
 create policy "dealers_select_admin" on dealers for select
   using (is_admin());
 
@@ -73,11 +81,11 @@ create trigger on_auth_user_created
   for each row execute function handle_new_dealer();
 
 -- Public, read-only directory so the Customer App can resolve a shop_slug to a dealer
--- without exposing anything private. Runs as the (trusted) view owner, so it works
--- even though the requester (a customer) isn't logged in.
+-- without exposing anything private. Also doubles as the source list for the
+-- "suggest registered dealers while typing a contact name" picker in the Seller App.
 create or replace view public_shops
   with (security_invoker = false) as
-  select id, shop_name, shop_slug, location from dealers;
+  select id, shop_name, shop_slug, location, phone from dealers;
 grant select on public_shops to anon, authenticated;
 
 -- ------------------------------------------------------------
@@ -136,10 +144,12 @@ create index if not exists idx_inventory_model on inventory using gin (to_tsvect
 
 alter table inventory enable row level security;
 
+drop policy if exists "inventory_all_own" on inventory;
 create policy "inventory_all_own" on inventory for all
   using (dealer_id = auth.uid())
   with check (dealer_id = auth.uid());
 
+drop policy if exists "inventory_select_admin" on inventory;
 create policy "inventory_select_admin" on inventory for select
   using (is_admin());
 
@@ -195,10 +205,12 @@ create index if not exists idx_sales_customer_phone on sales(customer_phone);
 
 alter table sales enable row level security;
 
+drop policy if exists "sales_all_own" on sales;
 create policy "sales_all_own" on sales for all
   using (dealer_id = auth.uid())
   with check (dealer_id = auth.uid());
 
+drop policy if exists "sales_select_admin" on sales;
 create policy "sales_select_admin" on sales for select
   using (is_admin());
 
@@ -220,6 +232,7 @@ grant execute on function lookup_my_purchases(text) to anon, authenticated;
 -- still applies — a dealer can only ever sell their own in-stock phones.
 -- Matches by inventory id (not IMEI) since IMEI is optional and multiple
 -- IMEI-less phones would otherwise be indistinguishable.
+drop function if exists sell_phone(text,numeric,text,text,text,text,int,text,text);
 drop function if exists sell_phone(uuid,numeric,text,text,text,text,int,text,text);
 
 create or replace function sell_phone(
@@ -292,14 +305,18 @@ create index if not exists idx_requests_dealer on requests(dealer_id);
 alter table requests enable row level security;
 
 -- Anyone (a customer, not logged in) can submit a request to a specific shop.
+drop policy if exists "requests_insert_anyone" on requests;
 create policy "requests_insert_anyone" on requests for insert
   with check (true);
 
 -- Only the shop it was sent to (or an admin) can read/manage it.
+drop policy if exists "requests_select_own" on requests;
 create policy "requests_select_own" on requests for select
   using (dealer_id = auth.uid());
+drop policy if exists "requests_update_own" on requests;
 create policy "requests_update_own" on requests for update
   using (dealer_id = auth.uid());
+drop policy if exists "requests_select_admin" on requests;
 create policy "requests_select_admin" on requests for select
   using (is_admin());
 
@@ -319,10 +336,21 @@ create table if not exists suppliers (
   due date,
   created_at timestamptz not null default now()
 );
+
+-- Links a saved contact directly to their PhoneHub account, when they have
+-- one. Set by the "pick from registered dealers" suggestion dropdown when
+-- adding/editing a contact. This is the reliable way to target a private
+-- broadcast — no phone-number matching required, and it can't break if a
+-- dealer's saved phone number is formatted differently from their account.
+alter table suppliers add column if not exists linked_dealer_id uuid references dealers(id) on delete set null;
+create index if not exists idx_suppliers_linked_dealer on suppliers(linked_dealer_id);
+
 alter table suppliers enable row level security;
+drop policy if exists "suppliers_all_own" on suppliers;
 create policy "suppliers_all_own" on suppliers for all
   using (dealer_id = auth.uid())
   with check (dealer_id = auth.uid());
+drop policy if exists "suppliers_select_admin" on suppliers;
 create policy "suppliers_select_admin" on suppliers for select
   using (is_admin());
 
@@ -344,7 +372,10 @@ where i.supplier_id is null
 
 -- ------------------------------------------------------------
 -- 6. BROADCASTS + RESPONSES  (network-wide "need this phone urgently", or a
---    "Stock" advert for one or more inventory items being offered for sale)
+--    "Stock" advert for one or more inventory items being offered for sale —
+--    now with a visibility scope so a stock advert can be sent either to the
+--    whole network or privately to a specific list of dealers, e.g. your
+--    saved contacts who have PhoneHub accounts)
 -- ------------------------------------------------------------
 create table if not exists broadcasts (
   id uuid primary key default gen_random_uuid(),
@@ -358,15 +389,37 @@ create table if not exists broadcasts (
   items jsonb not null default '[]'::jsonb,   -- type='Stock': [{inventory_id, model, storage, color, condition, price, image_url, image_urls}, ...]
   message text,                                -- optional free-text note shown with a Stock advert
   status text not null default 'Open' check (status in ('Open','Closed')),
+  accepted_response_id uuid,
   created_at timestamptz not null default now()
 );
+
+-- Visibility scope: 'network' (default, everyone sees it — the old behavior)
+-- or 'private' (only the dealers listed in target_dealer_ids can see/be
+-- notified about it — used for "send to my saved contacts").
+alter table broadcasts add column if not exists visibility text not null default 'network'
+  check (visibility in ('network','private'));
+alter table broadcasts add column if not exists target_dealer_ids uuid[] not null default '{}';
+
 alter table broadcasts enable row level security;
 
--- Every registered dealer can see every open broadcast — that's the point of the network.
-create policy "broadcasts_select_all" on broadcasts for select
-  using (auth.uid() is not null);
+-- Every registered dealer can see every OPEN-MARKET broadcast (the old
+-- behavior). Private broadcasts are only visible to: the sender, and any
+-- dealer whose id appears in target_dealer_ids — so a broadcast sent to your
+-- saved contacts is only ever seen by exactly those contacts, all of them,
+-- not just one.
+drop policy if exists "broadcasts_select_all" on broadcasts;
+drop policy if exists "broadcasts_select_scoped" on broadcasts;
+create policy "broadcasts_select_scoped" on broadcasts for select
+  using (
+    dealer_id = auth.uid()
+    or (visibility = 'network' and auth.uid() is not null)
+    or (visibility = 'private' and auth.uid() = any(target_dealer_ids))
+  );
+
+drop policy if exists "broadcasts_insert_own" on broadcasts;
 create policy "broadcasts_insert_own" on broadcasts for insert
   with check (dealer_id = auth.uid());
+drop policy if exists "broadcasts_update_own" on broadcasts;
 create policy "broadcasts_update_own" on broadcasts for update
   using (dealer_id = auth.uid());
 
@@ -381,10 +434,38 @@ create table if not exists broadcast_responses (
 );
 alter table broadcast_responses enable row level security;
 
-create policy "broadcast_responses_select_all" on broadcast_responses for select
-  using (auth.uid() is not null);
-create policy "broadcast_responses_insert_own" on broadcast_responses for insert
-  with check (dealer_id = auth.uid());
+-- Responses are only visible to whoever can see the underlying broadcast —
+-- this keeps a private (saved-contacts) broadcast's responses private too.
+drop policy if exists "broadcast_responses_select_all" on broadcast_responses;
+drop policy if exists "broadcast_responses_select_scoped" on broadcast_responses;
+create policy "broadcast_responses_select_scoped" on broadcast_responses for select
+  using (
+    exists (
+      select 1 from broadcasts b
+      where b.id = broadcast_responses.broadcast_id
+        and (
+          b.dealer_id = auth.uid()
+          or (b.visibility = 'network' and auth.uid() is not null)
+          or (b.visibility = 'private' and auth.uid() = any(b.target_dealer_ids))
+        )
+    )
+  );
+
+drop policy if exists "broadcast_responses_insert_own" on broadcast_responses;
+drop policy if exists "broadcast_responses_insert_scoped" on broadcast_responses;
+create policy "broadcast_responses_insert_scoped" on broadcast_responses for insert
+  with check (
+    dealer_id = auth.uid()
+    and exists (
+      select 1 from broadcasts b
+      where b.id = broadcast_responses.broadcast_id
+        and b.status = 'Open'
+        and (
+          (b.visibility = 'network' and auth.uid() is not null)
+          or (b.visibility = 'private' and auth.uid() = any(b.target_dealer_ids))
+        )
+    )
+  );
 
 -- ------------------------------------------------------------
 -- 6b. CONSIGNMENTS  ("Owed to you" — phones colleagues collected from you on
@@ -414,9 +495,11 @@ create table if not exists consignments (
 create index if not exists idx_consignments_dealer on consignments(dealer_id);
 alter table consignments enable row level security;
 
+drop policy if exists "consignments_all_own" on consignments;
 create policy "consignments_all_own" on consignments for all
   using (dealer_id = auth.uid())
   with check (dealer_id = auth.uid());
+drop policy if exists "consignments_select_admin" on consignments;
 create policy "consignments_select_admin" on consignments for select
   using (is_admin());
 
@@ -435,15 +518,19 @@ create table if not exists consignment_payments (
 create index if not exists idx_consignment_payments_consignment on consignment_payments(consignment_id);
 alter table consignment_payments enable row level security;
 
+drop policy if exists "consignment_payments_all_own" on consignment_payments;
 create policy "consignment_payments_all_own" on consignment_payments for all
   using (dealer_id = auth.uid())
   with check (dealer_id = auth.uid());
+drop policy if exists "consignment_payments_select_admin" on consignment_payments;
 create policy "consignment_payments_select_admin" on consignment_payments for select
   using (is_admin());
 
 -- ------------------------------------------------------------
--- 6d. STOCK BROADCAST LOG  (private record of stock adverts sent straight to
---     saved contacts via WhatsApp — never visible to other dealers)
+-- 6d. STOCK BROADCAST LOG  — kept for backwards compatibility with any old
+--     rows, but no longer written to. "Send to saved contacts" now creates a
+--     real (private-visibility) row in `broadcasts` instead, so it shows up
+--     in-app with push notifications, the same as an open-market broadcast.
 -- ------------------------------------------------------------
 create table if not exists stock_broadcast_log (
   id uuid primary key default gen_random_uuid(),
@@ -455,15 +542,59 @@ create table if not exists stock_broadcast_log (
 );
 alter table stock_broadcast_log enable row level security;
 
+drop policy if exists "stock_broadcast_log_all_own" on stock_broadcast_log;
 create policy "stock_broadcast_log_all_own" on stock_broadcast_log for all
   using (dealer_id = auth.uid())
   with check (dealer_id = auth.uid());
 
 -- ------------------------------------------------------------
+-- 6e. DEALER REPUTATION VIEW
+-- ------------------------------------------------------------
+drop view if exists dealer_reputation_view;
+create or replace view dealer_reputation_view
+  with (security_invoker = false) as
+  with resp as (
+    select br.dealer_id,
+           count(*) as responses_count,
+           count(*) filter (where b.accepted_response_id = br.id) as accepted_count,
+           avg(extract(epoch from (br.created_at - b.created_at))/60.0) as avg_response_minutes
+    from broadcast_responses br
+    join broadcasts b on b.id = br.broadcast_id
+    group by br.dealer_id
+  )
+  select
+    d.id as dealer_id, d.shop_name,
+    coalesce(r.responses_count,0) as responses_count,
+    coalesce(r.accepted_count,0) as accepted_count,
+    case when coalesce(r.responses_count,0) = 0 then null
+         else round(100.0 * coalesce(r.accepted_count,0) / r.responses_count) end as fulfillment_rate_pct,
+    round(r.avg_response_minutes) as avg_response_minutes,
+    case
+      when coalesce(r.responses_count,0) = 0 then 'new'
+      when r.responses_count >= 20 and coalesce(r.accepted_count,0)::numeric / r.responses_count >= 0.5 then 'elite'
+      when r.responses_count >= 5 then 'trusted'
+      else 'active'
+    end as tier
+  from dealers d
+  left join resp r on r.dealer_id = d.id;
+grant select on dealer_reputation_view to authenticated;
+
+-- ------------------------------------------------------------
 -- 7. REALTIME  (required for the seller app's live broadcast updates)
 -- ------------------------------------------------------------
-alter publication supabase_realtime add table broadcasts;
-alter publication supabase_realtime add table broadcast_responses;
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'broadcasts'
+  ) then
+    alter publication supabase_realtime add table broadcasts;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'broadcast_responses'
+  ) then
+    alter publication supabase_realtime add table broadcast_responses;
+  end if;
+end $$;
 
 -- ------------------------------------------------------------
 -- 8. STORAGE  (phone photos — public read, dealers can only manage their own folder)
@@ -472,22 +603,93 @@ insert into storage.buckets (id, name, public)
   values ('phone-images', 'phone-images', true)
   on conflict (id) do nothing;
 
--- Anyone can view phone photos (needed for the public Customer App catalog).
+drop policy if exists "phone_images_public_read" on storage.objects;
 create policy "phone_images_public_read" on storage.objects for select
   using (bucket_id = 'phone-images');
 
--- A logged-in dealer can only upload/replace/delete files inside a folder
--- named after their own dealer id, e.g. phone-images/<dealer_id>/xyz.jpg
+drop policy if exists "phone_images_insert_own" on storage.objects;
 create policy "phone_images_insert_own" on storage.objects for insert
   with check (bucket_id = 'phone-images' and (storage.foldername(name))[1] = auth.uid()::text);
+drop policy if exists "phone_images_update_own" on storage.objects;
 create policy "phone_images_update_own" on storage.objects for update
   using (bucket_id = 'phone-images' and (storage.foldername(name))[1] = auth.uid()::text);
+drop policy if exists "phone_images_delete_own" on storage.objects;
 create policy "phone_images_delete_own" on storage.objects for delete
   using (bucket_id = 'phone-images' and (storage.foldername(name))[1] = auth.uid()::text);
+
+-- ------------------------------------------------------------
+-- 9. APP CONFIG + PUSH NOTIFICATION TRIGGER FOR BROADCASTS
+--    Fires the send-push Edge Function whenever a broadcast is inserted.
+--    For a 'network' broadcast: notifies every dealer except the sender.
+--    For a 'private' broadcast: notifies only the dealers in target_dealer_ids
+--    (i.e. every one of your saved contacts who has a PhoneHub account —
+--    not just the first match).
+-- ------------------------------------------------------------
+create table if not exists app_config (key text primary key, value text);
+insert into app_config(key, value) values
+  ('edge_function_url', 'https://YOUR-PROJECT-REF.functions.supabase.co/send-push'),
+  ('edge_function_secret', 'YOUR_WEBHOOK_SECRET')
+on conflict (key) do nothing;
+-- ^^^ Edit these two values to your real Edge Function URL and webhook secret.
+-- (Find them again any time with: select * from app_config;)
+
+create or replace function notify_broadcast_push()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare v_url text; v_secret text; v_title text; v_body text;
+begin
+  select value into v_url from app_config where key='edge_function_url';
+  select value into v_secret from app_config where key='edge_function_secret';
+  if v_url is null then return new; end if;
+
+  v_title := case when new.type='Need' then 'Dealer needs: '||new.model else 'New stock advert' end;
+  v_body := coalesce(new.message, new.model);
+
+  if new.visibility = 'private' then
+    if array_length(new.target_dealer_ids,1) is null then return new; end if;
+    perform net.http_post(
+      url := v_url,
+      headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
+      body := jsonb_build_object('dealer_ids', to_jsonb(new.target_dealer_ids),
+        'title', v_title, 'body', v_body, 'url', './#tab=network', 'type', 'broadcast')
+    );
+  else
+    perform net.http_post(
+      url := v_url,
+      headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
+      body := jsonb_build_object('exclude_dealer_id', new.dealer_id,
+        'title', v_title, 'body', v_body, 'url', './#tab=network', 'type', 'broadcast')
+    );
+  end if;
+  return new;
+end; $$;
+
+drop trigger if exists trg_notify_broadcast_push on broadcasts;
+create trigger trg_notify_broadcast_push after insert on broadcasts
+for each row execute function notify_broadcast_push();
+
+-- ------------------------------------------------------------
+-- 10. FALLBACK LOOKUP — matches saved-contact phone numbers to dealer
+--     accounts, for any older contacts that predate the linked_dealer_id
+--     picker. Prefer linked_dealer_id when it's set; only fall back to this
+--     for contacts that were never linked.
+-- ------------------------------------------------------------
+create or replace function find_dealers_by_phone(p_phones text[])
+returns table(input_phone text, dealer_id uuid, shop_name text)
+language sql security definer set search_path = public
+as $$
+  select ph, d.id, d.shop_name
+  from unnest(p_phones) as ph
+  join dealers d
+    on regexp_replace(d.phone, '[^0-9]', '', 'g') = regexp_replace(ph, '[^0-9]', '', 'g')
+  where auth.uid() is not null and d.id <> auth.uid();
+$$;
+grant execute on function find_dealers_by_phone(text[]) to authenticated;
 
 -- ============================================================
 -- After running this file:
 -- 1. Sign up your own account through the Seller App (this creates your dealer row).
 -- 2. Run:  update dealers set is_admin = true where shop_slug = 'your-shop-slug';
 --    (or `where id = 'your-auth-user-id'` — find it in Authentication > Users)
+-- 3. Edit the two app_config rows in section 9 with your real Edge Function
+--    URL and webhook secret (or leave them if you already have push working).
 -- ============================================================

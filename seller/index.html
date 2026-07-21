@@ -329,6 +329,7 @@ const VAPID_PUBLIC_KEY = 'BBaI8oRyneg29btIHbptXiW5JA8oAXDk5V3MehmsvJXHvsQXn97QVC
 
 let sb = null;
 let dealerFilterBlurTimer = null;
+let supplierSuggestBlurTimer = null;
 
 let state = {
   stage:'loading', // loading -> configure -> auth -> app
@@ -352,7 +353,9 @@ let state = {
   broadcastComposer:{ids:[], target:'network', message:'', selectedContactIds:[]},
   networkBroadcastTypeFilter:'All', // All | Need | Stock — filter for the Network > Broadcasts view
   photoModalRemovedUrls:[], // urls marked for removal while editing a phone's photos (until Save)
-  galleryIndex:0 // current slide index for the image gallery inside view modals
+  galleryIndex:0, // current slide index for the image gallery inside view modals
+  supplierLinkedDealerId: null, supplierLinkedDealerName: '',
+  supplierSuggestions: [], supplierSuggestOpen: false,
 };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -453,6 +456,25 @@ async function uploadPhoneImage(file){
   if(error) throw error;
   const { data } = sb.storage.from('phone-images').getPublicUrl(path);
   return data.publicUrl;
+}
+
+async function searchDealerDirectory(q){
+  if(!q || q.trim().length<2){ state.supplierSuggestions = []; render(); refocusSupName(); return; }
+  try{
+    const { data, error } = await sb.from('public_shops').select('*').ilike('shop_name', '%'+q.trim()+'%').limit(8);
+    if(error) throw error;
+    state.supplierSuggestions = (data||[]).filter(function(d){ return d.id !== state.profile.id; });
+  } catch(e){ state.supplierSuggestions = []; }
+  render();
+  refocusSupName();
+}
+// Re-focuses the "Add contact" name field after render(), since render()
+// rebuilds the whole modal's DOM (including this input) once the async
+// dealer-directory lookup resolves — without this, focus silently drops
+// out of the field mid-keystroke.
+function refocusSupName(){
+  const el = document.getElementById('sup-name');
+  if(el){ el.focus(); const v = el.value; el.selectionStart = el.selectionEnd = v.length; }
 }
 
 /* ---------- invoice / warranty card PDF ---------- */
@@ -1207,8 +1229,22 @@ function applyHashTab(){
 function openModal(name, payload){
   if(name==='addPhone' || name==='editPhone' || name==='addLaptop' || name==='editLaptop') state.photoModalRemovedUrls = [];
   if(name==='viewNetworkItem' || name==='viewStockItem') state.galleryIndex = 0;
+  if(name==='addSupplier' || name==='editSupplier'){
+    state.supplierSuggestions = []; state.supplierSuggestOpen = false;
+    state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = '';
+    const s = name==='editSupplier' ? state.suppliers.find(function(x){ return x.id === (payload&&payload.id); }) : null;
+    state.supplierNameDraft = s ? (s.name||'') : '';
+    if(s && s.linked_dealer_id){
+      state.supplierLinkedDealerId = s.linked_dealer_id;
+      sb.from('public_shops').select('shop_name').eq('id', s.linked_dealer_id).maybeSingle().then(function(res){
+        state.supplierLinkedDealerName = (res && res.data && res.data.shop_name) || '';
+        render();
+      });
+    }
+  }
   state.modal = {name:name, payload: payload||{}}; render();
 }
+
 function closeModal(){ state.modal = null; render(); }
 function openBroadcastComposer(ids){
   if(!ids || !ids.length){ showToast('Select at least one phone first', true); return; }
@@ -2302,10 +2338,25 @@ function renderSaleModal(){
 function renderSupplierModal(m){
   const editing = m && m.name === 'editSupplier';
   const p = editing ? (state.suppliers.find(function(x){ return x.id === m.payload.id; }) || {}) : {};
+  const linked = !!state.supplierLinkedDealerId;
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>'+(editing?'Edit contact':'Add supplier / colleague')+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body"><div class="form-grid">' +
-      '<div class="field"><label>Name</label><input id="sup-name" value="'+escapeAttr(p.name||'')+'"/></div>' +
+      '<div class="field full" style="position:relative;">' +
+        '<label>Name</label>' +
+        '<input id="sup-name" autocomplete="off" value="'+escapeAttr(state.supplierNameDraft||'')+'" placeholder="Type to search registered dealers, or enter any name"/>' +
+        (state.supplierSuggestOpen ? (
+          '<div style="position:absolute;top:100%;left:0;right:0;background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:220px;overflow-y:auto;z-index:60;box-shadow:0 12px 28px rgba(0,0,0,.45);margin-top:4px;">' +
+            (state.supplierSuggestions.length ? state.supplierSuggestions.map(function(d){ return '<div class="search-row" data-select-supplier-suggestion="'+d.id+'" data-suggestion-name="'+escapeAttr(d.shop_name)+'" data-suggestion-phone="'+escapeAttr(d.phone||'')+'">' +
+                '<div><span class="sr-main">'+escapeHtml(d.shop_name)+'</span><div class="sr-sub">'+escapeHtml(d.location||'')+'</div></div>' +
+                '<span class="badge badge-stock">On PhoneHub</span>' +
+              '</div>'; }).join('') :
+              '<div style="padding:12px 14px;color:var(--text-faint);font-size:12.5px;">No matching dealers — this will just be saved as a regular contact.</div>') +
+          '</div>'
+        ) : '') +
+        (linked ? ('<div style="margin-top:8px;"><span class="badge badge-stock">✓ Linked to '+escapeHtml(state.supplierLinkedDealerName||'a PhoneHub dealer')+'</span> <button type="button" id="unlinkSupplierBtn" class="btn btn-sm" style="margin-left:8px;">Unlink</button></div>') :
+          '<div style="font-size:11px;color:var(--text-faint);margin-top:6px;">Pick a match above to link this contact to their PhoneHub account, so broadcasts reach them directly. Not on PhoneHub? Just type a name and phone — they simply won\'t get in-app alerts.</div>') +
+      '</div>' +
       '<div class="field"><label>Phone</label><input id="sup-phone" value="'+escapeAttr(p.phone||'')+'"/></div>' +
       '<div class="field"><label>Location</label><input id="sup-location" value="'+escapeAttr(p.location||'')+'"/></div>' +
       '<div class="field"><label>Amount owed (₦)</label><input type="number" id="sup-owed" value="'+(p.owed!=null?p.owed:0)+'"/></div>' +
@@ -2434,10 +2485,17 @@ function renderBroadcastComposerModal(m){
         '<div class="field full"><label>Note (optional)</label><textarea id="bc-message" rows="3" placeholder="e.g. Fresh UK arrivals, negotiable">'+escapeHtml(state.broadcastComposer.message)+'</textarea></div>'
       ) : (
         '<p style="color:var(--text-dim);font-size:13px;">Pick which saved contacts to notify. This sends through PhoneHub itself, the same way an open-market broadcast does — only these contacts will see it or get a notification. A contact needs their own PhoneHub account (matched by the phone number saved on their contact card) to receive it; you\'ll be told after sending if any don\'t.</p>' +
-        (state.suppliers.length ? ('<div style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;margin-bottom:14px;">' +
+        (state.suppliers.length ? (
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
+            '<span style="font-size:11.5px;color:var(--text-faint);">'+state.broadcastComposer.selectedContactIds.length+' of '+state.suppliers.length+' selected</span>' +
+            '<div style="display:flex;gap:8px;"><button type="button" class="btn btn-sm" id="selectAllContactsBtn">Select all</button><button type="button" class="btn btn-sm" id="deselectAllContactsBtn">Deselect all</button></div>' +
+          '</div>' +
+          '<div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;margin-bottom:14px;">' +
           state.suppliers.map(function(s){ return '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;border-bottom:1px solid var(--border);">' +
             '<input type="checkbox" data-broadcast-contact="'+s.id+'" '+(state.broadcastComposer.selectedContactIds.indexOf(s.id)>-1?'checked':'')+'/>' +
-            '<span class="strong">'+escapeHtml(s.name)+'</span><span class="mono" style="color:var(--text-faint);font-size:11px;">'+escapeHtml(s.phone||'no phone saved')+'</span>' +
+            '<span class="strong">'+escapeHtml(s.name)+'</span>' +
+            (s.linked_dealer_id ? '<span class="badge badge-stock">On PhoneHub</span>' : '<span class="badge badge-new">Not on PhoneHub</span>') +
+            '<span class="mono" style="color:var(--text-faint);font-size:11px;margin-left:auto;">'+escapeHtml(s.phone||'no phone saved')+'</span>' +
           '</label>'; }).join('') +
         '</div>') : '<div class="empty">No saved contacts yet — add one under Network → My contacts.</div>') +
         '<div class="field full"><label>Note (optional)</label><textarea id="bc-message" rows="3" placeholder="e.g. Fresh UK arrivals, negotiable">'+escapeHtml(state.broadcastComposer.message)+'</textarea></div>'
@@ -2642,21 +2700,41 @@ function attachHandlers(){
       closeModal(); showToast('Stock advert sent to the network');
     } catch(e){ showToast('Broadcast failed: '+(e.message||e), true); render(); }
   });
+
+  const selectAllContactsBtn = document.getElementById('selectAllContactsBtn');
+  if(selectAllContactsBtn) selectAllContactsBtn.addEventListener('click', function(){
+    state.broadcastComposer.selectedContactIds = state.suppliers.map(function(s){ return s.id; });
+    render();
+  });
+  const deselectAllContactsBtn = document.getElementById('deselectAllContactsBtn');
+  if(deselectAllContactsBtn) deselectAllContactsBtn.addEventListener('click', function(){
+    state.broadcastComposer.selectedContactIds = [];
+    render();
+  });
   const sendContactsBroadcastBtn = document.getElementById('sendContactsBroadcastBtn');
   if(sendContactsBroadcastBtn) sendContactsBroadcastBtn.addEventListener('click', async function(){
     const ids = state.broadcastComposer.ids;
     const items = state.inventory.filter(function(p){ return ids.indexOf(p.id)>-1; });
     const contactIds = state.broadcastComposer.selectedContactIds;
     if(!contactIds.length){ showToast('Select at least one saved contact', true); return; }
-    const contacts = contactIds.map(function(id){ return state.suppliers.find(function(x){ return x.id===id; }); }).filter(function(s){ return s && s.phone; });
-    if(!contacts.length){ showToast('None of the selected contacts have a phone number saved', true); return; }
+    const contacts = contactIds.map(function(id){ return state.suppliers.find(function(x){ return x.id===id; }); }).filter(Boolean);
+    if(!contacts.length){ showToast('Select at least one saved contact', true); return; }
 
     try{
-      const { data: matches, error: matchErr } = await sb.rpc('find_dealers_by_phone', { p_phones: contacts.map(function(c){ return c.phone; }) });
-      if(matchErr) throw matchErr;
-      const targetIds = Array.from(new Set((matches||[]).map(function(mm){ return mm.dealer_id; })));
+      // Contacts linked at save-time (via the name autocomplete) go straight through —
+      // no phone matching needed. Phone lookup only runs as a fallback for older
+      // contacts saved before linking existed.
+      const linkedIds = contacts.filter(function(c){ return c.linked_dealer_id; }).map(function(c){ return c.linked_dealer_id; });
+      const unlinkedWithPhone = contacts.filter(function(c){ return !c.linked_dealer_id && c.phone; });
+      let phoneMatchedIds = [];
+      if(unlinkedWithPhone.length){
+        const { data: matches, error: matchErr } = await sb.rpc('find_dealers_by_phone', { p_phones: unlinkedWithPhone.map(function(c){ return c.phone; }) });
+        if(matchErr) throw matchErr;
+        phoneMatchedIds = (matches||[]).map(function(mm){ return mm.dealer_id; });
+      }
+      const targetIds = Array.from(new Set(linkedIds.concat(phoneMatchedIds)));
       if(!targetIds.length){
-        showToast('None of the selected contacts have a PhoneHub account yet, so they can\'t receive this — try Open market instead', true);
+        showToast('None of the selected contacts are on PhoneHub yet — try Open market instead', true);
         return;
       }
       const itemsPayload = items.map(function(p){ return {
@@ -2676,7 +2754,7 @@ function attachHandlers(){
       const missed = contacts.length - targetIds.length;
       state.selectedInventoryIds = []; state.broadcastComposer = {ids:[], target:'network', message:'', selectedContactIds:[]};
       closeModal();
-      showToast('Sent to '+targetIds.length+' contact'+(targetIds.length===1?'':'s')+' on PhoneHub'+(missed>0?(' — '+missed+' other'+(missed===1?'':'s')+" aren't registered yet"):''));
+      showToast('Sent to '+targetIds.length+' contact'+(targetIds.length===1?'':'s')+' on PhoneHub'+(missed>0?(' — '+missed+' other'+(missed===1?'':'s')+" aren't on PhoneHub yet"):''));
     } catch(e){ showToast('Could not send: '+(e.message||e), true); render(); }
   });
 
@@ -2741,6 +2819,48 @@ function attachHandlers(){
     const s = state.suppliers.find(function(x){ return x.id === lSupplierId.value; });
     const lSupplier = document.getElementById('l-supplier');
     if(s && lSupplier) lSupplier.value = s.name;
+  });
+
+  const supNameInput = document.getElementById('sup-name');
+  if(supNameInput){
+    supNameInput.addEventListener('input', function(e){
+      if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
+      state.supplierSuggestOpen = true;
+      state.supplierNameDraft = e.target.value;   // ← add this line
+      if(state.supplierLinkedDealerId){ state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = ''; }
+      searchDealerDirectory(e.target.value);
+      const el = document.getElementById('sup-name'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = e.target.value.length; }
+    });
+    supNameInput.addEventListener('focus', function(){
+      if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
+      if(!state.supplierSuggestOpen){
+        state.supplierSuggestOpen = true; render();
+        refocusSupName();
+      }
+    });
+    supNameInput.addEventListener('blur', function(){
+      if(supplierSuggestBlurTimer) clearTimeout(supplierSuggestBlurTimer);
+      supplierSuggestBlurTimer = setTimeout(function(){ supplierSuggestBlurTimer = null; state.supplierSuggestOpen = false; render(); }, 150);
+    });
+  }
+  app.querySelectorAll('[data-select-supplier-suggestion]').forEach(function(el){
+    el.addEventListener('mousedown', function(e){ e.preventDefault(); });
+    el.addEventListener('click', function(){
+      if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
+      state.supplierLinkedDealerId = el.getAttribute('data-select-supplier-suggestion');
+      state.supplierLinkedDealerName = el.getAttribute('data-suggestion-name');
+      state.supplierNameDraft = el.getAttribute('data-suggestion-name');   // ← add this line
+      const nameEl = document.getElementById('sup-name'), phoneEl = document.getElementById('sup-phone');
+      if(nameEl) nameEl.value = el.getAttribute('data-suggestion-name');
+      const suggestedPhone = el.getAttribute('data-suggestion-phone');
+      if(phoneEl && suggestedPhone) phoneEl.value = suggestedPhone;
+      state.supplierSuggestOpen = false; state.supplierSuggestions = [];
+      render();
+    });
+  });
+  const unlinkSupplierBtn = document.getElementById('unlinkSupplierBtn');
+  if(unlinkSupplierBtn) unlinkSupplierBtn.addEventListener('click', function(){
+    state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = ''; render();
   });
 
   app.querySelectorAll('[data-remove-existing-image]').forEach(function(el){ el.addEventListener('click', function(){
@@ -2878,7 +2998,7 @@ function attachHandlers(){
     const id = el.getAttribute('data-save-supplier');
     const name = val('sup-name');
     if(!name){ showToast('Name is required', true); return; }
-    const data = { name:name, phone:val('sup-phone'), whatsapp:val('sup-phone'), location:val('sup-location'), supplies:val('sup-supplies'), owed:Number(val('sup-owed'))||0 };
+    const data = { name:name, phone:val('sup-phone'), whatsapp:val('sup-phone'), location:val('sup-location'), supplies:val('sup-supplies'), owed:Number(val('sup-owed'))||0, linked_dealer_id: state.supplierLinkedDealerId || null };
     try{
       if(id){
         const { error } = await sb.from('suppliers').update(data).eq('id', id);
