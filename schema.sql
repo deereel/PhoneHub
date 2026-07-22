@@ -131,7 +131,7 @@ update inventory set image_urls = jsonb_build_array(image_url)
 -- nothing else needs a parallel table.
 alter table inventory add column if not exists item_type text not null default 'Phone';
 alter table inventory drop constraint if exists inventory_item_type_check;
-alter table inventory add constraint inventory_item_type_check check (item_type in ('Phone','Laptop'));
+alter table inventory add constraint inventory_item_type_check check (item_type in ('Phone','Laptop','Gadget'));
 alter table inventory add column if not exists brand text;       -- laptop brand, e.g. HP, Dell, Apple
 alter table inventory add column if not exists cpu text;         -- e.g. Intel Core i7-1165G7
 alter table inventory add column if not exists ram text;         -- e.g. 16GB

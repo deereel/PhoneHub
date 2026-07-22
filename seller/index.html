@@ -345,10 +345,11 @@ let state = {
   networkDealerFilter:null, dealerFilterQuery:'', dealerFilterOpen:false,
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'', bulkImportSupplierId:'',
   bulkImportLaptopText:'', bulkImportLaptopRows:[], bulkImportLaptopSkipped:[], bulkImportLaptopCondition:'Used', bulkImportLaptopSupplier:'', bulkImportLaptopSupplierId:'',
+  bulkImportGadgetText:'', bulkImportGadgetRows:[], bulkImportGadgetSkipped:[], bulkImportGadgetCondition:'Used', bulkImportGadgetSupplier:'', bulkImportGadgetSupplierId:'',
   pushStatus:'unsupported', // unsupported | off | prompting | on | denied
   mobileMenuOpen:false,
   inventorySupplierFilter:null, supplierFilterName:'',
-  inventoryItemTab:'phones', // 'phones' | 'laptops' — sub-tab within the Inventory tab
+  inventoryItemTab:'phones', // 'phones' | 'laptops' | 'gadgets' — sub-tab within the Inventory tab
   selectedInventoryIds:[], // checked rows in Inventory, used by the "Broadcast selected" flow
   broadcastComposer:{ids:[], target:'network', message:'', selectedContactIds:[]},
   networkBroadcastTypeFilter:'All', // All | Need | Stock — filter for the Network > Broadcasts view
@@ -356,6 +357,7 @@ let state = {
   galleryIndex:0, // current slide index for the image gallery inside view modals
   supplierLinkedDealerId: null, supplierLinkedDealerName: '',
   supplierSuggestions: [], supplierSuggestOpen: false,
+  clearInventoryConfirmText: '', // typed confirmation text for the "Clear all inventory" modal
 };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -380,6 +382,9 @@ function naira(n){ n = Number(n)||0; return '₦'+n.toLocaleString('en-NG',{maxi
 function itemLabel(p){
   if((p.item_type||'Phone')==='Laptop'){
     return [p.brand, p.model].filter(Boolean).join(' ') + (p.cpu ? (' · '+p.cpu) : '') + (p.ram ? (' · '+p.ram) : '') + (p.storage ? (' · '+p.storage) : '');
+  }
+  if((p.item_type||'Phone')==='Gadget'){
+    return [p.model, p.storage].filter(Boolean).join(' · ') + (p.notes ? (' — '+p.notes.split('\n')[0]) : '');
   }
   return [p.model, p.storage, p.color].filter(Boolean).join(' · ');
 }
@@ -737,6 +742,14 @@ function extractPrice(line){
     } else { value = parseFloat(raw) * 1000; }
     return { value: Math.round(value), start: lastK.index, end: lastK.index + lastK[0].length };
   }
+  // NEW: "1M", "2.5M" etc.
+  var reM = /(\d+(?:[.,]\d{1,3})?)\s*m\b/gi;
+  var lastM = null;
+  while((m = reM.exec(line))){ lastM = m; }
+  if(lastM){
+    var rawM = lastM[1].replace(',', '.');
+    return { value: Math.round(parseFloat(rawM) * 1000000), start: lastM.index, end: lastM.index + lastM[0].length };
+  }
   var reComma = /(\d{1,3}(?:,\d{3})+)/g;
   while((m = reComma.exec(line))){ lastC = m; }
   if(lastC){
@@ -744,18 +757,38 @@ function extractPrice(line){
   }
   var mb = line.match(/(\d{3,})\s*$/);
   if(mb){ return { value: parseInt(mb[1],10), start: mb.index, end: mb.index+mb[0].length }; }
+  // NEW: last-resort — "1.630" with the trailing "k" dropped, same convention as "1.630k"
+  var reDec = /(\d{1,2})[.,](\d{1,3})(?!\d)/g;
+  var lastDec = null;
+  while((m = reDec.exec(line))){ lastDec = m; }
+  if(lastDec){
+    var paddedDec = (lastDec[2] + '000').slice(0,3);
+    return { value: parseInt(lastDec[1]+paddedDec, 10) * 1000, start: lastDec.index, end: lastDec.index+lastDec[0].length };
+  }
   return null;
 }
 
-function stripConnectivity(text){
-  var tags = [['wifi','WiFi'],['sim','SIM']];
-  var found = null;
+function stripDescriptors(text){
+  var patterns = [
+    { re: /p\s*\/?\s*e[\s\-]?sim/gi, tag: 'Physical+eSIM' },
+    { re: /\bphysical[\s\-]*sim\b/gi, tag: 'Physical SIM' },
+    { re: /\be[\s\-]?sim\b/gi, tag: 'eSIM' },
+    { re: /\bp\b/gi, tag: 'Physical SIM' },
+    { re: /non[\s\-]*lla+\b/gi, tag: 'Non-LLA' },
+    { re: /\bunlocked\b/gi, tag: 'Unlocked' },
+    { re: /\bwifi\b/gi, tag: 'WiFi' },
+    { re: /\bsim\b/gi, tag: 'SIM' }
+  ];
+  var tags = [];
   var out = text;
-  for(var i=0;i<tags.length;i++){
-    var re = new RegExp(tags[i][0], 'i');
-    if(re.test(out)){ found = tags[i][1]; out = out.replace(re, ''); break; }
-  }
-  return { text: out, tag: found };
+  patterns.forEach(function(p){
+    var re = new RegExp(p.re.source, p.re.flags);
+    if(re.test(out)){
+      if(tags.indexOf(p.tag)===-1) tags.push(p.tag);
+      out = out.replace(new RegExp(p.re.source, p.re.flags), '');
+    }
+  });
+  return { text: out, tags: tags };
 }
 
 function toTitleCase(s){
@@ -784,7 +817,7 @@ function extractUnitStorage(text){
   return { storage: last[1]+unit, start: last.index, end: last.index+last[0].length };
 }
 
-const IPHONE_VARIANTS = [['promax','Pro Max'],['pro max','Pro Max'],['pro','Pro'],['plus','Plus'],['mini','Mini'],['air','Air']];
+const IPHONE_VARIANTS = [['promax','Pro Max'],['pro max','Pro Max'],['pm','Pro Max'],['pro','Pro'],['plus','Plus'],['mini','Mini'],['air','Air']];
 const IPHONE_SPECIALS = [['xsmax','XS Max'],['xs max','XS Max'],['xs','XS'],['xr','XR'],['se','SE'],['x','X']];
 
 function tryIphone(compact){
@@ -844,9 +877,9 @@ function parseBulkStockLine(raw){
   var flagged = /[\u274c\u2716\u2717]/.test(raw);
   var line = raw.replace(/[\u274c\u2716\u2717]/g, '');
 
-  var connFirst = stripConnectivity(line);
+  var connFirst = stripDescriptors(line);
   line = connFirst.text;
-  var connTag = connFirst.tag;
+  var connTags = connFirst.tags.slice();
 
   var priceInfo = extractPrice(line);
   var hasPrice = !!priceInfo;
@@ -873,9 +906,9 @@ function parseBulkStockLine(raw){
   }
   leadingText = cleanSeparators(leadingText);
 
-  var connFromLead = stripConnectivity(leadingText);
+  var connFromLead = stripDescriptors(leadingText);
   leadingText = cleanSeparators(connFromLead.text);
-  if(connFromLead.tag) connTag = connFromLead.tag;
+  connFromLead.tags.forEach(function(t){ if(connTags.indexOf(t)===-1) connTags.push(t); });
 
   var compact = leadingText.toLowerCase().replace(/[\s\-\u2013\u2014_.:]+/g,'');
 
@@ -883,14 +916,18 @@ function parseBulkStockLine(raw){
   var model;
   if(result){
     model = result.model;
-    var leftover = result.rest.replace(/[^0-9]/g,'');
+    // Only take the FIRST digit run left in the remainder — concatenating
+    // every leftover digit (e.g. a stray unmatched price fragment) used to
+    // produce garbage like "2561630GB".
+    var leftoverMatch = result.rest.match(/\d+/);
+    var leftover = leftoverMatch ? leftoverMatch[0] : '';
     if(!storage && leftover){ storage = leftover+'GB'; }
   } else {
     var generic = leadingText;
     if(generic === generic.toUpperCase() || generic === generic.toLowerCase()){ generic = toTitleCase(generic); }
     model = generic || '(unrecognized)';
   }
-  if(connTag) model = model + ' ('+connTag+')';
+  if(connTags.length) model = model + ' (' + connTags.join(', ') + ')';
 
   return {
     raw: raw, model: model, storage: storage, price: priceInfo.value, hasPrice: hasPrice,
@@ -898,14 +935,19 @@ function parseBulkStockLine(raw){
   };
 }
 
+function normKey(s){
+  return (s||'').toString().toLowerCase().replace(/iphone/g,'').replace(/[^a-z0-9]/g,'');
+}
+
 function isDuplicatePhone(row, inventory){
   if(!inventory || !inventory.length) return null;
   return inventory.find(function(p){
-    return p.model === row.model &&
-      (p.storage||'') === (row.storage||'') &&
-      (p.color||'') === (row.color||'') &&
+    return normKey(p.model) === normKey(row.model) &&
+      normKey(p.storage) === normKey(row.storage) &&
+      normKey(p.color) === normKey(row.color) &&
       (p.condition||'') === (row.condition||'') &&
-      (p.supplier||'') === (row.supplier||'');
+      (p.battery==null?'':p.battery) === (row.battery==null?'':row.battery) &&
+      normKey(p.supplier) === normKey(row.supplier);
   }) || null;
 }
 
@@ -915,17 +957,28 @@ function parseBulkStock(text){
   let sectionLabel = '';
 
   lines.forEach(function(raw){
-    const parsed = parseBulkStockLine(raw);
-    if(!parsed){
+    // Skip pure dividers ("----", "====", "....") and non-product header/section
+    // lines (no digits at all, e.g. "iPhones" or "Samsung Phones") — these used
+    // to fall through into parseBulkStockLine() and come out as garbage rows.
+    var isDivider = /^[=\-_*~.\s]+$/.test(raw);
+    var hasDigit = /\d/.test(raw);
+    if(isDivider || (!hasDigit && raw.replace(/[^a-zA-Z]/g,'').length >= 3)){
       if(raw.replace(/[^a-zA-Z]/g,'').length >= 3) sectionLabel = raw.trim();
       return;
     }
+    const parsed = parseBulkStockLine(raw);
     if(!parsed.recognized) skipped.push({raw:raw});
     const row = {
       raw: parsed.raw, model: parsed.model, storage: parsed.storage, price: parsed.price, hasPrice: parsed.hasPrice,
       include: parsed.include, flagged: parsed.flagged, quantity: parsed.quantity, sectionLabel: sectionLabel, duplicate: null
     };
-    const dup = isDuplicatePhone(row, state.inventory);
+    const dupCheckRow = {
+      model: row.model, storage: row.storage, color: '',
+      condition: state.bulkImportCondition,
+      battery: state.bulkImportCondition==='Used' ? 100 : null,
+      supplier: state.bulkImportSupplier || (row.sectionLabel||'')
+    };
+    const dup = isDuplicatePhone(dupCheckRow, state.inventory);
     if(dup) row.duplicate = dup.id;
     rows.push(row);
   });
@@ -1057,16 +1110,67 @@ function isDuplicateLaptop(row, inventory){
   if(!inventory || !inventory.length) return null;
   return inventory.find(function(p){
     return p.item_type === 'Laptop' &&
-      (p.brand||'') === (row.brand||'') &&
-      (p.model||'') === (row.model||'') &&
-      (p.cpu||'') === (row.cpu||'') &&
-      (p.ram||'') === (row.ram||'') &&
-      (p.storage||'') === (row.storage||'') &&
-      (p.screen_size||'') === (row.screen_size||'') &&
-      (p.color||'') === (row.color||'') &&
+      normKey(p.brand) === normKey(row.brand) &&
+      normKey(p.model) === normKey(row.model) &&
+      normKey(p.cpu) === normKey(row.cpu) &&
+      normKey(p.ram) === normKey(row.ram) &&
+      normKey(p.storage) === normKey(row.storage) &&
+      normKey(p.screen_size) === normKey(row.screen_size) &&
+      normKey(p.gpu) === normKey(row.gpu) &&
+      normKey(p.color) === normKey(row.color) &&
       (p.condition||'') === (row.condition||'') &&
-      (p.supplier||'') === (row.supplier||'');
+      (p.battery==null?'':p.battery) === (row.battery==null?'':row.battery) &&
+      normKey(p.supplier) === normKey(row.supplier);
   }) || null;
+}
+
+function isDuplicateGadget(row, inventory){
+  if(!inventory || !inventory.length) return null;
+  return inventory.find(function(p){
+    return p.item_type === 'Gadget' &&
+      normKey(p.model) === normKey(row.model) &&
+      normKey(p.storage) === normKey(row.storage) &&
+      normKey(p.color) === normKey(row.color) &&
+      (p.condition||'') === (row.condition||'') &&
+      (p.battery==null?'':p.battery) === (row.battery==null?'':row.battery) &&
+      normKey(p.notes) === normKey(row.notes) &&
+      normKey(p.supplier) === normKey(row.supplier);
+  }) || null;
+}
+
+function parseBulkGadget(text){
+  const lines = text.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+  const rows = [], skipped = [];
+  let sectionLabel = '';
+
+  lines.forEach(function(raw){
+    if(raw === '.' || raw === '-') return;
+    if(/^\./.test(raw)){
+      var alpha = raw.replace(/^\./,'').replace(/[^a-zA-Z]/g,'');
+      if(alpha.length >= 3) sectionLabel = raw.replace(/^\./,'').trim();
+      return;
+    }
+    var line = raw.replace(/^[\u{1F1FA}\u{1F1F8}]/u, '').trim();
+    var model = line.replace(/—.*/g,'').replace(/-\s*\d/g,'').trim() || line;
+    var costMatch = line.match(/(\d[\d,]*)(?:k|K)?(?:\s*$)/);
+    var price = costMatch ? Number(costMatch[1].replace(/,/g,'')) : 0;
+    if(!price && !model){ skipped.push({raw:raw}); return; }
+    if(!price){ skipped.push({raw:raw}); }
+    const row = {
+      raw: raw, model: model.replace(/\s+/g,' '), storage: '', notes: '',
+      price: price, hasPrice: !!price,
+      include: true, flagged: !price, quantity: 1, sectionLabel: sectionLabel, duplicate: null
+    };
+    const dupCheckRow = {
+      model: row.model, storage: row.storage, color: '', notes: row.notes,
+      condition: state.bulkImportGadgetCondition, battery: null,
+      supplier: state.bulkImportGadgetSupplier || (row.sectionLabel||'')
+    };
+    const dup = isDuplicateGadget(dupCheckRow, state.inventory);
+    if(dup) row.duplicate = dup.id;
+    rows.push(row);
+  });
+  return { rows: rows, skipped: skipped };
 }
 
 function parseBulkLaptop(text){
@@ -1097,7 +1201,14 @@ function parseBulkLaptop(text){
       price: parsed.price, hasPrice: parsed.hasPrice,
       include: parsed.include, flagged: parsed.flagged, quantity: parsed.quantity, sectionLabel: sectionLabel, duplicate: null
     };
-    const dup = isDuplicateLaptop(row, state.inventory);
+    const dupCheckRow = {
+      brand: row.brand, model: row.model, cpu: row.cpu, ram: row.ram, storage: row.storage,
+      screen_size: row.screen_size, gpu: row.gpu, color: '',
+      condition: state.bulkImportLaptopCondition,
+      battery: state.bulkImportLaptopCondition==='Used' ? 100 : null,
+      supplier: state.bulkImportLaptopSupplier || (row.sectionLabel||'')
+    };
+    const dup = isDuplicateLaptop(dupCheckRow, state.inventory);
     if(dup) row.duplicate = dup.id;
     rows.push(row);
   });
@@ -1227,8 +1338,9 @@ function applyHashTab(){
   }
 }
 function openModal(name, payload){
-  if(name==='addPhone' || name==='editPhone' || name==='addLaptop' || name==='editLaptop') state.photoModalRemovedUrls = [];
+  if(name==='addPhone' || name==='editPhone' || name==='addLaptop' || name==='editLaptop' || name==='addGadget' || name==='editGadget') state.photoModalRemovedUrls = [];
   if(name==='viewNetworkItem' || name==='viewStockItem') state.galleryIndex = 0;
+  if(name==='clearInventory') state.clearInventoryConfirmText = '';
   if(name==='addSupplier' || name==='editSupplier'){
     state.supplierSuggestions = []; state.supplierSuggestOpen = false;
     state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = '';
@@ -1288,7 +1400,6 @@ function computeKPIs(){
   };
 }
 
-// Total still owed to you on a consignment (what colleague should pay, minus what they've paid).
 function consignmentBalance(c){
   const total = (Number(c.unit_price)||0) * (Number(c.quantity)||1);
   return total - (Number(c.amount_paid)||0);
@@ -1463,7 +1574,7 @@ function renderSearchDropdown(){
       const p = r.item;
       const isLaptop = (p.item_type||'Phone')==='Laptop';
       return '<div class="search-row" data-open-phone="'+p.id+'" data-open-item-type="'+(p.item_type||'Phone')+'">' +
-        '<div><div class="sr-main">'+(isLaptop?'💻 ':'📱 ')+escapeHtml(itemLabel(p))+'</div>' +
+        '<div><div class="sr-main">'+(p.item_type==='Laptop'?'💻 ':(p.item_type==='Gadget'?'🎮 ':'📱 '))+escapeHtml(itemLabel(p))+'</div>' +
         '<div class="sr-sub">'+(isLaptop?escapeHtml(p.storage||''):('IMEI '+escapeHtml(p.imei||'—')))+' · '+badge(p.status)+'</div></div>' +
         '<div class="sr-price">'+naira(p.price)+'</div></div>';
     } else {
@@ -1560,17 +1671,19 @@ function renderDashboard(){
 }
 
 function renderInventory(){
-  const itemTab = state.inventoryItemTab === 'laptops' ? 'Laptop' : 'Phone';
-  const noun = itemTab === 'Laptop' ? 'laptop' : 'phone';
+  const itemTab = state.inventoryItemTab === 'laptops' ? 'Laptop' : (state.inventoryItemTab === 'gadgets' ? 'Gadget' : 'Phone');
+  const noun = itemTab === 'Laptop' ? 'laptop' : (itemTab === 'Gadget' ? 'gadget' : 'phone');
   let items = state.inventory.filter(function(p){ return (p.item_type||'Phone') === itemTab; })
     .sort(function(a,b){ return (a.status==='In Stock'?0:1)-(b.status==='In Stock'?0:1); });
   const allOfType = state.inventory.filter(function(p){ return (p.item_type||'Phone') === itemTab; });
   const phoneCount = state.inventory.filter(function(p){ return (p.item_type||'Phone')==='Phone'; }).length;
   const laptopCount = state.inventory.filter(function(p){ return p.item_type==='Laptop'; }).length;
+  const gadgetCount = state.inventory.filter(function(p){ return p.item_type==='Gadget'; }).length;
 
   const subTabs = '<div class="pill-tabs">' +
       '<div class="pill-tab '+(state.inventoryItemTab==='phones'?'active':'')+'" data-inventory-item-tab="phones">📱 Phones'+pillBadge(phoneCount)+'</div>' +
       '<div class="pill-tab '+(state.inventoryItemTab==='laptops'?'active':'')+'" data-inventory-item-tab="laptops">💻 Laptops'+pillBadge(laptopCount)+'</div>' +
+      '<div class="pill-tab '+(state.inventoryItemTab==='gadgets'?'active':'')+'" data-inventory-item-tab="gadgets">🎮 Gadgets'+pillBadge(gadgetCount)+'</div>' +
     '</div>';
 
   let header = '';
@@ -1587,10 +1700,13 @@ function renderInventory(){
       '<div><h1 class="page-title">Inventory</h1><p class="page-sub">'+allOfType.length+' '+noun+'s tracked · '+allOfType.filter(function(p){return p.status==='In Stock';}).length+' in stock</p></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
         (items.some(function(p){return p.status==='In Stock';}) ? '<button class="btn" id="selectAllInStockBtn">Select all in stock</button>' : '') +
-        '<button class="btn" data-open-modal="'+(itemTab==='Phone'?'bulkImport':'bulkImportLaptop')+'">📋 Paste stock list</button>' +
+        '<button class="btn" data-open-modal="'+(itemTab==='Phone'?'bulkImport':(itemTab==='Laptop'?'bulkImportLaptop':'bulkImportGadget'))+'">📋 Paste stock list</button>' +
         (itemTab==='Phone'
           ? '<button class="btn btn-accent" data-open-modal="addPhone">'+ICONS.plus+' Add phone</button>'
-          : '<button class="btn btn-accent" data-open-modal="addLaptop">'+ICONS.plus+' Add laptop</button>') +
+          : (itemTab==='Laptop'
+            ? '<button class="btn btn-accent" data-open-modal="addLaptop">'+ICONS.plus+' Add laptop</button>'
+            : '<button class="btn btn-accent" data-open-modal="addGadget">'+ICONS.plus+' Add gadget</button>')) +
+        (state.inventory.length ? '<button class="btn btn-danger" data-open-modal="clearInventory" title="Delete every phone, laptop, and gadget in your inventory">🗑 Clear all inventory</button>' : '') +
       '</div>' +
     '</div>';
   }
@@ -1600,7 +1716,7 @@ function renderInventory(){
       '<div style="display:flex;gap:8px;"><button class="btn" id="clearSelectionBtn">Clear</button><button class="btn btn-accent" id="broadcastSelectedBtn">'+ICONS.broadcast.replace('<svg ', '<svg style="width:14px;height:14px;vertical-align:-2px;margin-right:4px;" ')+'Broadcast selected</button></div>' +
     '</div></div>') : '';
 
-  const table = itemTab==='Phone' ? renderPhoneInventoryTable(items) : renderLaptopInventoryTable(items);
+  const table = itemTab==='Phone' ? renderPhoneInventoryTable(items) : (itemTab==='Laptop' ? renderLaptopInventoryTable(items) : renderGadgetInventoryTable(items));
 
   return subTabs + header + selectionBar +
     '<div class="section" style="margin-top:16px;"><div class="section-body table-scroll" style="padding:0;">' + table + '</div></div>';
@@ -1620,7 +1736,10 @@ function renderPhoneInventoryTable(items){
       '<td class="mono">'+(p.cost?naira(p.cost):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
       '<td class="mono">'+(p.price?naira(p.price):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
       '<td class="mono" style="color:var(--success)">'+(p.price?naira((Number(p.price)||0)-(Number(p.cost)||0)):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
-      '<td><button class="btn btn-sm '+(p.status==='In Stock'?'btn-stock-toggle-on':'btn-stock-toggle-off')+'" data-toggle-status="'+p.id+'">'+(p.status==='In Stock'?'In Stock':'Out of Stock')+'</button></td>' +
+      '<td>'+(p.imei
+        ? ('<span class="badge '+(p.status==='In Stock'?'badge-stock':'badge-reserved')+'" title="IMEI-tracked — sell it via Log a Sale (Sales tab) instead of this toggle, so it stays recorded once sold.">'+escapeHtml(p.status)+'</span>')
+        : ('<button class="btn btn-sm '+(p.status==='In Stock'?'btn-stock-toggle-on':'btn-stock-toggle-off')+'" data-toggle-status="'+p.id+'">'+(p.status==='In Stock'?'In Stock':'Out of Stock')+'</button>')
+      )+'</td>' +
       '<td>'+escapeHtml(p.shelf)+'</td>' +
       '<td style="display:flex;gap:6px;white-space:nowrap;">' +
         '<button class="btn btn-sm" data-open-modal="editPhone" data-id="'+p.id+'">Edit</button>' +
@@ -1648,6 +1767,30 @@ function renderLaptopInventoryTable(items){
       '<td>'+escapeHtml(p.shelf)+'</td>' +
       '<td style="display:flex;gap:6px;white-space:nowrap;">' +
         '<button class="btn btn-sm" data-open-modal="editLaptop" data-id="'+p.id+'">Edit</button>' +
+        '<button class="btn btn-sm" data-broadcast-single="'+p.id+'" title="Send as broadcast">📣</button>' +
+      '</td>' +
+    '</tr>'; }).join('') +
+  '</tbody></table>';
+}
+
+function renderGadgetInventoryTable(items){
+  if(!items.length) return '<div class="empty">'+ICONS.empty+'<div>No gadgets in inventory yet.</div></div>';
+  return '<table><thead><tr><th></th><th>Photo</th><th>Model</th><th>Description</th><th>Qty</th><th>Specs / Storage</th><th>Condition</th><th>Cost</th><th>Price</th><th>Profit</th><th>Status</th><th>Shelf</th><th></th></tr></thead><tbody>' +
+    items.map(function(p){ return '<tr>' +
+      '<td><input type="checkbox" data-select-inventory="'+p.id+'" '+(state.selectedInventoryIds.indexOf(p.id)>-1?'checked':'')+'/></td>' +
+      '<td>'+thumbHTML(p.image_url)+'</td>' +
+      '<td class="strong">'+escapeHtml(p.model)+'</td>' +
+      '<td>'+escapeHtml((p.notes||'').split('\n')[0])+'</td>' +
+      '<td class="mono">'+(p.quantity!=null?p.quantity:1)+'</td>' +
+      '<td>'+escapeHtml(p.storage||'—')+' · '+escapeHtml(p.color||'—')+'</td>' +
+      '<td>'+escapeHtml(p.condition)+(p.condition==='Used' && p.battery!=null?(' · '+p.battery+'% batt'):'')+'</td>' +
+      '<td class="mono">'+(p.cost?naira(p.cost):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td class="mono">'+(p.price?naira(p.price):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td class="mono" style="color:var(--success)">'+(p.price?naira((Number(p.price)||0)-(Number(p.cost)||0)):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+      '<td><button class="btn btn-sm '+(p.status==='In Stock'?'btn-stock-toggle-on':'btn-stock-toggle-off')+'" data-toggle-status="'+p.id+'">'+(p.status==='In Stock'?'In Stock':'Out of Stock')+'</button></td>' +
+      '<td>'+escapeHtml(p.shelf)+'</td>' +
+      '<td style="display:flex;gap:6px;white-space:nowrap;">' +
+        '<button class="btn btn-sm" data-open-modal="editGadget" data-id="'+p.id+'">Edit</button>' +
         '<button class="btn btn-sm" data-broadcast-single="'+p.id+'" title="Send as broadcast">📣</button>' +
       '</td>' +
     '</tr>'; }).join('') +
@@ -1823,7 +1966,7 @@ function renderNetworkSearch(){
   }
 
   const categoryPills = '<div class="pill-tabs" style="margin-bottom:12px;">' +
-    ['All','Phone','Laptop'].map(function(c){ return '<div class="pill-tab '+(state.networkCategoryFilter===c?'active':'')+'" data-network-category-filter="'+c+'">'+(c==='All'?'All':(c==='Phone'?'📱 Phones':'💻 Laptops'))+'</div>'; }).join('') +
+    ['All','Phone','Laptop','Gadget'].map(function(c){ return '<div class="pill-tab '+(state.networkCategoryFilter===c?'active':'')+'" data-network-category-filter="'+c+'">'+(c==='All'?'All':(c==='Phone'?'📱 Phones':(c==='Laptop'?'💻 Laptops':'🎮 Gadgets')))+'</div>'; }).join('') +
   '</div>';
 
   return '<div class="section"><div class="section-body">' +
@@ -1835,7 +1978,8 @@ function renderNetworkSearch(){
       '<div class="table-scroll">' +
       (list.length ? ('<table><thead><tr><th>Img</th><th>Model</th><th>Dealer</th><th>Price</th><th>Updated</th><th></th></tr></thead><tbody>' +
         list.map(function(d,i){
-          const isLaptop = (d.item_type||'Phone')==='Laptop';
+  const isLaptop = (d.item_type||'Phone')==='Laptop';
+  const isGadget = (d.item_type||'Phone')==='Gadget';
           const specLine = isLaptop
             ? ((d.brand?escapeHtml(d.brand)+' ':'')+escapeHtml(d.model)+(d.cpu?(' · '+escapeHtml(d.cpu)):'')+(d.ram?(' · '+escapeHtml(d.ram)):'')+(d.storage?(' · '+escapeHtml(d.storage)):''))
             : (escapeHtml(d.model)+(d.storage?(' · '+escapeHtml(d.storage)):'')+(d.color?(' · '+escapeHtml(d.color)):'')+(d.condition==='Used'?(' · '+d.battery+'% batt'):''));
@@ -1997,11 +2141,12 @@ function renderModal(){
   const m = state.modal;
   if(m.name==='addPhone' || m.name==='editPhone') return renderPhoneModal(m);
   if(m.name==='addLaptop' || m.name==='editLaptop') return renderLaptopModal(m);
+  if(m.name==='addGadget' || m.name==='editGadget') return renderGadgetModal(m);
   if(m.name==='logSale') return renderSaleModal();
   if(m.name==='addSupplier' || m.name==='editSupplier') return renderSupplierModal(m);
   if(m.name==='newBroadcast') return renderBroadcastModal();
   if(m.name==='respondBroadcast') return renderRespondModal(m);
-  if(m.name==='bulkImport' || m.name==='bulkImportLaptop') return m.name==='bulkImportLaptop' ? renderLaptopBulkImportModal() : renderBulkImportModal();
+  if(m.name==='bulkImport' || m.name==='bulkImportLaptop' || m.name==='bulkImportGadget') return m.name==='bulkImportLaptop' ? renderLaptopBulkImportModal() : (m.name==='bulkImportGadget' ? renderGadgetBulkImportModal() : renderBulkImportModal());
   if(m.name==='notifSettings') return renderNotifModal();
   if(m.name==='themeSettings') return renderThemeModal();
   if(m.name==='addConsignment' || m.name==='editConsignment') return renderConsignmentModal(m);
@@ -2010,7 +2155,33 @@ function renderModal(){
   if(m.name==='sendBroadcastAdvert') return renderBroadcastComposerModal(m);
   if(m.name==='viewStockItem') return renderStockItemModal(m);
   if(m.name==='viewNetworkItem') return renderNetworkItemModal(m);
+  if(m.name==='clearInventory') return renderClearInventoryModal();
   return '';
+}
+
+// "Clear all inventory" — a bulk delete for every phone/laptop/gadget owned by
+// this dealer, gated behind typing DELETE into a confirmation field so it
+// can't be triggered by an accidental tap. Sales, consignments, and contacts
+// are untouched — only the inventory table is wiped.
+function renderClearInventoryModal(){
+  const total = state.inventory.length;
+  const phoneCount = state.inventory.filter(function(p){ return (p.item_type||'Phone')==='Phone'; }).length;
+  const laptopCount = state.inventory.filter(function(p){ return p.item_type==='Laptop'; }).length;
+  const gadgetCount = state.inventory.filter(function(p){ return p.item_type==='Gadget'; }).length;
+  const confirmed = (state.clearInventoryConfirmText||'').trim().toUpperCase() === 'DELETE';
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:460px;">' +
+    '<div class="modal-head"><h3>Clear all inventory</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      '<p style="color:var(--danger);font-size:13.5px;font-weight:600;margin-top:0;line-height:1.5;">' +
+        'This permanently deletes every item in your inventory — <strong>'+total+' total</strong> ('+phoneCount+' phones, '+laptopCount+' laptops, '+gadgetCount+' gadgets). ' +
+        'Sales history, contacts, and consignment records are not affected, but this action cannot be undone.' +
+      '</p>' +
+      '<div class="field"><label>Type DELETE to confirm</label><input id="clear-inv-confirm" autocomplete="off" placeholder="DELETE" value="'+escapeAttr(state.clearInventoryConfirmText||'')+'"/></div>' +
+    '</div>' +
+    '<div class="modal-foot">' +
+      '<button class="btn" data-close-modal="1">Cancel</button>' +
+      '<button class="btn btn-danger" id="confirmClearInventoryBtn" '+(confirmed?'':'disabled')+'>Delete all '+total+' items</button>' +
+    '</div></div></div>';
 }
 
 function renderNetworkItemModal(m){
@@ -2018,6 +2189,7 @@ function renderNetworkItemModal(m){
   if(!d) return '';
   const isMine = d.dealer_id === state.profile.id;
   const isLaptop = (d.item_type||'Phone')==='Laptop';
+  const isGadget = (d.item_type||'Phone')==='Gadget';
   const row = function(k,v){ return '<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="color:var(--text-dim);">'+k+'</span><span class="strong">'+v+'</span></div>'; };
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
     '<div class="modal-head"><h3>'+(isLaptop && d.brand ? escapeHtml(d.brand)+' ' : '')+escapeHtml(d.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
@@ -2029,13 +2201,16 @@ function renderNetworkItemModal(m){
         row('Storage', escapeHtml(d.storage||'—')) +
         row('Screen', escapeHtml(d.screen_size||'—')) +
         (d.gpu ? row('Graphics', escapeHtml(d.gpu)) : '')
+      ) : (isGadget ? (
+        row('Specs', escapeHtml(d.storage||'—')) +
+        row('Description', escapeHtml((d.notes||'—').split('\n')[0]))
       ) : (
         row('Storage', escapeHtml(d.storage||'—'))
-      )) +
+      ))) +
       row('Color', escapeHtml(d.color||'—')) +
       row('Condition', escapeHtml(d.condition||'—')+(d.condition==='Used' && d.battery!=null?(' · '+d.battery+'% battery'):'')) +
       row('Price', '<span style="color:var(--accent);font-size:16px;">'+naira(d.price)+'</span>') +
-      row('Dealer', escapeHtml(d.dealer_name)+(isMine?' <span style="color:var(--text-faint);">(you)</span>':'')) +
+      row('Dealer', escapeHtml(d.dealer_name)+(isMine?' <span style="color:var(--text-faint)">(you)</span>':'')) +
       row('Last updated', new Date(d.updated_at).toLocaleDateString()) +
     '</div>' +
     (!isMine && d.dealer_phone ? ('<div class="modal-foot"><a class="btn btn-accent" href="tel:'+escapeAttr(d.dealer_phone)+'" style="width:100%;justify-content:center;">📞 Contact '+escapeHtml(d.dealer_name)+'</a></div>') : '') +
@@ -2051,6 +2226,7 @@ function renderStockItemModal(m){
   const isMine = b.dealer_id === state.profile.id;
   const phone = dealerPhone(b.dealer_id);
   const isLaptop = (it.item_type||'Phone')==='Laptop';
+  const isGadget = (it.item_type||'Phone')==='Gadget';
   const row = function(k,v){ return '<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:13.5px;"><span style="color:var(--text-dim);">'+k+'</span><span class="strong">'+v+'</span></div>'; };
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:440px;">' +
     '<div class="modal-head"><h3>'+(isLaptop && it.brand ? escapeHtml(it.brand)+' ' : '')+escapeHtml(it.model)+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
@@ -2062,7 +2238,10 @@ function renderStockItemModal(m){
         row('Storage', escapeHtml(it.storage||'—')) +
         row('Screen', escapeHtml(it.screen_size||'—')) +
         (it.gpu ? row('Graphics', escapeHtml(it.gpu)) : '')
-      ) : row('Storage', escapeHtml(it.storage||'—'))) +
+      ) : (isGadget ? (
+        row('Specs', escapeHtml(it.storage||'—')) +
+        row('Description', escapeHtml((it.notes||'—').split('\n')[0]))
+      ) : row('Storage', escapeHtml(it.storage||'—')))) +
       row('Color', escapeHtml(it.color||'—')) +
       row('Condition', escapeHtml(it.condition||'—')) +
       row('Price', '<span style="color:var(--accent);font-size:16px;">'+(it.price?naira(it.price):'—')+'</span>') +
@@ -2224,6 +2403,46 @@ function renderBulkImportModal(){
     '</div></div></div>';
 }
 
+function renderGadgetModal(m){
+  const editing = m.name==='editGadget';
+  const p = editing ? (state.inventory.find(function(x){ return x.id===m.payload.id; }) || {}) : {};
+  const existingImages = imagesFor(p);
+  const removedUrls = state.photoModalRemovedUrls || [];
+  const visibleExisting = existingImages.filter(function(u){ return removedUrls.indexOf(u)===-1; });
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
+    '<div class="modal-head"><h3>'+(editing?'Edit gadget':'Add gadget')+'</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body"><div class="form-grid">' +
+      '<div class="field full"><label>Photos</label>' +
+        '<div id="photo-gallery-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;">' +
+          (visibleExisting.length ? visibleExisting.map(function(url){
+            return '<div style="position:relative;">' +
+              '<img class="photo-preview" src="'+escapeAttr(url)+'" style="width:72px;height:72px;"/>' +
+              '<button type="button" data-remove-existing-image="'+escapeAttr(url)+'" title="Remove this photo" style="position:absolute;top:-6px;right:-6px;background:var(--danger);color:#fff;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;line-height:1;">×</button>' +
+            '</div>';
+          }).join('') : '<span style="font-size:11.5px;color:var(--text-faint);">No photos yet</span>') +
+        '</div>' +
+        '<input type="file" id="g-images" accept="image/*" multiple capture="environment"/>' +
+        '<div id="new-photo-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;"></div>' +
+        '<span style="font-size:11px;color:var(--text-faint);display:block;margin-top:6px;">Snap with your camera or pick from gallery — you can select several at once. Resized automatically before upload.</span>' +
+      '</div>' +
+      '<div class="field"><label>Model / Name</label><input id="g-model" value="'+escapeAttr(p.model)+'" placeholder="e.g. PS5 Slim, JBL Speaker, FC26"/></div>' +
+      '<div class="field"><label>Specs / Storage</label><input id="g-storage" value="'+(p.storage!=null?escapeAttr(p.storage):'')+'" placeholder="e.g. 1TB, Wireless, 2 pads"/></div>' +
+      '<div class="field"><label>Color</label><input id="g-color" value="'+(p.color!=null?escapeAttr(p.color):'')+'" placeholder="e.g. Black, White"/></div>' +
+      '<div class="field"><label>Condition</label><select id="g-condition"><option '+(p.condition==='New'?'selected':'')+'>New</option><option '+(p.condition==='Used'?'selected':'')+'>Used</option></select></div>' +
+      '<div class="field"><label>Description (list games, accessories etc.)</label><textarea id="g-notes" rows="3" placeholder="e.g. FC26, FC25, GTA V, 2 controller pads…">'+escapeHtml(p.notes||'')+'</textarea></div>' +
+      '<div class="field"><label>Supplier / source label</label><input id="g-supplier" value="'+(p.supplier!=null?escapeAttr(p.supplier):'')+'" placeholder="e.g. Kleeeennnn as NEW"/></div>' +
+      '<div class="field mono"><label>Cost price (₦)</label><input type="number" id="g-cost" value="'+(p.cost||'')+'"/></div>' +
+      '<div class="field mono"><label>Selling price (₦)</label><input type="number" id="g-price" value="'+(p.price||'')+'"/></div>' +
+      '<div class="field"><label>Status</label><select id="g-status">'+['In Stock','Reserved','Sold','In Repair','Consigned'].map(function(s){ return '<option '+(p.status===s?'selected':'')+'>'+s+'</option>'; }).join('')+'</select></div>' +
+      '<div class="field"><label>Shelf location</label><input id="g-shelf" value="'+(p.shelf!=null?escapeAttr(p.shelf):'')+'"/></div>' +
+    '</div></div>' +
+    '<div class="modal-foot">' +
+      (editing ? ('<button class="btn btn-danger" data-delete-gadget="'+p.id+'">Delete</button>') : '') +
+      '<button class="btn" data-close-modal="1">Cancel</button>' +
+      '<button class="btn btn-accent" data-save-gadget="'+(editing?p.id:'')+'">'+(editing?'Save changes':'Add to inventory')+'</button>' +
+    '</div></div></div>';
+}
+
 function renderBulkImportPreview(){
   const rows = state.bulkImportRows;
   const unparsed = state.bulkImportSkipped;
@@ -2312,13 +2531,68 @@ function renderLaptopBulkImportPreview(){
       unparsed.map(function(u){ return escapeHtml(u.raw); }).join(', ') + '</div>') : '');
 }
 
+function renderGadgetBulkImportModal(){
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:760px;">' +
+    '<div class="modal-head"><h3>Paste gadget stock list</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      (!state.bulkImportGadgetRows.length ? (
+        '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">Paste your gadget list — name, specs, and cost. Selling price is left blank since these lists show what you paid — set your selling price per gadget after import.</p>' +
+        '<div class="form-grid">' +
+          '<div class="field"><label>Condition (applies to this whole batch)</label><select id="bgi-condition"><option value="Used" '+(state.bulkImportGadgetCondition==='Used'?'selected':'')+'>Used</option><option value="New" '+(state.bulkImportGadgetCondition==='New'?'selected':'')+'>New</option></select></div>' +
+          '<div class="field"><label>Supplier contact (optional)</label><select id="bgi-supplier-id"><option value="">— none / type freeform below —</option>' +
+            state.suppliers.map(function(s){ return '<option value="'+s.id+'" '+(state.bulkImportGadgetSupplierId===s.id?'selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('') +
+          '</select></div>' +
+          '<div class="field"><label>Supplier / source label</label><input id="bgi-supplier" placeholder="e.g. Kleeeennnn as NEW" value="'+escapeAttr(state.bulkImportGadgetSupplier)+'"/></div>' +
+        '</div>' +
+        '<div class="field full" style="margin-top:14px;"><label>Paste here</label><textarea id="bgi-text" rows="14" style="font-family:var(--font-mono);font-size:12.5px;" placeholder="PS5 slim 1TB — 840k&#10;FC26 — 120k&#10;JBL Charge 5 — 85k&#10;...">'+escapeHtml(state.bulkImportGadgetText)+'</textarea></div>'
+      ) : renderGadgetBulkImportPreview()) +
+    '</div>' +
+    '<div class="modal-foot">' +
+      (!state.bulkImportGadgetRows.length ?
+        ('<button class="btn" data-close-modal="1">Cancel</button><button class="btn btn-accent" id="bgi-parse-btn">Parse list</button>') :
+        ('<button class="btn" id="bgi-back-btn">← Back to edit paste</button><button class="btn btn-accent" id="bgi-import-btn">Import '+state.bulkImportGadgetRows.filter(function(r){return r.include && !r.duplicate;}).length+' gadgets</button>')
+      ) +
+    '</div></div></div>';
+}
+
+function renderGadgetBulkImportPreview(){
+  const rows = state.bulkImportGadgetRows;
+  const unparsed = state.bulkImportGadgetSkipped;
+  const uniqueRows = rows.filter(function(r){ return !r.duplicate; });
+  const dupRows = rows.filter(function(r){ return r.duplicate; });
+  return '<p style="color:var(--text-dim);font-size:13px;margin-top:0;">Review before importing — uncheck any row you don\'t want, or fix values directly. Cost is what you\'ll set your selling price against later.</p>' +
+    '<table><thead><tr><th></th><th>Model / Name</th><th>Specs</th><th>Description</th><th>Cost</th><th>Qty</th><th>Original line</th></tr></thead><tbody>' +
+    uniqueRows.map(function(r,i){ return '<tr style="'+(r.flagged?'opacity:.55;':'')+'">' +
+      '<td><input type="checkbox" data-bgi-include="'+i+'" '+(r.include?'checked':'')+'/></td>' +
+      '<td><input data-bgi-field="model" data-bgi-row="'+i+'" value="'+escapeAttr(r.model)+'" style="width:150px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input data-bgi-field="storage" data-bgi-row="'+i+'" value="'+escapeAttr(r.storage)+'" style="width:100px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input data-bgi-field="notes" data-bgi-row="'+i+'" value="'+escapeAttr(r.notes)+'" style="width:200px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input type="number" data-bgi-field="price" data-bgi-row="'+i+'" value="'+r.price+'" style="width:90px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td><input type="number" min="1" data-bgi-field="quantity" data-bgi-row="'+i+'" value="'+(r.quantity||1)+'" style="width:55px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 7px;font-size:12.5px;"/></td>' +
+      '<td class="mono" style="font-size:11px;color:var(--text-faint);">'+escapeHtml(r.raw)+(r.flagged?' <span class="badge badge-danger">❌ flagged</span>':'')+'</td>' +
+    '</tr>'; }).join('') +
+    (dupRows.length ? ('<tr><td colspan="7" style="padding:10px 0;border-top:1px solid var(--border);"><strong style="color:var(--accent);font-size:12px;">Duplicate gadgets (already in inventory — will be skipped)</strong></td></tr>') : '') +
+    dupRows.map(function(r){ return '<tr style="opacity:.5;background:var(--panel-2);">' +
+      '<td><input type="checkbox" disabled/></td>' +
+      '<td>'+escapeHtml(r.model||'—')+'</td>' +
+      '<td>'+escapeHtml(r.storage||'—')+'</td>' +
+      '<td>'+escapeHtml(r.notes||'—')+'</td>' +
+      '<td>'+naira(r.price||0)+'</td>' +
+      '<td>'+(r.quantity||1)+'</td>' +
+      '<td class="mono" style="font-size:11px;color:var(--text-faint);">'+escapeHtml(r.raw)+'</td>' +
+    '</tr>'; }).join('') +
+    '</tbody></table>' +
+    (unparsed.length ? ('<div style="margin-top:14px;padding:10px 12px;background:var(--panel-2);border-radius:var(--radius-sm);font-size:12px;color:var(--text-faint);">' +
+      'Couldn\'t confidently recognize specs on '+unparsed.length+' line'+(unparsed.length===1?'':'s')+' (added as-is — rename or uncheck after review): ' +
+      unparsed.map(function(u){ return escapeHtml(u.raw); }).join(', ') + '</div>') : '');
+}
 function renderSaleModal(){
   const available = state.inventory.filter(function(p){ return p.status==='In Stock'; });
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>Log a sale</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body"><div class="form-grid">' +
       '<div class="field full"><label>Phone (in stock only)</label><select id="s-inventory-id"><option value="">Select a phone…</option>' +
-        available.map(function(p){ return '<option value="'+p.id+'">'+(p.item_type==='Laptop'?'💻 ':'📱 ')+escapeHtml(itemLabel(p))+' — '+(p.price?naira(p.price):'no price set yet')+(p.quantity>1?(' ('+p.quantity+' in stock)'):'')+'</option>'; }).join('') +
+        available.map(function(p){ return '<option value="'+p.id+'">'+(p.item_type==='Laptop'?'💻 ':(p.item_type==='Gadget'?'🎮 ':'📱 '))+escapeHtml(itemLabel(p))+' — '+(p.price?naira(p.price):'no price set yet')+(p.quantity>1?(' ('+p.quantity+' in stock)'):'')+'</option>'; }).join('') +
       '</select></div>' +
       '<div class="field"><label>Sale date</label><input type="date" id="s-date" value="'+todayISO()+'"/></div>' +
       '<div class="field mono"><label>Sale price (₦)</label><input type="number" id="s-price"/></div>' +
@@ -2383,7 +2657,7 @@ function renderConsignmentModal(m){
         '<div class="field"><label>Colleague name</label><input id="cn-name" value="'+escapeAttr(c.contact_name||'')+'"/></div>' +
         '<div class="field"><label>Colleague phone</label><input id="cn-phone" value="'+escapeAttr(c.contact_phone||'')+'"/></div>' +
         '<div class="field"><label>Link to inventory phone (optional)</label><select id="cn-inventory-id"><option value="">— none / type below —</option>' +
-          state.inventory.filter(function(p){ return p.status==='In Stock' || p.id===c.inventory_id; }).map(function(p){ return '<option value="'+p.id+'" '+(c.inventory_id===p.id?'selected':'')+'>'+(p.item_type==='Laptop'?'💻 ':'📱 ')+escapeHtml(itemLabel(p))+'</option>'; }).join('') +
+          state.inventory.filter(function(p){ return p.status==='In Stock' || p.id===c.inventory_id; }).map(function(p){ return '<option value="'+p.id+'" '+(c.inventory_id===p.id?'selected':'')+'>'+(p.item_type==='Laptop'?'💻 ':(p.item_type==='Gadget'?'🎮 ':'📱 '))+escapeHtml(itemLabel(p))+'</option>'; }).join('') +
         '</select></div>' +
         '<div class="field"><label>Phone model</label><input id="cn-model" value="'+escapeAttr(c.model||'')+'" placeholder="e.g. iPhone 13 Pro"/></div>' +
         '<div class="field"><label>Storage</label><input id="cn-storage" value="'+escapeAttr(c.storage||'')+'"/></div>' +
@@ -2585,8 +2859,8 @@ function attachHandlers(){
   }
   app.querySelectorAll('[data-open-phone]').forEach(function(el){ el.addEventListener('click', function(){
     state.searchQuery='';
-    const type = el.getAttribute('data-open-item-type')==='Laptop' ? 'editLaptop' : 'editPhone';
-    openModal(type,{id:el.getAttribute('data-open-phone')});
+    const type = el.getAttribute('data-open-item-type');
+    openModal(type==='Laptop'?'editLaptop':(type==='Gadget'?'editGadget':'editPhone'),{id:el.getAttribute('data-open-phone')});
   }); });
   app.querySelectorAll('[data-open-modal]').forEach(function(el){ el.addEventListener('click', function(){ openModal(el.getAttribute('data-open-modal'), {id:el.getAttribute('data-id')}); }); });
   app.querySelectorAll('[data-close-modal]').forEach(function(el){ el.addEventListener('click', closeModal); });
@@ -2640,6 +2914,30 @@ function attachHandlers(){
     if(e.target.closest('button')) return;
     openModal('viewConsignment', { id: el.getAttribute('data-view-consignment') });
   }); });
+
+  /* ---- "Clear all inventory" confirmation modal ---- */
+  const clearInvConfirmInput = document.getElementById('clear-inv-confirm');
+  if(clearInvConfirmInput){
+    clearInvConfirmInput.addEventListener('input', function(e){
+      state.clearInventoryConfirmText = e.target.value;
+      const btn = document.getElementById('confirmClearInventoryBtn');
+      if(btn) btn.disabled = e.target.value.trim().toUpperCase() !== 'DELETE';
+    });
+  }
+  const confirmClearInventoryBtn = document.getElementById('confirmClearInventoryBtn');
+  if(confirmClearInventoryBtn) confirmClearInventoryBtn.addEventListener('click', async function(){
+    if((state.clearInventoryConfirmText||'').trim().toUpperCase() !== 'DELETE'){
+      showToast('Type DELETE to confirm', true); return;
+    }
+    try{
+      const { error } = await sb.from('inventory').delete().eq('dealer_id', state.profile.id);
+      if(error) throw error;
+      await refreshAll();
+      state.selectedInventoryIds = [];
+      state.clearInventoryConfirmText = '';
+      closeModal(); showToast('All inventory cleared');
+    } catch(e){ showToast('Could not clear inventory: '+(e.message||e), true); render(); }
+  });
 
   /* ---- Inventory selection + "send as broadcast" ---- */
   app.querySelectorAll('[data-select-inventory]').forEach(function(el){ el.addEventListener('change', function(){
@@ -2721,9 +3019,6 @@ function attachHandlers(){
     if(!contacts.length){ showToast('Select at least one saved contact', true); return; }
 
     try{
-      // Contacts linked at save-time (via the name autocomplete) go straight through —
-      // no phone matching needed. Phone lookup only runs as a fallback for older
-      // contacts saved before linking existed.
       const linkedIds = contacts.filter(function(c){ return c.linked_dealer_id; }).map(function(c){ return c.linked_dealer_id; });
       const unlinkedWithPhone = contacts.filter(function(c){ return !c.linked_dealer_id && c.phone; });
       let phoneMatchedIds = [];
@@ -2826,7 +3121,7 @@ function attachHandlers(){
     supNameInput.addEventListener('input', function(e){
       if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
       state.supplierSuggestOpen = true;
-      state.supplierNameDraft = e.target.value;   // ← add this line
+      state.supplierNameDraft = e.target.value;
       if(state.supplierLinkedDealerId){ state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = ''; }
       searchDealerDirectory(e.target.value);
       const el = document.getElementById('sup-name'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = e.target.value.length; }
@@ -2849,7 +3144,7 @@ function attachHandlers(){
       if(supplierSuggestBlurTimer){ clearTimeout(supplierSuggestBlurTimer); supplierSuggestBlurTimer = null; }
       state.supplierLinkedDealerId = el.getAttribute('data-select-supplier-suggestion');
       state.supplierLinkedDealerName = el.getAttribute('data-suggestion-name');
-      state.supplierNameDraft = el.getAttribute('data-suggestion-name');   // ← add this line
+      state.supplierNameDraft = el.getAttribute('data-suggestion-name');
       const nameEl = document.getElementById('sup-name'), phoneEl = document.getElementById('sup-phone');
       if(nameEl) nameEl.value = el.getAttribute('data-suggestion-name');
       const suggestedPhone = el.getAttribute('data-suggestion-phone');
@@ -2886,6 +3181,7 @@ function attachHandlers(){
   }
   wirePhotoPreview('f-images');
   wirePhotoPreview('l-images');
+  wirePhotoPreview('g-images');
 
   app.querySelectorAll('[data-save-phone]').forEach(function(el){ el.addEventListener('click', async function(){
     const id = el.getAttribute('data-save-phone');
@@ -2898,8 +3194,8 @@ function attachHandlers(){
     };
     if(!data.model){ showToast('Phone model is required', true); return; }
     if(!id){
-      const dup = isDuplicatePhone({model:data.model, storage:data.storage, color:data.color, condition:data.condition, supplier:data.supplier}, state.inventory);
-      if(dup){ showToast('This exact phone already exists in inventory (ID: '+dup.id+')', true); return; }
+      const dup = isDuplicatePhone({model:data.model, storage:data.storage, color:data.color, condition:data.condition, battery:data.battery, supplier:data.supplier}, state.inventory);
+      if(dup){ showToast('This exact phone (same model, storage, color, condition, and battery health) already exists in inventory (ID: '+dup.id+')', true); return; }
     }
     const existingPhone = id ? state.inventory.find(function(x){ return x.id===id; }) : null;
     const existingImages = imagesFor(existingPhone);
@@ -2937,8 +3233,8 @@ function attachHandlers(){
     };
     if(!data.model){ showToast('Laptop model is required', true); return; }
     if(!id){
-      const dup = isDuplicateLaptop({brand:data.brand, model:data.model, cpu:data.cpu, ram:data.ram, storage:data.storage, screen_size:data.screen_size, gpu:data.gpu, color:data.color, condition:data.condition, supplier:data.supplier}, state.inventory);
-      if(dup){ showToast('This exact laptop already exists in inventory (ID: '+dup.id+')', true); return; }
+      const dup = isDuplicateLaptop({brand:data.brand, model:data.model, cpu:data.cpu, ram:data.ram, storage:data.storage, screen_size:data.screen_size, gpu:data.gpu, color:data.color, condition:data.condition, battery:data.battery, supplier:data.supplier}, state.inventory);
+      if(dup){ showToast('This exact laptop (same brand, model, specs, color, condition, and battery health) already exists in inventory (ID: '+dup.id+')', true); return; }
     }
     const existingLaptop = id ? state.inventory.find(function(x){ return x.id===id; }) : null;
     const existingImages = imagesFor(existingLaptop);
@@ -2964,6 +3260,44 @@ function attachHandlers(){
     } catch(e){ showToast('Save failed: '+(e.message||e), true); render(); }
   }); });
 
+  app.querySelectorAll('[data-save-gadget]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-save-gadget');
+    const data = {
+      item_type: 'Gadget',
+      model: val('g-model'), storage: val('g-storage')||null, color: val('g-color')||null,
+      condition: val('g-condition'), battery: null,
+      supplier: val('g-supplier'), supplier_id: null, purchase_date: todayISO(), cost: Number(val('g-cost')), price: Number(val('g-price')),
+      status: val('g-status'), shelf: val('g-shelf'), notes: val('g-notes')
+    };
+    if(!data.model){ showToast('Gadget name is required', true); return; }
+    if(!id){
+      const dup = isDuplicateGadget({model:data.model, storage:data.storage, color:data.color, condition:data.condition, battery:data.battery, notes:data.notes, supplier:data.supplier}, state.inventory);
+      if(dup){ showToast('This exact gadget (same model, specs, color, condition, and description) already exists in inventory (ID: '+dup.id+')', true); return; }
+    }
+    const existingGadget = id ? state.inventory.find(function(x){ return x.id===id; }) : null;
+    const existingImages = imagesFor(existingGadget);
+    const removed = state.photoModalRemovedUrls || [];
+    let keptImages = existingImages.filter(function(u){ return removed.indexOf(u)===-1; });
+    const gImagesEl = document.getElementById('g-images');
+    const newFiles = gImagesEl && gImagesEl.files ? Array.from(gImagesEl.files) : [];
+    try{
+      if(newFiles.length){
+        showToast('Uploading '+newFiles.length+' photo'+(newFiles.length===1?'s':'')+'…');
+        for(let i=0;i<newFiles.length;i++){
+          const url = await uploadPhoneImage(newFiles[i]);
+          keptImages.push(url);
+        }
+      }
+      data.image_urls = keptImages;
+      data.image_url = keptImages.length ? keptImages[0] : null;
+      if(id){ const { error } = await sb.from('inventory').update(data).eq('id', id); if(error) throw error; }
+      else{ data.dealer_id = state.profile.id; const { error } = await sb.from('inventory').insert(data); if(error) throw error; }
+      await refreshAll();
+      state.photoModalRemovedUrls = [];
+      closeModal(); showToast(id?'Gadget updated':'Gadget added to inventory');
+    } catch(e){ showToast('Save failed: '+(e.message||e), true); render(); }
+  }); });
+
   app.querySelectorAll('[data-delete-phone]').forEach(function(el){ el.addEventListener('click', async function(){
     const id = el.getAttribute('data-delete-phone');
     try{
@@ -2971,6 +3305,16 @@ function attachHandlers(){
       if(error) throw error;
       await refreshAll();
       closeModal(); showToast('Phone removed');
+    } catch(e){ showToast('Delete failed: '+e.message, true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-delete-gadget]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-delete-gadget');
+    try{
+      const { error } = await sb.from('inventory').delete().eq('id', id);
+      if(error) throw error;
+      await refreshAll();
+      closeModal(); showToast('Gadget removed');
     } catch(e){ showToast('Delete failed: '+e.message, true); render(); }
   }); });
 
@@ -3295,6 +3639,63 @@ function attachHandlers(){
       state.bulkImportLaptopRows = []; state.bulkImportLaptopText=''; state.bulkImportLaptopSupplierId='';
       closeModal();
       showToast(toInsert.length+' laptops imported'+(dupCount ? ' ('+dupCount+' duplicate'+(dupCount===1?'':'s')+' skipped)' : ''));
+     } catch(e){ showToast('Import failed: '+(e.message||e), true); render(); }
+  });
+
+  const bgiParseBtn = document.getElementById('bgi-parse-btn');
+  if(bgiParseBtn) bgiParseBtn.addEventListener('click', function(){
+    const text = val('bgi-text');
+    state.bulkImportGadgetText = text;
+    state.bulkImportGadgetCondition = val('bgi-condition');
+    state.bulkImportGadgetSupplier = val('bgi-supplier');
+    state.bulkImportGadgetSupplierId = val('bgi-supplier-id') || null;
+    const parsed = parseBulkGadget(text);
+    state.bulkImportGadgetRows = parsed.rows; state.bulkImportGadgetSkipped = parsed.skipped;
+    if(!state.bulkImportGadgetRows.length){ showToast('No recognizable gadget lines found in that paste', true); return; }
+    render();
+  });
+  const bgiBackBtn = document.getElementById('bgi-back-btn');
+  if(bgiBackBtn) bgiBackBtn.addEventListener('click', function(){ state.bulkImportGadgetRows = []; render(); });
+
+  const bgiSupplierId = document.getElementById('bgi-supplier-id');
+  if(bgiSupplierId) bgiSupplierId.addEventListener('change', function(){
+    const s = state.suppliers.find(function(x){ return x.id === bgiSupplierId.value; });
+    const bgiSupplier = document.getElementById('bgi-supplier');
+    if(s && bgiSupplier) bgiSupplier.value = s.name;
+  });
+
+  document.querySelectorAll('[data-bgi-include]').forEach(function(el){
+    el.addEventListener('change', function(){ state.bulkImportGadgetRows[Number(el.getAttribute('data-bgi-include'))].include = el.checked; });
+  });
+  document.querySelectorAll('[data-bgi-field]').forEach(function(el){
+    el.addEventListener('input', function(){
+      const i = Number(el.getAttribute('data-bgi-row')), f = el.getAttribute('data-bgi-field');
+      state.bulkImportGadgetRows[i][f] = el.value;
+    });
+  });
+
+  const bgiImportBtn = document.getElementById('bgi-import-btn');
+  if(bgiImportBtn) bgiImportBtn.addEventListener('click', async function(){
+    const dupCount = state.bulkImportGadgetRows.filter(function(r){ return r.include && r.duplicate; }).length;
+    const toInsert = state.bulkImportGadgetRows.filter(function(r){ return r.include && !r.duplicate; }).map(function(r){
+      return {
+        dealer_id: state.profile.id, item_type: 'Gadget', brand: null, model: r.model, cpu: null, ram: null,
+        storage: r.storage, screen_size: null, gpu: null, color: '',
+        condition: state.bulkImportGadgetCondition, battery: null,
+        quantity: Number(r.quantity)||1, supplier: state.bulkImportGadgetSupplier || (r.sectionLabel||''),
+        supplier_id: state.bulkImportGadgetSupplierId || null,
+        purchase_date: todayISO(),
+        cost: Number(r.price)||0, price: null, status: 'In Stock', shelf: '', notes: 'Bulk imported: '+r.raw
+      };
+    });
+    if(!toInsert.length){ showToast('No rows selected to import', true); return; }
+    try{
+      const { error } = await sb.from('inventory').insert(toInsert);
+      if(error) throw error;
+      await refreshAll();
+      state.bulkImportGadgetRows = []; state.bulkImportGadgetText=''; state.bulkImportGadgetSupplierId='';
+      closeModal();
+      showToast(toInsert.length+' gadgets imported'+(dupCount ? ' ('+dupCount+' duplicate'+(dupCount===1?'':'s')+' skipped)' : ''));
     } catch(e){ showToast('Import failed: '+(e.message||e), true); render(); }
   });
 

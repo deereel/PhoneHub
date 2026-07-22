@@ -316,10 +316,11 @@ function renderShop(){
   const items = catalog();
   const catCounts = { All: state.inventory.filter(function(p){return p.status==='In Stock';}).length,
     Phone: state.inventory.filter(function(p){return p.status==='In Stock' && (p.item_type||'Phone')==='Phone';}).length,
-    Laptop: state.inventory.filter(function(p){return p.status==='In Stock' && p.item_type==='Laptop';}).length };
-  return '<div class="hero"><h1>Find your next phone or laptop</h1><p>Everything below is verified and in stock at '+escapeHtml(state.selectedShop.shop_name)+' right now.</p></div>' +
+    Laptop: state.inventory.filter(function(p){return p.status==='In Stock' && p.item_type==='Laptop';}).length,
+    Gadget: state.inventory.filter(function(p){return p.status==='In Stock' && p.item_type==='Gadget';}).length };
+  return '<div class="hero"><h1>Find your next phone, laptop, or gadget</h1><p>Everything below is verified and in stock at '+escapeHtml(state.selectedShop.shop_name)+' right now.</p></div>' +
     '<div class="filter-row" style="margin-bottom:10px;">' +
-      ['All','Phone','Laptop'].map(function(c){ return '<span class="nav-tab '+(state.categoryFilter===c?'active':'')+'" data-category-filter="'+c+'" style="cursor:pointer;">'+(c==='All'?'All':(c==='Phone'?'📱 Phones':'💻 Laptops'))+' ('+catCounts[c]+')</span>'; }).join('') +
+      ['All','Phone','Laptop','Gadget'].map(function(c){ return '<span class="nav-tab '+(state.categoryFilter===c?'active':'')+'" data-category-filter="'+c+'" style="cursor:pointer;">'+(c==='All'?'All':(c==='Phone'?'📱 Phones':(c==='Laptop'?'💻 Laptops':'🎮 Gadgets')))+' ('+catCounts[c]+')</span>'; }).join('') +
     '</div>' +
     '<div class="filter-row">' +
       '<input id="q" placeholder="Search model, brand, or color…" value="'+escapeHtml(state.q)+'"/>' +
@@ -328,11 +329,12 @@ function renderShop(){
     '</div>' +
     '<div class="grid">' + items.map(function(p){
       const isLaptop = (p.item_type||'Phone')==='Laptop';
-      const spec = isLaptop ? [p.cpu,p.ram,p.storage].filter(Boolean).join(' · ') : [p.storage,p.color].filter(Boolean).join(' · ');
+      const isGadget = (p.item_type||'Phone')==='Gadget';
+      const spec = isLaptop ? [p.cpu,p.ram,p.storage].filter(Boolean).join(' · ') : (isGadget ? [p.storage,p.notes].filter(Boolean).join(' · ') : [p.storage,p.color].filter(Boolean).join(' · '));
       return '<div class="tag-card" data-view-phone="'+p.id+'">' +
         (p.image_url ? ('<img class="tag-photo" src="'+escapeAttr(p.image_url)+'" loading="lazy" alt="'+escapeAttr(p.model)+'"/>') : '') +
         '<span class="tag-condition '+(p.condition==='New'?'new':'used')+'">'+escapeHtml(p.condition)+'</span>' +
-        '<div class="tag-model">'+(isLaptop && p.brand ? escapeHtml(p.brand)+' ' : '')+escapeHtml(p.model)+'</div>' +
+        '<div class="tag-model">'+escapeHtml(p.model)+'</div>' +
         '<div class="tag-spec">'+escapeHtml(spec)+'</div>' +
         '<div class="tag-price">'+naira(p.price)+'</div>' +
         (p.condition==='Used' && p.battery!=null ? ('<div class="tag-battery">Battery health '+p.battery+'%</div>') : '') +
@@ -346,11 +348,12 @@ function renderModal(){
   const p = state.inventory.find(function(x){ return x.id===state.modal.payload.id; });
   if(!p) return '';
   const isLaptop = (p.item_type||'Phone')==='Laptop';
+  const isGadget = (p.item_type||'Phone')==='Gadget';
   return '<div class="overlay" data-close-overlay="1"><div class="sheet" data-stop="1">' +
     '<button class="close-x" data-close-modal="1">×</button>' +
     (p.image_url ? ('<img class="sheet-photo" src="'+escapeAttr(p.image_url)+'" alt="'+escapeAttr(p.model)+'"/>') : '') +
     '<span class="tag-condition '+(p.condition==='New'?'new':'used')+'">'+escapeHtml(p.condition)+'</span>' +
-    '<h2>'+(isLaptop && p.brand ? escapeHtml(p.brand)+' ' : '')+escapeHtml(p.model)+'</h2>' +
+    '<h2>'+escapeHtml(p.model)+'</h2>' +
     '<div class="price-big">'+naira(p.price)+'</div>' +
     (isLaptop ? (
       '<div class="detail-row"><span class="k">Processor</span><span class="v">'+escapeHtml(p.cpu||'—')+'</span></div>' +
@@ -358,14 +361,17 @@ function renderModal(){
       '<div class="detail-row"><span class="k">Storage</span><span class="v">'+escapeHtml(p.storage||'—')+'</span></div>' +
       '<div class="detail-row"><span class="k">Screen</span><span class="v">'+escapeHtml(p.screen_size||'—')+'</span></div>' +
       (p.gpu ? ('<div class="detail-row"><span class="k">Graphics</span><span class="v">'+escapeHtml(p.gpu)+'</span></div>') : '')
+    ) : (isGadget ? (
+      '<div class="detail-row"><span class="k">Specs</span><span class="v">'+escapeHtml(p.storage||'—')+'</span></div>' +
+      (p.notes ? ('<div class="detail-row"><span class="k">Description</span><span class="v">'+escapeHtml(p.notes.replace(/\n/g,', '))+'</span></div>') : '')
     ) : (
-      '<div class="detail-row"><span class="k">Storage</span><span class="v">'+escapeHtml(p.storage)+'</span></div>'
-    )) +
+      '<div class="detail-row"><span class="k">Storage</span><span class="v">'+escapeHtml(p.storage||'—')+'</span></div>'
+    ))) +
     '<div class="detail-row"><span class="k">Color</span><span class="v">'+escapeHtml(p.color)+'</span></div>' +
     (p.condition==='Used' && p.battery!=null ? ('<div class="detail-row"><span class="k">Battery health</span><span class="v">'+p.battery+'%</span></div>') : '') +
     '<div class="detail-row"><span class="k">Warranty</span><span class="v">Included on purchase</span></div>' +
     '<div class="detail-row"><span class="k">Availability</span><span class="v" style="color:var(--success)">In stock now</span></div>' +
-    '<button class="btn btn-primary btn-block" style="margin-top:18px;" data-tab="request" data-close-modal="1">Ask about this '+(isLaptop?'laptop':'phone')+'</button>' +
+    '<button class="btn btn-primary btn-block" style="margin-top:18px;" data-tab="request" data-close-modal="1">Ask about this '+(isLaptop?'laptop':(isGadget?'gadget':'phone'))+'</button>' +
   '</div></div>';
 }
 
@@ -373,7 +379,7 @@ function renderRequestForm(){
   return '<div class="hero"><h1>Can\'t find it?</h1><p>Tell '+escapeHtml(state.selectedShop.shop_name)+' what you want — they\'ll reach out the moment it\'s available, sometimes from their trusted dealer network.</p></div>' +
     '<div class="form-card">' +
       '<div class="two-col"><div class="field"><label>Your name</label><input id="r-name"/></div><div class="field"><label>Phone number</label><input id="r-phone"/></div></div>' +
-      '<div class="two-col"><div class="field"><label>Phone or laptop model</label><input id="r-model" placeholder="e.g. Google Pixel 9, or HP EliteBook 840"/></div><div class="field"><label>Storage / color / spec (optional)</label><input id="r-variant" placeholder="256GB, Black, 16GB RAM…"/></div></div>' +
+      '<div class="two-col"><div class="field"><label>Phone, laptop, or gadget model</label><input id="r-model" placeholder="e.g. Google Pixel 9, HP EliteBook 840, or PS5 Slim"/></div><div class="field"><label>Storage / color / spec (optional)</label><input id="r-variant" placeholder="256GB, Black, 1TB, wireless…"/></div></div>' +
       '<div class="field"><label>Your budget (₦, optional)</label><input type="number" id="r-budget"/></div>' +
       '<div class="field"><label>Anything else?</label><textarea id="r-notes" rows="2"></textarea></div>' +
       '<button class="btn btn-primary btn-block" id="submitRequestBtn">Send request</button>' +
