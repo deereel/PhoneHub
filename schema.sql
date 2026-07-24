@@ -27,6 +27,18 @@ create table if not exists dealers (
   created_at timestamptz not null default now()
 );
 
+-- Notification preferences: open-market ("network" visibility) broadcasts
+-- push to NO ONE by default — only private broadcasts (addressed directly
+-- to saved contacts) push automatically. A dealer opts in here if they want
+-- to also be pushed for open-market broadcasts, optionally narrowed to a
+-- handful of brands they actually deal in. See notify_broadcast_push() below.
+alter table dealers add column if not exists notify_network_broadcasts boolean not null default false;
+alter table dealers add column if not exists brand_focus text[] not null default '{}';
+comment on column dealers.notify_network_broadcasts is
+  'If true, this dealer receives push notifications for open-market (visibility=network) broadcasts, not just private ones addressed directly to them. Default false to avoid notification fatigue.';
+comment on column dealers.brand_focus is
+  'Optional list (recommended max 3) of brand keywords, e.g. {"iPhone","Samsung"}. When notify_network_broadcasts is true and this is non-empty, only network broadcasts whose model/items text matches one of these brands will be pushed to this dealer. Empty array = no brand filtering.';
+
 alter table dealers enable row level security;
 
 -- Security-definer helper: checks admin status while bypassing dealers' own RLS,
@@ -655,9 +667,46 @@ on conflict (key) do nothing;
 -- ^^^ Edit these two values to your real Edge Function URL and webhook secret.
 -- (Find them again any time with: select * from app_config;)
 
+-- Helper: does a broadcast's content mention any of a dealer's focus brands?
+-- Checks the top-level model/storage/color text plus every item inside the
+-- items jsonb array (for multi-item "Stock" adverts), case-insensitively.
+-- An empty/null brand_focus list means "no filtering" (matches everything).
+create or replace function broadcast_matches_brand_focus(p_broadcast broadcasts, p_brand_focus text[])
+returns boolean
+language sql
+stable
+as $$
+  select
+    (p_brand_focus is null or array_length(p_brand_focus,1) is null)
+    or exists (
+      select 1 from unnest(p_brand_focus) as brand
+      where
+        p_broadcast.model ilike '%' || brand || '%'
+        or coalesce(p_broadcast.storage,'') ilike '%' || brand || '%'
+        or coalesce(p_broadcast.color,'') ilike '%' || brand || '%'
+        or exists (
+          select 1 from jsonb_array_elements(coalesce(p_broadcast.items, '[]'::jsonb)) as it
+          where (it->>'model') ilike '%' || brand || '%'
+             or coalesce(it->>'brand','') ilike '%' || brand || '%'
+        )
+    );
+$$;
+
+-- Fires the send-push Edge Function whenever a broadcast is inserted.
+-- For a 'private' broadcast: notifies only the dealers in target_dealer_ids
+-- (i.e. every one of your saved contacts who has a PhoneHub account).
+-- For a 'network' (open-market) broadcast: does NOT push to every dealer —
+-- with many dealers on the platform that becomes constant unwanted noise.
+-- Instead it only pushes to dealers who have explicitly opted in via
+-- notify_network_broadcasts=true, and (if they set one) whose brand_focus
+-- matches this broadcast. Every dealer still SEES all open-market
+-- broadcasts via the Network tab's badge count and realtime subscription —
+-- this only controls who gets an actual push/buzz for it.
 create or replace function notify_broadcast_push()
 returns trigger language plpgsql security definer set search_path = public as $$
-declare v_url text; v_secret text; v_title text; v_body text;
+declare
+  v_url text; v_secret text; v_title text; v_body text;
+  v_target_ids uuid[];
 begin
   select value into v_url from app_config where key='edge_function_url';
   select value into v_secret from app_config where key='edge_function_secret';
@@ -675,10 +724,20 @@ begin
         'title', v_title, 'body', v_body, 'url', './#tab=network', 'type', 'broadcast')
     );
   else
+    select array_agg(d.id) into v_target_ids
+    from dealers d
+    where d.id <> new.dealer_id
+      and d.notify_network_broadcasts = true
+      and broadcast_matches_brand_focus(new, d.brand_focus);
+
+    if v_target_ids is null or array_length(v_target_ids,1) is null then
+      return new; -- nobody opted in / matched — badge/realtime still updates for everyone, just no push
+    end if;
+
     perform net.http_post(
       url := v_url,
       headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
-      body := jsonb_build_object('exclude_dealer_id', new.dealer_id,
+      body := jsonb_build_object('dealer_ids', to_jsonb(v_target_ids),
         'title', v_title, 'body', v_body, 'url', './#tab=network', 'type', 'broadcast')
     );
   end if;

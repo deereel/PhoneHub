@@ -330,6 +330,7 @@ const VAPID_PUBLIC_KEY = 'BBaI8oRyneg29btIHbptXiW5JA8oAXDk5V3MehmsvJXHvsQXn97QVC
 let sb = null;
 let dealerFilterBlurTimer = null;
 let supplierSuggestBlurTimer = null;
+let saleItemBlurTimer = null;
 
 let state = {
   stage:'loading', // loading -> configure -> auth -> app
@@ -357,7 +358,14 @@ let state = {
   galleryIndex:0, // current slide index for the image gallery inside view modals
   supplierLinkedDealerId: null, supplierLinkedDealerName: '',
   supplierSuggestions: [], supplierSuggestOpen: false,
+  saleModalQuery:'', saleModalSelectedId:null, saleModalOpen:false,
   clearInventoryConfirmText: '', // typed confirmation text for the "Clear all inventory" modal
+  salesSubTab:'log', // 'log' | 'history' — sub-tab within the Sales tab. Both only ever
+                      // show state.sales, which is already scoped to THIS dealer's own
+                      // rows (see refreshAll's .eq('dealer_id', state.profile.id) query) —
+                      // never a network-wide log of other dealers' sales.
+  historyQuery:'', historyMonthFilter:'All',
+  brandFocusDraft:'', // comma-separated draft text for the "brands I deal in" input in Notification settings
 };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -479,6 +487,15 @@ async function searchDealerDirectory(q){
 // out of the field mid-keystroke.
 function refocusSupName(){
   const el = document.getElementById('sup-name');
+  if(el){ el.focus(); const v = el.value; el.selectionStart = el.selectionEnd = v.length; }
+}
+
+// Same reasoning as refocusSupName() — render() rebuilds the whole modal's
+// DOM (including this input), so opening the sale-item dropdown on focus
+// needs to explicitly refocus the freshly-created input, or the browser's
+// focus is simply dropped and typing goes nowhere.
+function refocusSaleItemSearch(){
+  const el = document.getElementById('s-item-search');
   if(el){ el.focus(); const v = el.value; el.selectionStart = el.selectionEnd = v.length; }
 }
 
@@ -1341,6 +1358,8 @@ function openModal(name, payload){
   if(name==='addPhone' || name==='editPhone' || name==='addLaptop' || name==='editLaptop' || name==='addGadget' || name==='editGadget') state.photoModalRemovedUrls = [];
   if(name==='viewNetworkItem' || name==='viewStockItem') state.galleryIndex = 0;
   if(name==='clearInventory') state.clearInventoryConfirmText = '';
+  if(name==='notifSettings') state.brandFocusDraft = (state.profile.brand_focus||[]).join(', ');
+  if(name==='logSale'){ state.saleModalQuery = ''; state.saleModalSelectedId = null; state.saleModalOpen = false; }
   if(name==='addSupplier' || name==='editSupplier'){
     state.supplierSuggestions = []; state.supplierSuggestOpen = false;
     state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = '';
@@ -1797,13 +1816,26 @@ function renderGadgetInventoryTable(items){
   '</tbody></table>';
 }
 
+// NOTE: both sub-tabs below read only from state.sales, which refreshAll()
+// already fetches scoped to `.eq('dealer_id', state.profile.id)` — this is
+// each dealer's own sales only, forever (even after a sold IMEI'd phone is
+// deleted from Inventory). There is no cross-dealer/network view here.
 function renderSales(){
-  const rows = state.sales.slice().sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
-  return '<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
-      '<div><h1 class="page-title">Sales log</h1><p class="page-sub">'+state.sales.length+' sales recorded</p></div>' +
+  const subTabs = '<div class="pill-tabs">' +
+      '<div class="pill-tab '+(state.salesSubTab==='log'?'active':'')+'" data-sales-subtab="log">Recent</div>' +
+      '<div class="pill-tab '+(state.salesSubTab==='history'?'active':'')+'" data-sales-subtab="history">Permanent log</div>' +
+    '</div>';
+  return '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">' +
+      '<div><h1 class="page-title">Sales</h1><p class="page-sub">'+state.sales.length+' sales recorded — your shop only</p></div>' +
       '<button class="btn btn-accent" data-open-modal="logSale">'+ICONS.plus+' Log a sale</button>' +
     '</div>' +
-    '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
+    subTabs +
+    (state.salesSubTab==='history' ? renderSalesHistory() : renderSalesLog());
+}
+
+function renderSalesLog(){
+  const rows = state.sales.slice().sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
+  return '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
       (rows.length ? ('<table><thead><tr><th>Date</th><th>Phone</th><th>Customer</th><th>Sale price</th><th>Profit</th><th>Payment</th><th>Staff</th><th>Warranty</th><th></th></tr></thead><tbody>' +
         rows.map(function(s){
           const expiry = new Date(s.date); expiry.setDate(expiry.getDate()+Number(s.warranty_days||0));
@@ -1822,6 +1854,79 @@ function renderSales(){
         '</tr>'; }).join('') +
       '</tbody></table>') : ('<div class="empty">'+ICONS.empty+'<div>No sales logged yet.</div></div>')) +
     '</div></div>';
+}
+
+// Permanent, per-dealer sales log — grouped by month with running totals,
+// searchable by phone/customer/IMEI. This is the ONLY place old sales live on
+// once a sold IMEI'd phone is removed from Inventory; it is never shared with
+// other dealers.
+function renderSalesHistory(){
+  const q = state.historyQuery.trim().toLowerCase();
+  const monthFilter = state.historyMonthFilter;
+
+  const monthKey = function(d){ return (d||'').slice(0,7); }; // 'YYYY-MM'
+  const monthLabel = function(key){
+    if(!key) return 'Unknown date';
+    const parts = key.split('-'); const d = new Date(Number(parts[0]), Number(parts[1])-1, 1);
+    return d.toLocaleDateString('en-NG', {month:'long', year:'numeric'});
+  };
+
+  const allMonths = Array.from(new Set(state.sales.map(function(s){ return monthKey(s.date); })))
+    .sort().reverse();
+
+  let rows = state.sales.slice();
+  if(monthFilter!=='All') rows = rows.filter(function(s){ return monthKey(s.date)===monthFilter; });
+  if(q){
+    rows = rows.filter(function(s){
+      const hay = [s.model, s.customer_name, s.customer_phone, s.imei, s.staff].filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+  }
+  rows.sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
+
+  // Group the (already filtered) rows by month for a running total per month.
+  const groups = {};
+  const order = [];
+  rows.forEach(function(s){
+    const k = monthKey(s.date);
+    if(!groups[k]){ groups[k] = []; order.push(k); }
+    groups[k].push(s);
+  });
+
+  const monthSelect = '<select id="historyMonthFilter" style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 11px;color:var(--text);font-family:var(--font-body);font-size:13px;outline:none;">' +
+    '<option value="All" '+(monthFilter==='All'?'selected':'')+'>All time</option>' +
+    allMonths.map(function(k){ return '<option value="'+k+'" '+(monthFilter===k?'selected':'')+'>'+monthLabel(k)+'</option>'; }).join('') +
+    '</select>';
+
+  const body = order.length ? order.map(function(k){
+    const list = groups[k];
+    const revenue = list.reduce(function(a,s){ return a+(Number(s.sale_price)||0); },0);
+    const profit = list.reduce(function(a,s){ return a+((Number(s.sale_price)||0)-(Number(s.cost)||0)); },0);
+    return '<div class="section">' +
+      '<div class="section-head"><h3>'+monthLabel(k)+'</h3>' +
+        '<div style="font-size:12px;color:var(--text-dim);">'+list.length+' sale'+(list.length===1?'':'s')+' · '+naira(revenue)+' revenue · <span style="color:var(--success)">'+naira(profit)+' profit</span></div>' +
+      '</div>' +
+      '<div class="section-body table-scroll" style="padding:0;">' +
+        '<table><thead><tr><th>Date</th><th>Phone</th><th>IMEI</th><th>Customer</th><th>Sale price</th><th>Profit</th><th></th></tr></thead><tbody>' +
+        list.map(function(s){ return '<tr>' +
+          '<td class="mono">'+escapeHtml(s.date)+'</td>' +
+          '<td class="strong">'+escapeHtml(s.model)+'</td>' +
+          '<td class="mono">'+(s.imei?escapeHtml(s.imei):'<span style="color:var(--text-faint)">—</span>')+'</td>' +
+          '<td>'+escapeHtml(s.customer_name)+'</td>' +
+          '<td class="mono">'+naira(s.sale_price)+'</td>' +
+          '<td class="mono" style="color:var(--success)">'+naira((Number(s.sale_price)||0)-(Number(s.cost)||0))+'</td>' +
+          '<td><button class="btn btn-sm" data-print-invoice="'+s.id+'">🧾 Invoice</button></td>' +
+        '</tr>'; }).join('') +
+        '</tbody></table>' +
+      '</div></div>';
+  }).join('') : ('<div class="empty">'+ICONS.empty+'<div>'+(q||monthFilter!=='All' ? 'No sales match that search.' : 'No sales logged yet.')+'</div></div>');
+
+  return '<div class="filter-row" style="display:flex;gap:10px;flex-wrap:wrap;margin:0 0 16px;">' +
+      '<input id="historySearch" placeholder="Search model, customer, IMEI, or staff…" value="'+escapeAttr(state.historyQuery)+'" ' +
+        'style="flex:1;min-width:220px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;color:var(--text);font-family:var(--font-mono);font-size:13px;outline:none;"/>' +
+      monthSelect +
+    '</div>' +
+    body;
 }
 
 function renderCalc(){
@@ -2265,8 +2370,23 @@ function renderNotifModal(){
           status==='denied' ? '' :
           '<button class="btn btn-accent btn-sm" id="enablePushBtn" '+(status==='prompting'?'disabled':'')+'>Enable</button>') +
       '</div>' +
-      '<div class="notif-row"><div class="n-sub">You\'ll be alerted for: new customer requests, dealer network broadcasts and responses, warranty phones expiring within 2 days, and phones down to their last unit. Alerts arrive even if this app isn\'t open, as long as your phone has data/wifi.</div></div>' +
+      '<div class="notif-row"><div class="n-sub">You\'ll always be alerted for: new customer requests to your shop, private broadcasts sent to you directly, responses to your own broadcasts, warranty phones expiring within 2 days, and phones down to their last unit. Alerts arrive even if this app isn\'t open, as long as your phone has data/wifi.</div></div>' +
       (status==='denied' ? '<div class="n-sub" style="margin-top:8px;color:var(--danger)">Notifications are blocked for this site in your browser. Open your browser\'s site settings for this page and allow notifications, then reopen this dialog.</div>' : '') +
+      '<div class="notif-row"><div><div class="n-label">Also alert me for open-market broadcasts</div>' +
+        '<div class="n-sub">Off by default — with many dealers on the network, every "need it" or "for sale" post would otherwise buzz your phone constantly. Open-market broadcasts still show up in the Network tab badge either way.</div></div>' +
+        '<input type="checkbox" id="notifyNetworkToggle" '+(state.profile.notify_network_broadcasts?'checked':'')+' style="width:20px;height:20px;flex-shrink:0;"/>' +
+      '</div>' +
+      (state.profile.notify_network_broadcasts ? (
+        '<div class="notif-row" style="flex-direction:column;align-items:stretch;gap:8px;">' +
+          '<div><div class="n-label">Only alert me about these brands (optional)</div>' +
+            '<div class="n-sub">e.g. iPhone, Samsung — up to 3. Leave blank to get pushed for every open-market broadcast.</div></div>' +
+          '<div style="display:flex;gap:8px;">' +
+            '<input id="brandFocusInput" placeholder="iPhone, Samsung, iPad" value="'+escapeAttr(state.brandFocusDraft)+'" ' +
+              'style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 11px;color:var(--text);font-family:var(--font-body);font-size:13px;outline:none;"/>' +
+            '<button class="btn btn-accent btn-sm" id="saveBrandFocusBtn">Save</button>' +
+          '</div>' +
+        '</div>'
+      ) : '') +
     '</div>' +
   '</div></div>';
 }
@@ -2586,14 +2706,37 @@ function renderGadgetBulkImportPreview(){
       'Couldn\'t confidently recognize specs on '+unparsed.length+' line'+(unparsed.length===1?'':'s')+' (added as-is — rename or uncheck after review): ' +
       unparsed.map(function(u){ return escapeHtml(u.raw); }).join(', ') + '</div>') : '');
 }
+// Short row label for the sale-item picker — same icon-per-type convention
+// used elsewhere, plus price and remaining-quantity context.
+function saleItemRowLabel(p){
+  const icon = p.item_type==='Laptop' ? '💻 ' : (p.item_type==='Gadget' ? '🎮 ' : '📱 ');
+  return icon+escapeHtml(itemLabel(p))+' — '+(p.price?naira(p.price):'no price set yet')+(p.quantity>1?(' ('+p.quantity+' in stock)'):'');
+}
+
 function renderSaleModal(){
   const available = state.inventory.filter(function(p){ return p.status==='In Stock'; });
+  const selected = state.saleModalSelectedId ? available.find(function(p){ return p.id===state.saleModalSelectedId; }) : null;
+  const q = (state.saleModalQuery||'').trim().toLowerCase();
+  const filtered = q ? available.filter(function(p){
+    const hay = [itemLabel(p), p.model, p.brand, p.imei, p.imei2].filter(Boolean).join(' ').toLowerCase();
+    return hay.includes(q);
+  }) : available;
+
   return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
     '<div class="modal-head"><h3>Log a sale</h3><button class="close-x" data-close-modal="1">×</button></div>' +
     '<div class="modal-body"><div class="form-grid">' +
-      '<div class="field full"><label>Phone (in stock only)</label><select id="s-inventory-id"><option value="">Select a phone…</option>' +
-        available.map(function(p){ return '<option value="'+p.id+'">'+(p.item_type==='Laptop'?'💻 ':(p.item_type==='Gadget'?'🎮 ':'📱 '))+escapeHtml(itemLabel(p))+' — '+(p.price?naira(p.price):'no price set yet')+(p.quantity>1?(' ('+p.quantity+' in stock)'):'')+'</option>'; }).join('') +
-      '</select></div>' +
+      '<div class="field full" style="position:relative;">' +
+        '<label>Item — phone, laptop, or gadget (in stock only)</label>' +
+        '<input id="s-item-search" autocomplete="off" placeholder="Type to search, or click to browse…" ' +
+          'value="'+escapeAttr(selected ? itemLabel(selected) : (state.saleModalQuery||''))+'" '+(selected?'readonly':'')+'/>' +
+        (selected ? ('<button type="button" id="s-item-clear" title="Change item" style="position:absolute;right:10px;top:33px;background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:18px;line-height:1;">×</button>') : '') +
+        (state.saleModalOpen && !selected ? (
+          '<div style="position:absolute;top:100%;left:0;right:0;background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:240px;overflow-y:auto;z-index:60;box-shadow:0 12px 28px rgba(0,0,0,.45);margin-top:4px;">' +
+            (filtered.length ? filtered.map(function(p){ return '<div class="search-row" data-select-sale-item="'+p.id+'"><span class="sr-main">'+saleItemRowLabel(p)+'</span></div>'; }).join('') :
+              '<div style="padding:12px 14px;color:var(--text-faint);font-size:12.5px;">No matching in-stock items</div>') +
+          '</div>'
+        ) : '') +
+      '</div>' +
       '<div class="field"><label>Sale date</label><input type="date" id="s-date" value="'+todayISO()+'"/></div>' +
       '<div class="field mono"><label>Sale price (₦)</label><input type="number" id="s-price"/></div>' +
       '<div class="field mono"><label>IMEI (optional — record it now, at sale)</label><input id="s-imei" placeholder="Scan or type IMEI"/></div>' +
@@ -2841,6 +2984,34 @@ function attachHandlers(){
   const disablePushBtn = document.getElementById('disablePushBtn');
   if(disablePushBtn) disablePushBtn.addEventListener('click', disablePush);
 
+  const notifyNetworkToggle = document.getElementById('notifyNetworkToggle');
+  if(notifyNetworkToggle) notifyNetworkToggle.addEventListener('change', async function(){
+    const wantsOn = notifyNetworkToggle.checked;
+    try{
+      const { error } = await sb.from('dealers').update({ notify_network_broadcasts: wantsOn }).eq('id', state.profile.id);
+      if(error) throw error;
+      state.profile.notify_network_broadcasts = wantsOn;
+      showToast(wantsOn ? 'You\'ll now be alerted for open-market broadcasts too' : 'Open-market broadcasts will stay in-app only');
+    } catch(e){
+      notifyNetworkToggle.checked = !wantsOn; // revert the visual toggle on failure
+      showToast('Could not update: '+(e.message||e), true);
+    }
+    render();
+  });
+  const saveBrandFocusBtn = document.getElementById('saveBrandFocusBtn');
+  if(saveBrandFocusBtn) saveBrandFocusBtn.addEventListener('click', async function(){
+    const brandFocusInput = document.getElementById('brandFocusInput');
+    state.brandFocusDraft = brandFocusInput ? brandFocusInput.value : state.brandFocusDraft;
+    const brands = state.brandFocusDraft.split(',').map(function(b){ return b.trim(); }).filter(Boolean).slice(0,3);
+    try{
+      const { error } = await sb.from('dealers').update({ brand_focus: brands }).eq('id', state.profile.id);
+      if(error) throw error;
+      state.profile.brand_focus = brands;
+      showToast(brands.length ? 'Saved — you\'ll only be pushed for '+brands.join(', ') : 'Saved — you\'ll be pushed for every open-market broadcast');
+    } catch(e){ showToast('Could not save: '+(e.message||e), true); }
+    render();
+  });
+
   const installAppBtn = document.getElementById('installAppBtn');
   if(installAppBtn) installAppBtn.addEventListener('click', async function(){
     if(!deferredInstallPrompt) return;
@@ -2867,6 +3038,14 @@ function attachHandlers(){
   app.querySelectorAll('[data-close-overlay]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-stop]').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); });
   app.querySelectorAll('[data-network-view]').forEach(function(el){ el.addEventListener('click', function(){ state.networkView = el.getAttribute('data-network-view'); render(); }); });
+  app.querySelectorAll('[data-sales-subtab]').forEach(function(el){ el.addEventListener('click', function(){ state.salesSubTab = el.getAttribute('data-sales-subtab'); render(); }); });
+  const historySearch = document.getElementById('historySearch');
+  if(historySearch) historySearch.addEventListener('input', function(e){
+    state.historyQuery = e.target.value; render();
+    const el = document.getElementById('historySearch'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = state.historyQuery.length; }
+  });
+  const historyMonthFilter = document.getElementById('historyMonthFilter');
+  if(historyMonthFilter) historyMonthFilter.addEventListener('change', function(e){ state.historyMonthFilter = e.target.value; render(); });
   app.querySelectorAll('[data-inventory-item-tab]').forEach(function(el){ el.addEventListener('click', function(){
     state.inventoryItemTab = el.getAttribute('data-inventory-item-tab');
     state.selectedInventoryIds = [];
@@ -3158,6 +3337,42 @@ function attachHandlers(){
     state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = ''; render();
   });
 
+  /* ---- Log a Sale: searchable item combobox (phones, laptops, gadgets) ---- */
+  const saleItemSearch = document.getElementById('s-item-search');
+  if(saleItemSearch){
+    saleItemSearch.addEventListener('input', function(e){
+      if(saleItemBlurTimer){ clearTimeout(saleItemBlurTimer); saleItemBlurTimer = null; }
+      state.saleModalQuery = e.target.value; state.saleModalOpen = true; render();
+      const el = document.getElementById('s-item-search'); if(el){ el.focus(); el.selectionStart = el.selectionEnd = state.saleModalQuery.length; }
+    });
+    saleItemSearch.addEventListener('focus', function(){
+      if(saleItemBlurTimer){ clearTimeout(saleItemBlurTimer); saleItemBlurTimer = null; }
+      if(!state.saleModalOpen){
+        state.saleModalOpen = true; render();
+        refocusSaleItemSearch();
+      }
+    });
+    saleItemSearch.addEventListener('blur', function(){
+      if(saleItemBlurTimer) clearTimeout(saleItemBlurTimer);
+      saleItemBlurTimer = setTimeout(function(){ saleItemBlurTimer = null; state.saleModalOpen = false; render(); }, 150);
+    });
+  }
+  app.querySelectorAll('[data-select-sale-item]').forEach(function(el){
+    el.addEventListener('mousedown', function(e){ e.preventDefault(); });
+    el.addEventListener('click', function(){
+      if(saleItemBlurTimer){ clearTimeout(saleItemBlurTimer); saleItemBlurTimer = null; }
+      state.saleModalSelectedId = el.getAttribute('data-select-sale-item');
+      state.saleModalOpen = false;
+      render();
+    });
+  });
+  const saleItemClearBtn = document.getElementById('s-item-clear');
+  if(saleItemClearBtn) saleItemClearBtn.addEventListener('click', function(){
+    state.saleModalSelectedId = null; state.saleModalQuery = ''; state.saleModalOpen = true;
+    render();
+    const el = document.getElementById('s-item-search'); if(el) el.focus();
+  });
+
   app.querySelectorAll('[data-remove-existing-image]').forEach(function(el){ el.addEventListener('click', function(){
     const url = el.getAttribute('data-remove-existing-image');
     state.photoModalRemovedUrls = state.photoModalRemovedUrls || [];
@@ -3319,8 +3534,8 @@ function attachHandlers(){
   }); });
 
   app.querySelectorAll('[data-save-sale]').forEach(function(el){ el.addEventListener('click', async function(){
-    const inventoryId = val('s-inventory-id');
-    if(!inventoryId){ showToast('Select a phone to sell', true); return; }
+    const inventoryId = state.saleModalSelectedId;
+    if(!inventoryId){ showToast('Select an item to sell', true); return; }
     const price = Number(val('s-price'));
     if(!price){ showToast('Enter a sale price', true); return; }
     try{
@@ -3332,6 +3547,7 @@ function attachHandlers(){
       });
       if(error) throw error;
       await refreshAll();
+      state.saleModalQuery = ''; state.saleModalSelectedId = null; state.saleModalOpen = false;
       closeModal(); showToast('Sale logged — invoice downloading');
       const savedSale = Array.isArray(data) ? data[0] : data;
       if(savedSale) generateInvoicePDF(savedSale);
