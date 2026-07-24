@@ -898,6 +898,17 @@ function cleanSeparators(s){
   return s.replace(/^[\s\-\u2013\u2014_.:]+|[\s\-\u2013\u2014_.:]+$/g, '').trim();
 }
 
+// Strips emoji/pictographic glyphs (and the invisible variation-selector /
+// zero-width-joiner characters that often ride along with them) from pasted
+// stock-list text. Sellers frequently sprinkle emoji into WhatsApp-style
+// lists as visual notes (🤔, 🔥, ✅, 🇺🇸 flags, etc.) — left unstripped these
+// were ending up saved verbatim into the model name (e.g. "11 Inches 🤔 (SIM)").
+// The ❌/✖/✗ "unavailable" markers are handled separately since they carry
+// meaning (they flag a row as out of stock) rather than being decorative.
+function stripEmoji(s){
+  return (s||'').replace(/[\u{1F1E6}-\u{1F1FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\uFE0F\u200D]/gu, '');
+}
+
 function extractSlashStorage(text){
   var m = text.match(/(\d+)\s*\/\s*(\d+)\s*(t|tb|g|gb)?/i);
   if(!m) return null;
@@ -971,10 +982,10 @@ function tryIpad(compact){
 
 function parseBulkStockLine(raw){
   var flagged = /[\u274c\u2716\u2717]/.test(raw);
-  var line = raw.replace(/[\u274c\u2716\u2717]/g, '');
+  var line = stripEmoji(raw.replace(/[\u274c\u2716\u2717]/g, ''));
 
   var connFirst = stripDescriptors(line);
-  line = connFirst.text;
+  line = connFirst.text.replace(/\(\s*\)/g, '');
   var connTags = connFirst.tags.slice();
 
   var priceInfo = extractPrice(line);
@@ -1003,7 +1014,7 @@ function parseBulkStockLine(raw){
   leadingText = cleanSeparators(leadingText);
 
   var connFromLead = stripDescriptors(leadingText);
-  leadingText = cleanSeparators(connFromLead.text);
+  leadingText = cleanSeparators(connFromLead.text.replace(/\(\s*\)/g, ''));
   connFromLead.tags.forEach(function(t){ if(connTags.indexOf(t)===-1) connTags.push(t); });
 
   var compact = leadingText.toLowerCase().replace(/[\s\-\u2013\u2014_.:]+/g,'');
@@ -1119,9 +1130,8 @@ function tryLaptopBrand(compact){
 
 function parseBulkLaptopLine(raw){
   var flagged = /[\u274c\u2716\u2717]/.test(raw);
-  var line = raw.replace(/[\u274c\u2716\u2717]/g, '');
+  var line = stripEmoji(raw.replace(/[\u274c\u2716\u2717]/g, ''));
 
-  line = line.replace(/^[\u{1F1FA}\u{1F1F8}]/u, '').trim();
   line = line.replace(/-{2,}.*$/, '').trim();
 
   var priceInfo = extractPrice(line);
@@ -1246,7 +1256,7 @@ function parseBulkGadget(text){
       if(alpha.length >= 3) sectionLabel = raw.replace(/^\./,'').trim();
       return;
     }
-    var line = raw.replace(/^[\u{1F1FA}\u{1F1F8}]/u, '').trim();
+    var line = stripEmoji(raw).trim();
     var model = line.replace(/—.*/g,'').replace(/-\s*\d/g,'').trim() || line;
     var costMatch = line.match(/(\d[\d,]*)(?:k|K)?(?:\s*$)/);
     var price = costMatch ? Number(costMatch[1].replace(/,/g,'')) : 0;
