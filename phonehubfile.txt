@@ -8,6 +8,260 @@ alter table inventory add constraint inventory_item_type_check check (item_type 
 
 ======================================================================================================================================================
 
+migrations\20260723_broadcast_push_preferences.sql
+
+-- Migration: quiet down network-wide broadcast push notifications
+--
+-- Problem being fixed:
+--   notify_broadcast_push() previously pushed to EVERY dealer (minus the
+--   sender) for every single network-visibility broadcast. With many dealers
+--   on the platform, this becomes constant, unwanted noise and drives people
+--   to mute or uninstall the app.
+--
+-- What this migration does:
+--   1. Adds dealers.notify_network_broadcasts (default false) — an opt-in
+--      flag for dealers who WANT to be pushed for open-market broadcasts.
+--   2. Adds dealers.brand_focus (text[], default '{}', max 3 recommended,
+--      enforced client-side) — lets an opted-in dealer narrow pushes to only
+--      the brands they deal in (e.g. {'iPhone','Samsung'}). Empty = all
+--      brands.
+--   3. Replaces notify_broadcast_push() so that:
+--        - visibility = 'private'  -> unchanged: always pushes to
+--          target_dealer_ids (these are direct, addressed broadcasts).
+--        - visibility = 'network'  -> no longer pushes to everyone. Instead
+--          only pushes to dealers who have notify_network_broadcasts = true,
+--          AND (their brand_focus is empty OR the broadcast's model/items
+--          mention one of their focus brands).
+--   Every dealer still SEES all open-market broadcasts in the Network tab
+--   (via the existing dealer_network / broadcasts realtime subscription and
+--   pill-badge count) — this migration only changes who gets buzzed on
+--   their phone for it.
+--
+-- Safe to re-run: uses IF NOT EXISTS / CREATE OR REPLACE / DROP ... IF EXISTS.
+-- Run in Supabase: Dashboard > SQL Editor > New query > paste > Run.
+-- ============================================================
+
+-- 1. New dealer preference columns
+alter table dealers add column if not exists notify_network_broadcasts boolean not null default false;
+alter table dealers add column if not exists brand_focus text[] not null default '{}';
+
+comment on column dealers.notify_network_broadcasts is
+  'If true, this dealer receives push notifications for open-market (visibility=network) broadcasts, not just private ones addressed directly to them. Default false to avoid notification fatigue.';
+comment on column dealers.brand_focus is
+  'Optional list (recommended max 3) of brand keywords, e.g. {"iPhone","Samsung"}. When notify_network_broadcasts is true and this is non-empty, only network broadcasts whose model/items text matches one of these brands will be pushed to this dealer. Empty array = no brand filtering (push for everything, if opted in).';
+
+-- 2. Helper: does a broadcast's content mention any of a dealer's focus brands?
+--    Checks the top-level model/storage/color text plus every item inside the
+--    items jsonb array (for multi-item "Stock" adverts), case-insensitively.
+create or replace function broadcast_matches_brand_focus(p_broadcast broadcasts, p_brand_focus text[])
+returns boolean
+language sql
+stable
+as $$
+  select
+    -- empty focus list = no filtering, matches everything
+    (p_brand_focus is null or array_length(p_brand_focus,1) is null)
+    or exists (
+      select 1 from unnest(p_brand_focus) as brand
+      where
+        p_broadcast.model ilike '%' || brand || '%'
+        or coalesce(p_broadcast.storage,'') ilike '%' || brand || '%'
+        or coalesce(p_broadcast.color,'') ilike '%' || brand || '%'
+        or exists (
+          select 1 from jsonb_array_elements(coalesce(p_broadcast.items, '[]'::jsonb)) as it
+          where (it->>'model') ilike '%' || brand || '%'
+             or coalesce(it->>'brand','') ilike '%' || brand || '%'
+        )
+    );
+$$;
+
+-- 3. Replace the broadcast push trigger function
+create or replace function notify_broadcast_push()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_url text; v_secret text; v_title text; v_body text;
+  v_target_ids uuid[];
+begin
+  select value into v_url from app_config where key='edge_function_url';
+  select value into v_secret from app_config where key='edge_function_secret';
+  if v_url is null then return new; end if;
+
+  v_title := case when new.type='Need' then 'Dealer needs: '||new.model else 'New stock advert' end;
+  v_body := coalesce(new.message, new.model);
+
+  if new.visibility = 'private' then
+    -- Unchanged: private broadcasts are addressed directly to specific
+    -- dealers (e.g. "send to my saved contacts") and always push.
+    if array_length(new.target_dealer_ids,1) is null then return new; end if;
+    perform net.http_post(
+      url := v_url,
+      headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
+      body := jsonb_build_object('dealer_ids', to_jsonb(new.target_dealer_ids),
+        'title', v_title, 'body', v_body, 'url', './#tab=network', 'type', 'broadcast')
+    );
+  else
+    -- Network (open-market) broadcasts: only push to dealers who opted in
+    -- via notify_network_broadcasts, and (if they set one) whose brand_focus
+    -- matches this broadcast's content. Everyone else still sees it via the
+    -- Network tab badge/realtime subscription — just no push.
+    select array_agg(d.id) into v_target_ids
+    from dealers d
+    where d.id <> new.dealer_id
+      and d.notify_network_broadcasts = true
+      and broadcast_matches_brand_focus(new, d.brand_focus);
+
+    if v_target_ids is null or array_length(v_target_ids,1) is null then
+      return new; -- nobody opted in / matched — no push, badge/realtime still updates for everyone
+    end if;
+
+    perform net.http_post(
+      url := v_url,
+      headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
+      body := jsonb_build_object('dealer_ids', to_jsonb(v_target_ids),
+        'title', v_title, 'body', v_body, 'url', './#tab=network', 'type', 'broadcast')
+    );
+  end if;
+  return new;
+end; $$;
+
+-- Trigger itself is unchanged in shape, just re-pointed at the new function body.
+drop trigger if exists trg_notify_broadcast_push on broadcasts;
+create trigger trg_notify_broadcast_push after insert on broadcasts
+for each row execute function notify_broadcast_push();
+
+-- ============================================================
+-- After running this:
+-- - Every dealer's push behavior for network broadcasts defaults to OFF
+--   (notify_network_broadcasts = false), matching the "quiet by default"
+--   goal. Existing dealers are not opted in automatically.
+-- - The Seller App's Notifications modal now exposes:
+--     "Also alert me for open-market broadcasts" (toggle)
+--     "Only alert me about these brands" (optional, up to 3, shown once the
+--     toggle above is on)
+-- - No changes needed to how broadcasts are inserted from the client —
+--   this is entirely a database-side change.
+-- ============================================================
+
+======================================================================================================================================================
+
+migrations\20260724_add_dealer_chat.sql
+
+-- Migration: 1:1 dealer-to-dealer chat
+--
+-- What this adds:
+--   1. A `messages` table — plain text messages between two dealers.
+--   2. RLS so a dealer can only ever see messages where they are the
+--      sender or the recipient (same pattern as suppliers/consignments).
+--   3. Adds `messages` to the realtime publication, so both sides see new
+--      messages live without refreshing (same mechanism already used for
+--      broadcasts/broadcast_responses).
+--   4. A push-notification trigger (notify_new_message_push) that fires
+--      the existing send-push Edge Function whenever a message is inserted,
+--      so a dealer gets a phone alert for a new chat message even with the
+--      app closed — same pattern as notify_new_request_push.
+--
+-- Who can message whom: any two registered dealers can technically message
+-- each other once they know each other's dealer id (same trust boundary as
+-- the open dealer network / broadcasts). The Seller App UI only ever lets a
+-- dealer START a chat with a saved contact that has linked_dealer_id set
+-- (i.e. a contact they've already confirmed is a real PhoneHub account) —
+-- this migration doesn't restrict at the database level beyond that, to
+-- keep it simple. Tighten later with a "only if a supplier row links you
+-- both" check if you want it stricter.
+--
+-- Safe to re-run: uses IF NOT EXISTS / CREATE OR REPLACE / DROP ... IF EXISTS.
+-- Run in Supabase: Dashboard > SQL Editor > New query > paste > Run.
+-- ============================================================
+
+create table if not exists messages (
+  id uuid primary key default gen_random_uuid(),
+  sender_id uuid not null references dealers(id) on delete cascade,
+  recipient_id uuid not null references dealers(id) on delete cascade,
+  body text not null,
+  read_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_messages_sender on messages(sender_id);
+create index if not exists idx_messages_recipient on messages(recipient_id);
+create index if not exists idx_messages_conversation
+  on messages(least(sender_id, recipient_id), greatest(sender_id, recipient_id), created_at);
+
+alter table messages enable row level security;
+
+drop policy if exists "messages_select_own" on messages;
+create policy "messages_select_own" on messages for select
+  using (sender_id = auth.uid() or recipient_id = auth.uid());
+
+drop policy if exists "messages_insert_own" on messages;
+create policy "messages_insert_own" on messages for insert
+  with check (sender_id = auth.uid());
+
+-- Recipients can update read_at on messages sent TO them (marking as read).
+-- Senders cannot edit/retract message content this way (body is not
+-- covered by this policy's typical use — Supabase update() from the client
+-- should only ever send {read_at: ...} for this table).
+drop policy if exists "messages_update_mark_read" on messages;
+create policy "messages_update_mark_read" on messages for update
+  using (recipient_id = auth.uid())
+  with check (recipient_id = auth.uid());
+
+drop policy if exists "messages_select_admin" on messages;
+create policy "messages_select_admin" on messages for select
+  using (is_admin());
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'messages'
+  ) then
+    alter publication supabase_realtime add table messages;
+  end if;
+end $$;
+
+-- Push notification: fires once per new message, same as
+-- notify_new_request_push. Uses the same app_config edge_function_url /
+-- edge_function_secret already set up for broadcasts and requests.
+create or replace function notify_new_message_push()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_url text; v_secret text; v_sender_name text;
+begin
+  select value into v_url from app_config where key='edge_function_url';
+  select value into v_secret from app_config where key='edge_function_secret';
+  if v_url is null then return new; end if;
+
+  select shop_name into v_sender_name from dealers where id = new.sender_id;
+
+  perform net.http_post(
+    url := v_url,
+    headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
+    body := jsonb_build_object(
+      'dealer_id', new.recipient_id,
+      'title', 'New message from ' || coalesce(v_sender_name, 'a dealer'),
+      'body', left(new.body, 120),
+      'url', './#tab=chats', 'type', 'message'
+    )
+  );
+  return new;
+end; $$;
+
+drop trigger if exists trg_notify_new_message_push on messages;
+create trigger trg_notify_new_message_push after insert on messages
+for each row execute function notify_new_message_push();
+
+-- ============================================================
+-- After running this:
+-- - The `messages` table exists with RLS matching the rest of the schema.
+-- - New messages push a notification to the recipient (respecting whatever
+--   device push subscriptions they already have — no extra opt-in needed,
+--   the same way a private broadcast or a customer request always pushes).
+-- - Add sw.js routing for 'message' notifications (see CHATS_FEATURE_GUIDE.md)
+--   so tapping the notification opens the Chats tab.
+-- ============================================================
+
+======================================================================================================================================================
+
 combine_files.py
 
 #!/usr/bin/env python3
@@ -1354,6 +1608,15 @@ function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').repl
 function escapeAttr(s){ return (s||'').toString().replace(/"/g,'&quot;'); }
 function val(id){ const el=document.getElementById(id); return el?el.value:''; }
 
+/* ---------- feedback (mailto) ---------- */
+const FEEDBACK_EMAIL = 'datatutorsandtech@gmail.com';
+function feedbackMailtoHref(){
+  const shopName = state.selectedShop ? state.selectedShop.shop_name : '';
+  const subject = 'PhoneHub Pro Customer Feedback' + (shopName ? (' — '+shopName) : '');
+  const body = 'Hi PhoneHub team,\n\nHere\'s my feedback:\n\n\n\n(Feel free to leave your name and phone number if you\'d like a reply.)';
+  return 'mailto:'+FEEDBACK_EMAIL+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
+}
+
 function loadConfig(){
   if(HARDCODED_SUPABASE_URL && HARDCODED_SUPABASE_ANON_KEY){
     return { url: HARDCODED_SUPABASE_URL, key: HARDCODED_SUPABASE_ANON_KEY };
@@ -1446,6 +1709,7 @@ function render(){
     '<div class="topbar"><div class="brand"><div class="mark">PH</div>PhoneHub</div>' +
       '<div class="shop-pill" id="switchShopBtn">'+escapeHtml(state.selectedShop.shop_name)+' · switch shop</div>' +
       '<div class="nav-tabs">' + navTab('shop','Shop') + navTab('request','Request a phone') + navTab('lookup','My purchases') + '</div>' +
+      '<a class="shop-pill" href="'+feedbackMailtoHref()+'" style="text-decoration:none;">✉️ Feedback</a>' +
     '</div>' +
     '<div class="wrap">'+renderTab()+'</div>' +
     (state.modal ? renderModal() : '') +
@@ -1948,8 +2212,10 @@ const ICONS = {
   bell:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>',
   consign:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="8" r="3"/><path d="M2.5 21v-1.5A4 4 0 016.5 15.5h1"/><path d="M21.5 21v-1.5a4 4 0 00-4-3.5h-1"/><path d="M9.5 17h5"/></svg>',
   broadcast:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 10v4a1 1 0 001 1h1.5l5 4v-14l-5 4H5a1 1 0 00-1 1z"/><path d="M15 9a3.5 3.5 0 010 6"/><path d="M17.5 6.5a7 7 0 010 11"/></svg>',
+  chat:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg>',
   hamburger:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
-  theme:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'  
+  theme:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  feedback:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg>'
 };
 
 const CONFIG_KEY = 'phonehub-supabase-config';
@@ -1978,6 +2244,63 @@ if(window.matchMedia){
   });
 }
 
+/* ---------- network "last seen" tracking (unread/read demarcation) ---------- */
+// Persisted per-device, keyed by dealer id (so switching accounts on the same
+// browser doesn't mix up unread state). Records the last moment this dealer
+// actually left the Broadcasts view — anything created after that moment is
+// "unread" until they view it again.
+const NETWORK_SEEN_KEY = 'phonehub-network-last-seen';
+function loadNetworkLastSeen(dealerId){
+  try{
+    const raw = localStorage.getItem(NETWORK_SEEN_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    return map[dealerId] || null;
+  } catch(e){ return null; }
+}
+function saveNetworkLastSeen(dealerId, iso){
+  try{
+    const raw = localStorage.getItem(NETWORK_SEEN_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    map[dealerId] = iso;
+    localStorage.setItem(NETWORK_SEEN_KEY, JSON.stringify(map));
+  } catch(e){ /* ignore */ }
+}
+// Call when the dealer navigates AWAY from the Broadcasts view (switching
+// sub-tab, switching main app tab, closing/backgrounding the page) — marks
+// everything currently loaded as "seen" so next visit only shows what's
+// genuinely new since this moment.
+function commitNetworkLastSeen(){
+  if(!state.profile) return;
+  const now = new Date().toISOString();
+  state.networkLastSeenAt = now;
+  saveNetworkLastSeen(state.profile.id, now);
+}
+// Call when the dealer arrives AT the Broadcasts view — snapshots the
+// previous "last seen" value so the unread markers/divider stay stable for
+// the whole time they're looking at the list (switching to another app tab
+// and back, or minimizing the browser and reopening, won't reset it — only
+// actually leaving the Broadcasts view commits a new "seen" point).
+function enterBroadcastsView(){
+  state.networkSeenThreshold = state.networkLastSeenAt;
+}
+// Total count of broadcasts (Need or Stock) from OTHER dealers created after
+// this dealer's last committed "seen" point — drives the Network rail badge.
+function computeUnreadBroadcastCount(){
+  if(!state.profile || !state.networkLastSeenAt) return 0;
+  const seenAt = new Date(state.networkLastSeenAt);
+  return state.broadcasts.filter(function(b){
+    return b.dealer_id !== state.profile.id && new Date(b.created_at) > seenAt;
+  }).length;
+}
+
+/* ---------- feedback (mailto) ---------- */
+const FEEDBACK_EMAIL = 'phonehubpro.dts@gmail.com';
+function feedbackMailtoHref(context){
+  const subject = 'PhoneHub Pro Feedback' + (context ? (' — '+context) : '');
+  const body = 'Hi PhoneHub team,\n\nHere\'s my feedback:\n\n\n\n(Feel free to leave your name/shop and phone number if you\'d like a reply.)';
+  return 'mailto:'+FEEDBACK_EMAIL+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
+}
+
 // If you've deployed this app for real, paste your Supabase project URL and anon key here.
 // Doing so skips the "Connect" screen entirely for every dealer who opens this app.
 // Safe to leave blank while testing — the app will ask for them once and remember
@@ -2004,6 +2327,8 @@ let state = {
   adminDealers:[], adminInventory:[], adminSales:[],
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
   networkView:'search', dealerSearchQuery:'', networkOrder:[], networkVisibleCount:20,
+  networkLastSeenAt:null, // persisted "last time I left the Broadcasts view" (loaded from localStorage at login)
+  networkSeenThreshold:null, // stable snapshot of the above, captured on arrival at Broadcasts — drives the unread divider/markers for this viewing session
   networkCategoryFilter:'All', // All | Phone | Laptop — filter for the Network > Search stock view
   networkDealerFilter:null, dealerFilterQuery:'', dealerFilterOpen:false,
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'', bulkImportSupplierId:'',
@@ -2027,6 +2352,8 @@ let state = {
                       // rows (see refreshAll's .eq('dealer_id', state.profile.id) query) —
                       // never a network-wide log of other dealers' sales.
   historyQuery:'', historyMonthFilter:'All',
+  brandFocusDraft:'', // comma-separated draft text for the "brands I deal in" input in Notification settings
+  messages:[], chatActiveDealerId:null, chatText:'',
 };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -2243,6 +2570,18 @@ window.addEventListener('appinstalled', function(){
   render();
 });
 
+// If the dealer backgrounds/closes the tab while actually looking at the
+// Broadcasts view, treat that as "seen" too — otherwise reopening the app
+// later would still show everything from before as unread even though they
+// were just looking right at it.
+function commitNetworkLastSeenIfViewingBroadcasts(){
+  if(state.tab === 'network' && state.networkView === 'broadcasts') commitNetworkLastSeen();
+}
+window.addEventListener('pagehide', commitNetworkLastSeenIfViewingBroadcasts);
+window.addEventListener('visibilitychange', function(){
+  if(document.visibilityState === 'hidden') commitNetworkLastSeenIfViewingBroadcasts();
+});
+
 function checkInstallBannerVisibility(){
   if(state.stage === 'app' || state.stage === 'auth'){
     render();
@@ -2343,9 +2682,9 @@ async function refreshBroadcastsData(){
   ]);
   state.broadcasts = bc.data || [];
   state.broadcastResponses = br.data || [];
-  if(state.tab === 'network' && state.networkView === 'broadcasts'){
-    render();
-  }
+  // Always re-render (not just while on the Broadcasts view) so the unread
+  // count on the Network rail badge stays live as new broadcasts arrive.
+  render();
 }
 
 async function enablePush(){
@@ -2931,6 +3270,7 @@ async function loadAfterAuth(){
     const { data: profile, error: pErr } = await sb.from('dealers').select('*').eq('id', user.id).single();
     if(pErr) throw pErr;
     state.profile = profile; state.isAdmin = !!profile.is_admin;
+    state.networkLastSeenAt = loadNetworkLastSeen(profile.id);
     await refreshAll();
     state.stage = 'app';
     initPush();
@@ -3008,7 +3348,7 @@ function applyHashTab(){
   var hash = window.location.hash;
   if (hash.startsWith('#tab=')){
     var tab = hash.slice(5);
-    var valid = ['dashboard','inventory','sales','calc','requests','network','admin'];
+    var valid = ['dashboard','inventory','sales','calc','requests','network','chats','admin'];
     if (valid.indexOf(tab) !== -1 && state.tab !== tab){
       state.tab = tab;
       render();
@@ -3019,6 +3359,7 @@ function openModal(name, payload){
   if(name==='addPhone' || name==='editPhone' || name==='addLaptop' || name==='editLaptop' || name==='addGadget' || name==='editGadget') state.photoModalRemovedUrls = [];
   if(name==='viewNetworkItem' || name==='viewStockItem') state.galleryIndex = 0;
   if(name==='clearInventory') state.clearInventoryConfirmText = '';
+  if(name==='notifSettings') state.brandFocusDraft = (state.profile.brand_focus||[]).join(', ');
   if(name==='logSale'){ state.saleModalQuery = ''; state.saleModalSelectedId = null; state.saleModalOpen = false; }
   if(name==='addSupplier' || name==='editSupplier'){
     state.supplierSuggestions = []; state.supplierSuggestOpen = false;
@@ -3124,11 +3465,12 @@ function render(){
       railItem('dashboard','Home') + railItem('inventory','Stock') + railItem('sales','Sales') +
       railItem('calc','Price') + railItem('requests','Asks', badgeCount(state.requests.filter(function(r){return r.status==='Pending';}).length)) +
       railItem('consign','Owed', badgeCount(state.consignments.filter(function(c){return c.status!=='Settled' && c.status!=='Returned';}).length)) +
-      railItem('network','Network', badgeCount(state.broadcasts.filter(function(b){return b.status==='Open';}).length)) +
+      railItem('network','Network', badgeCount(computeUnreadBroadcastCount())) +
       (state.isAdmin ? railItem('admin','Admin') : '') +
       '<div class="rail-bottom">' +
         '<div class="rail-bottom-item '+(state.pushStatus==='on'?'on':'')+'" id="notifBellBtn" title="Notification settings">'+ICONS.bell+'<span>Alerts</span></div>' +
         '<div class="rail-bottom-item" id="themeSettingsBtn" title="Display theme">'+ICONS.theme+'<span>Theme</span></div>' +
+        '<a class="rail-bottom-item" href="'+feedbackMailtoHref(state.profile.shop_name)+'" title="Send feedback" style="text-decoration:none;">'+ICONS.feedback+'<span>Feedback</span></a>' +
         '<div class="rail-bottom-item" id="logoutBtn" title="Log out">'+ICONS.gear+'<span>Logout</span></div>' +
       '</div>' +
     '</div>' +
@@ -3140,6 +3482,7 @@ function render(){
         (state.searchQuery ? renderSearchDropdown() : '') +
         '<div class="topbar-right">' +
           '<span class="dot"></span> '+escapeHtml(state.profile.shop_name)+(state.isAdmin?' <span class="badge badge-admin">admin</span>':'') +
+          '<a href="'+feedbackMailtoHref(state.profile.shop_name)+'" class="theme-toggle" title="Send feedback" style="text-decoration:none;display:flex;">'+ICONS.feedback+'</a>' +
           '<span class="bell '+(state.pushStatus==='on'?'on':'')+' notifBellBtn" title="Notification settings">'+ICONS.bell+'</span>' +
           '<span class="theme-toggle themeSettingsBtn" title="Display theme">'+ICONS.theme+'</span>' +
           '<span class="gear logoutBtn" title="Log out">'+ICONS.gear+'</span>' +
@@ -3773,13 +4116,14 @@ function dealerPhone(id){
   return n ? n.dealer_phone : '';
 }
 
-function renderStockAdvertCard(b){
+function renderStockAdvertCard(b, isUnread){
   const isMine = b.dealer_id === state.profile.id;
   const items = Array.isArray(b.items) ? b.items : (b.items ? (function(){ try{ return JSON.parse(b.items); }catch(e){ return []; } })() : []);
   const phone = dealerPhone(b.dealer_id);
-  return '<div class="section">' +
+  return '<div class="section" style="'+(isUnread?'border-left:3px solid var(--accent);':'')+'">' +
     '<div class="section-head"><div><strong>'+ICONS.broadcast.replace('<svg ', '<svg style="width:13px;height:13px;vertical-align:-2px;margin-right:5px;color:var(--accent)" ')+
       (isMine ? 'Your stock advert' : escapeHtml(dealerName(b.dealer_id))+'\'s stock advert')+'</strong>' +
+      (isUnread ? ' <span class="badge" style="background:var(--accent);color:#10141C;margin-left:6px;">NEW</span>' : '') +
       '<div style="font-size:11.5px;color:var(--text-faint);margin-top:3px;">'+escapeHtml(b.date)+(b.visibility==='private'?' · <span style="color:var(--accent);">Sent to you directly</span>':'')+'</div></div>' +
       '<div style="display:flex;align-items:center;gap:10px;">'+badge(b.status)+
         (isMine && b.status==='Open'?('<button class="btn btn-sm" data-close-broadcast="'+b.id+'">Close</button>'):'') +
@@ -3801,19 +4145,29 @@ function renderStockAdvertCard(b){
     '</div></div>';
 }
 
+function isUnreadBroadcast(b){
+  return !!(state.networkSeenThreshold && b.dealer_id !== state.profile.id && new Date(b.created_at) > new Date(state.networkSeenThreshold));
+}
+
 function renderBroadcasts(){
   const filter = state.networkBroadcastTypeFilter;
   const rows = state.broadcasts.slice()
     .filter(function(b){ return filter==='All' || (b.type||'Need')===filter; })
     .sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
 
-  const body = rows.map(function(b){
-    if((b.type||'Need')==='Stock') return renderStockAdvertCard(b);
+  // Build each card along with its unread status (rows are already sorted
+  // newest-first, so unread items naturally cluster at the top — we just
+  // need to drop a "resume here" divider at the point where unread gives
+  // way to already-seen).
+  const cards = rows.map(function(b){
+    const isUnread = isUnreadBroadcast(b);
+    if((b.type||'Need')==='Stock') return { html: renderStockAdvertCard(b, isUnread), isUnread: isUnread };
     const responses = state.broadcastResponses.filter(function(r){ return r.broadcast_id===b.id; }).sort(function(a,b2){ return (Number(a.price)||0)-(Number(b2.price)||0); });
     const isMine = b.dealer_id === state.profile.id;
     const canAccept = isMine && b.status==='Open';
-    return '<div class="section">' +
+    const html = '<div class="section" style="'+(isUnread?'border-left:3px solid var(--accent);':'')+'">' +
       '<div class="section-head"><div><strong>'+escapeHtml(b.model)+'</strong> '+(b.storage?(' · '+escapeHtml(b.storage)):'')+' '+(b.color?(' · '+escapeHtml(b.color)):'')+(isMine?' <span style="font-size:10px;color:var(--text-faint)">(your request)</span>':'')+
+      (isUnread ? ' <span class="badge" style="background:var(--accent);color:#10141C;margin-left:6px;">NEW</span>' : '') +
       '<div style="font-size:11.5px;color:var(--text-faint);margin-top:3px;">'+escapeHtml(b.date)+' · '+escapeHtml(b.urgency)+'</div></div>' +
       '<div style="display:flex;align-items:center;gap:10px;">'+badge(b.status)+
         (isMine && b.status==='Open'?('<button class="btn btn-sm" data-close-broadcast="'+b.id+'">Close (no deal)</button>'):'') +
@@ -3831,7 +4185,27 @@ function renderBroadcasts(){
           '</tr>'; }).join('') +
         '</tbody></table>') : '<div class="empty" style="padding:20px;">No responses yet.</div>') +
       '</div></div>';
-  }).join('');
+    return { html: html, isUnread: isUnread };
+  });
+
+  // Insert the "resume here" divider exactly once, at the transition from
+  // unread to already-seen (only shown when there's genuinely a mix of both —
+  // no divider if everything is new, or everything is already seen).
+  let bodyParts = [];
+  let dividerInserted = false;
+  cards.forEach(function(c, i){
+    const prevWasUnread = i>0 ? cards[i-1].isUnread : null;
+    if(!dividerInserted && prevWasUnread === true && c.isUnread === false){
+      bodyParts.push(
+        '<div style="display:flex;align-items:center;gap:10px;margin:18px 0 14px;color:var(--text-faint);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;">' +
+          '<div style="flex:1;height:1px;background:var(--border);"></div>Seen earlier<div style="flex:1;height:1px;background:var(--border);"></div>' +
+        '</div>'
+      );
+      dividerInserted = true;
+    }
+    bodyParts.push(c.html);
+  });
+  const body = bodyParts.join('');
 
   const openNeedCount = state.broadcasts.filter(function(b){ return b.status==='Open' && (b.type||'Need')==='Need'; }).length;
   const openStockCount = state.broadcasts.filter(function(b){ return b.status==='Open' && (b.type||'Need')==='Stock'; }).length;
@@ -4030,8 +4404,23 @@ function renderNotifModal(){
           status==='denied' ? '' :
           '<button class="btn btn-accent btn-sm" id="enablePushBtn" '+(status==='prompting'?'disabled':'')+'>Enable</button>') +
       '</div>' +
-      '<div class="notif-row"><div class="n-sub">You\'ll be alerted for: new customer requests, dealer network broadcasts and responses, warranty phones expiring within 2 days, and phones down to their last unit. Alerts arrive even if this app isn\'t open, as long as your phone has data/wifi.</div></div>' +
+      '<div class="notif-row"><div class="n-sub">You\'ll always be alerted for: new customer requests to your shop, private broadcasts sent to you directly, responses to your own broadcasts, warranty phones expiring within 2 days, and phones down to their last unit. Alerts arrive even if this app isn\'t open, as long as your phone has data/wifi.</div></div>' +
       (status==='denied' ? '<div class="n-sub" style="margin-top:8px;color:var(--danger)">Notifications are blocked for this site in your browser. Open your browser\'s site settings for this page and allow notifications, then reopen this dialog.</div>' : '') +
+      '<div class="notif-row"><div><div class="n-label">Also alert me for open-market broadcasts</div>' +
+        '<div class="n-sub">Off by default — with many dealers on the network, every "need it" or "for sale" post would otherwise buzz your phone constantly. Open-market broadcasts still show up in the Network tab badge either way.</div></div>' +
+        '<input type="checkbox" id="notifyNetworkToggle" '+(state.profile.notify_network_broadcasts?'checked':'')+' style="width:20px;height:20px;flex-shrink:0;"/>' +
+      '</div>' +
+      (state.profile.notify_network_broadcasts ? (
+        '<div class="notif-row" style="flex-direction:column;align-items:stretch;gap:8px;">' +
+          '<div><div class="n-label">Only alert me about these brands (optional)</div>' +
+            '<div class="n-sub">e.g. iPhone, Samsung — up to 3. Leave blank to get pushed for every open-market broadcast.</div></div>' +
+          '<div style="display:flex;gap:8px;">' +
+            '<input id="brandFocusInput" placeholder="iPhone, Samsung, iPad" value="'+escapeAttr(state.brandFocusDraft)+'" ' +
+              'style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 11px;color:var(--text);font-family:var(--font-body);font-size:13px;outline:none;"/>' +
+            '<button class="btn btn-accent btn-sm" id="saveBrandFocusBtn">Save</button>' +
+          '</div>' +
+        '</div>'
+      ) : '') +
     '</div>' +
   '</div></div>';
 }
@@ -4602,9 +4991,12 @@ function renderRespondModal(m){
 function attachHandlers(){
   const app = document.getElementById('app');
   app.querySelectorAll('[data-tab]').forEach(function(el){ el.addEventListener('click', function(){
+    const nextTab = el.getAttribute('data-tab');
+    if(state.tab==='network' && state.networkView==='broadcasts' && nextTab!=='network') commitNetworkLastSeen();
     state.inventorySupplierFilter = null; state.supplierFilterName = '';
     state.mobileMenuOpen = false;
-    setTab(el.getAttribute('data-tab'));
+    setTab(nextTab);
+    if(nextTab==='network' && state.networkView==='broadcasts') enterBroadcastsView();
   }); });
 
   const forceCacheUpdateBtn = document.getElementById('forceCacheUpdateBtn');
@@ -4628,6 +5020,34 @@ function attachHandlers(){
   if(enablePushBtn) enablePushBtn.addEventListener('click', enablePush);
   const disablePushBtn = document.getElementById('disablePushBtn');
   if(disablePushBtn) disablePushBtn.addEventListener('click', disablePush);
+
+  const notifyNetworkToggle = document.getElementById('notifyNetworkToggle');
+  if(notifyNetworkToggle) notifyNetworkToggle.addEventListener('change', async function(){
+    const wantsOn = notifyNetworkToggle.checked;
+    try{
+      const { error } = await sb.from('dealers').update({ notify_network_broadcasts: wantsOn }).eq('id', state.profile.id);
+      if(error) throw error;
+      state.profile.notify_network_broadcasts = wantsOn;
+      showToast(wantsOn ? 'You\'ll now be alerted for open-market broadcasts too' : 'Open-market broadcasts will stay in-app only');
+    } catch(e){
+      notifyNetworkToggle.checked = !wantsOn; // revert the visual toggle on failure
+      showToast('Could not update: '+(e.message||e), true);
+    }
+    render();
+  });
+  const saveBrandFocusBtn = document.getElementById('saveBrandFocusBtn');
+  if(saveBrandFocusBtn) saveBrandFocusBtn.addEventListener('click', async function(){
+    const brandFocusInput = document.getElementById('brandFocusInput');
+    state.brandFocusDraft = brandFocusInput ? brandFocusInput.value : state.brandFocusDraft;
+    const brands = state.brandFocusDraft.split(',').map(function(b){ return b.trim(); }).filter(Boolean).slice(0,3);
+    try{
+      const { error } = await sb.from('dealers').update({ brand_focus: brands }).eq('id', state.profile.id);
+      if(error) throw error;
+      state.profile.brand_focus = brands;
+      showToast(brands.length ? 'Saved — you\'ll only be pushed for '+brands.join(', ') : 'Saved — you\'ll be pushed for every open-market broadcast');
+    } catch(e){ showToast('Could not save: '+(e.message||e), true); }
+    render();
+  });
 
   const installAppBtn = document.getElementById('installAppBtn');
   if(installAppBtn) installAppBtn.addEventListener('click', async function(){
@@ -4654,7 +5074,13 @@ function attachHandlers(){
   app.querySelectorAll('[data-close-modal]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-close-overlay]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-stop]').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); });
-  app.querySelectorAll('[data-network-view]').forEach(function(el){ el.addEventListener('click', function(){ state.networkView = el.getAttribute('data-network-view'); render(); }); });
+  app.querySelectorAll('[data-network-view]').forEach(function(el){ el.addEventListener('click', function(){
+    const nextView = el.getAttribute('data-network-view');
+    if(state.networkView==='broadcasts' && nextView!=='broadcasts') commitNetworkLastSeen();
+    state.networkView = nextView;
+    if(nextView==='broadcasts') enterBroadcastsView();
+    render();
+  }); });
   app.querySelectorAll('[data-sales-subtab]').forEach(function(el){ el.addEventListener('click', function(){ state.salesSubTab = el.getAttribute('data-sales-subtab'); render(); }); });
   const historySearch = document.getElementById('historySearch');
   if(historySearch) historySearch.addEventListener('input', function(e){
@@ -5665,7 +6091,61 @@ seller\manifest.json
 
 ======================================================================================================================================================
 
-migration_optional_imei.sql
+migrations\migration_add_images.sql
+
+-- ============================================================
+-- PhoneHub Pro — Migration: add phone photos
+-- ============================================================
+-- Only needed if you already ran an OLDER version of schema.sql before
+-- image support was added. The schema.sql in this package already
+-- includes everything below — skip this file on a fresh project.
+--
+-- Run once in Supabase: Dashboard > SQL Editor > New query > paste > Run.
+-- Safe to re-run.
+-- ============================================================
+
+alter table inventory add column if not exists image_url text;
+
+drop view if exists dealer_network_view;
+create or replace view dealer_network_view
+  with (security_invoker = false) as
+  select
+    i.id, i.dealer_id, d.shop_name as dealer_name, d.phone as dealer_phone,
+    i.model, i.storage, i.color, i.condition, i.battery, i.price, i.updated_at, i.image_url
+  from inventory i
+  join dealers d on d.id = i.dealer_id
+  where i.status = 'In Stock';
+
+drop view if exists public_catalog;
+create or replace view public_catalog
+  with (security_invoker = false) as
+  select id, dealer_id, model, storage, color, condition, battery, price, status, image_url
+  from inventory
+  where status = 'In Stock';
+
+insert into storage.buckets (id, name, public)
+  values ('phone-images', 'phone-images', true)
+  on conflict (id) do nothing;
+
+drop policy if exists "phone_images_public_read" on storage.objects;
+create policy "phone_images_public_read" on storage.objects for select
+  using (bucket_id = 'phone-images');
+
+drop policy if exists "phone_images_insert_own" on storage.objects;
+create policy "phone_images_insert_own" on storage.objects for insert
+  with check (bucket_id = 'phone-images' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists "phone_images_update_own" on storage.objects;
+create policy "phone_images_update_own" on storage.objects for update
+  using (bucket_id = 'phone-images' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists "phone_images_delete_own" on storage.objects;
+create policy "phone_images_delete_own" on storage.objects for delete
+  using (bucket_id = 'phone-images' and (storage.foldername(name))[1] = auth.uid()::text);
+
+======================================================================================================================================================
+
+migrations\migration_optional_imei.sql
 
 -- ============================================================
 -- PhoneHub Pro — Migration: make IMEI optional
@@ -5723,6 +6203,74 @@ grant execute on function sell_phone(uuid,numeric,text,text,text,text,int,text,t
 
 ======================================================================================================================================================
 
+PhoneHub_Pro_Improvement_Suggestions.md
+
+# PhoneHub Pro — Improvement Suggestions
+
+_Compiled July 23, 2026_
+
+---
+
+## 1. Notification overload — reducing noise from broadcasts/requests
+
+**Problem:** Once many dealers are on the platform, every open-market broadcast or request pushes a notification to every other dealer. This gets noisy fast and risks people muting or uninstalling the app.
+
+**Status: implemented (see migration `20260723_broadcast_push_preferences.sql` and the updated `seller/index.html`)**
+
+- [x] **Split the trigger.** `notify_broadcast_push()` now only calls the push Edge Function for `visibility = 'private'` broadcasts (ones addressed directly to specific saved contacts). Open-market (`visibility = 'network'`) broadcasts no longer push to everyone by default — dealers still see them via the existing Network tab badge count and realtime subscription.
+- [x] **Opt-in for power dealers.** Added `dealers.notify_network_broadcasts` (default `false`). Surfaced as a toggle in the Notifications modal: _"Also alert me for open-market broadcasts."_ Dealers actively sourcing rare phones can turn this on; everyone else stays quiet by default.
+- [x] **Brand relevance filtering.** Added `dealers.brand_focus` (text array, recommended max 3). When a dealer has opted into network-broadcast pushes, they can narrow it to specific brands (e.g. "iPhone, Samsung") so they're not pushed for phones they don't deal in. Empty list = no filtering (push for everything they opted into).
+
+**Still worth considering, not yet built:**
+- **Digest instead of instant.** For dealers who want ambient awareness without instant pings, a scheduled digest (e.g. every 2 hours: "14 new broadcasts since your last check") via the existing `pg_cron` daily-alerts job, instead of a push per event.
+- **Reputation-weighted push.** Only push opted-in dealers about broadcasts from `trusted`/`elite` tier dealers (already computed in `dealer_reputation_view`), so new/unproven dealers' broadcasts stay in-app-only until they've built a track record.
+
+---
+
+## 2. Making the platform "irresistible" to Computer Village dealers
+
+Roughly in order of leverage:
+
+### a) Ship the anti-theft network — the strongest differentiator
+IMEI registration + a shared stolen-phone blacklist is the one feature no WhatsApp-based workflow can replicate. Even a lightweight MVP would be a genuine reason to switch, not just a nicer inventory sheet:
+- Register IMEI + ownership at sale (already partially supported — IMEI field exists)
+- "Mark as Stolen" button on a sale/IMEI record
+- Shared blacklist check triggered at trade-in, repair, or resale
+- Optional digital ownership transfer (QR code / web portal) for user-to-user resale
+
+### b) Lower login friction
+Email/password is an odd fit for a market that already lives on WhatsApp and phone numbers. Consider phone-number + OTP auth (Supabase supports this natively) as the primary signup/login path instead of email — removes "forgot password" friction and matches how dealers already identify each other.
+
+### c) Make the network effect visible and social
+- **Public leaderboard** using the existing `dealer_reputation_view` — "Top 10 dealers this month by fulfillment rate." Shareable, and markets the platform for you.
+- **"Founding member" badge** for the first 50–100 dealers, permanently visible on their profile/network listings — status matters in a tight-knit market.
+- **Referral mechanic** — a dealer who brings in 3 colleagues gets a free month of Pro tier.
+
+### d) Reduce the fear of switching
+- Explicitly market the existing RLS-based privacy in onboarding copy: _"Your prices, suppliers, and profit are never visible to anyone else — only what you choose to advertise."_
+- Offer one-click CSV export of a dealer's own inventory/sales at any time, so "what if I want to leave" is never a blocker to signing up.
+
+### e) Design for bad connectivity, not just slow connectivity
+Computer Village Wi-Fi/data can drop mid-transaction. Image compression is already handled well; consider also:
+- Queuing failed writes (sale logging, bulk import) locally in the browser
+- Auto-retry on reconnect, so a dropped connection never silently loses a logged sale
+
+### f) Bridge to WhatsApp rather than replace it outright, at first
+Dealers won't abandon WhatsApp overnight. A "share this broadcast to WhatsApp" button (pre-filled text + link back to the listing in-app) lets PhoneHub ride along inside existing habits instead of demanding a full behavior change on day one.
+
+### g) Anchor adoption with one respected, well-known dealer
+In a trust/reputation-driven market, a well-regarded shop visibly using and vouching for the app will do more for adoption than any feature list. Worth prioritizing outreach to one or two "anchor" dealers before a broader launch.
+
+---
+
+## Open questions / things to revisit later
+
+- Should the brand-focus filter also apply to the Network tab's default random-order listing (not just push notifications) — i.e. let dealers set a persistent "show me X brand first" preference?
+- Does the anti-theft blacklist need a formal dispute/appeal process (e.g. someone wrongly marked as receiving a stolen phone)?
+- At what dealer count does the free Supabase tier need to be revisited (500MB DB storage / 50k MAU)?
+
+======================================================================================================================================================
+
 phonehubfile.txt
 
 migrations\20260122_add_gadget_item_type.sql
@@ -5732,6 +6280,260 @@ migrations\20260122_add_gadget_item_type.sql
 
 alter table inventory drop constraint if exists inventory_item_type_check;
 alter table inventory add constraint inventory_item_type_check check (item_type in ('Phone','Laptop','Gadget'));
+
+======================================================================================================================================================
+
+migrations\20260723_broadcast_push_preferences.sql
+
+-- Migration: quiet down network-wide broadcast push notifications
+--
+-- Problem being fixed:
+--   notify_broadcast_push() previously pushed to EVERY dealer (minus the
+--   sender) for every single network-visibility broadcast. With many dealers
+--   on the platform, this becomes constant, unwanted noise and drives people
+--   to mute or uninstall the app.
+--
+-- What this migration does:
+--   1. Adds dealers.notify_network_broadcasts (default false) — an opt-in
+--      flag for dealers who WANT to be pushed for open-market broadcasts.
+--   2. Adds dealers.brand_focus (text[], default '{}', max 3 recommended,
+--      enforced client-side) — lets an opted-in dealer narrow pushes to only
+--      the brands they deal in (e.g. {'iPhone','Samsung'}). Empty = all
+--      brands.
+--   3. Replaces notify_broadcast_push() so that:
+--        - visibility = 'private'  -> unchanged: always pushes to
+--          target_dealer_ids (these are direct, addressed broadcasts).
+--        - visibility = 'network'  -> no longer pushes to everyone. Instead
+--          only pushes to dealers who have notify_network_broadcasts = true,
+--          AND (their brand_focus is empty OR the broadcast's model/items
+--          mention one of their focus brands).
+--   Every dealer still SEES all open-market broadcasts in the Network tab
+--   (via the existing dealer_network / broadcasts realtime subscription and
+--   pill-badge count) — this migration only changes who gets buzzed on
+--   their phone for it.
+--
+-- Safe to re-run: uses IF NOT EXISTS / CREATE OR REPLACE / DROP ... IF EXISTS.
+-- Run in Supabase: Dashboard > SQL Editor > New query > paste > Run.
+-- ============================================================
+
+-- 1. New dealer preference columns
+alter table dealers add column if not exists notify_network_broadcasts boolean not null default false;
+alter table dealers add column if not exists brand_focus text[] not null default '{}';
+
+comment on column dealers.notify_network_broadcasts is
+  'If true, this dealer receives push notifications for open-market (visibility=network) broadcasts, not just private ones addressed directly to them. Default false to avoid notification fatigue.';
+comment on column dealers.brand_focus is
+  'Optional list (recommended max 3) of brand keywords, e.g. {"iPhone","Samsung"}. When notify_network_broadcasts is true and this is non-empty, only network broadcasts whose model/items text matches one of these brands will be pushed to this dealer. Empty array = no brand filtering (push for everything, if opted in).';
+
+-- 2. Helper: does a broadcast's content mention any of a dealer's focus brands?
+--    Checks the top-level model/storage/color text plus every item inside the
+--    items jsonb array (for multi-item "Stock" adverts), case-insensitively.
+create or replace function broadcast_matches_brand_focus(p_broadcast broadcasts, p_brand_focus text[])
+returns boolean
+language sql
+stable
+as $$
+  select
+    -- empty focus list = no filtering, matches everything
+    (p_brand_focus is null or array_length(p_brand_focus,1) is null)
+    or exists (
+      select 1 from unnest(p_brand_focus) as brand
+      where
+        p_broadcast.model ilike '%' || brand || '%'
+        or coalesce(p_broadcast.storage,'') ilike '%' || brand || '%'
+        or coalesce(p_broadcast.color,'') ilike '%' || brand || '%'
+        or exists (
+          select 1 from jsonb_array_elements(coalesce(p_broadcast.items, '[]'::jsonb)) as it
+          where (it->>'model') ilike '%' || brand || '%'
+             or coalesce(it->>'brand','') ilike '%' || brand || '%'
+        )
+    );
+$$;
+
+-- 3. Replace the broadcast push trigger function
+create or replace function notify_broadcast_push()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_url text; v_secret text; v_title text; v_body text;
+  v_target_ids uuid[];
+begin
+  select value into v_url from app_config where key='edge_function_url';
+  select value into v_secret from app_config where key='edge_function_secret';
+  if v_url is null then return new; end if;
+
+  v_title := case when new.type='Need' then 'Dealer needs: '||new.model else 'New stock advert' end;
+  v_body := coalesce(new.message, new.model);
+
+  if new.visibility = 'private' then
+    -- Unchanged: private broadcasts are addressed directly to specific
+    -- dealers (e.g. "send to my saved contacts") and always push.
+    if array_length(new.target_dealer_ids,1) is null then return new; end if;
+    perform net.http_post(
+      url := v_url,
+      headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
+      body := jsonb_build_object('dealer_ids', to_jsonb(new.target_dealer_ids),
+        'title', v_title, 'body', v_body, 'url', './#tab=network', 'type', 'broadcast')
+    );
+  else
+    -- Network (open-market) broadcasts: only push to dealers who opted in
+    -- via notify_network_broadcasts, and (if they set one) whose brand_focus
+    -- matches this broadcast's content. Everyone else still sees it via the
+    -- Network tab badge/realtime subscription — just no push.
+    select array_agg(d.id) into v_target_ids
+    from dealers d
+    where d.id <> new.dealer_id
+      and d.notify_network_broadcasts = true
+      and broadcast_matches_brand_focus(new, d.brand_focus);
+
+    if v_target_ids is null or array_length(v_target_ids,1) is null then
+      return new; -- nobody opted in / matched — no push, badge/realtime still updates for everyone
+    end if;
+
+    perform net.http_post(
+      url := v_url,
+      headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
+      body := jsonb_build_object('dealer_ids', to_jsonb(v_target_ids),
+        'title', v_title, 'body', v_body, 'url', './#tab=network', 'type', 'broadcast')
+    );
+  end if;
+  return new;
+end; $$;
+
+-- Trigger itself is unchanged in shape, just re-pointed at the new function body.
+drop trigger if exists trg_notify_broadcast_push on broadcasts;
+create trigger trg_notify_broadcast_push after insert on broadcasts
+for each row execute function notify_broadcast_push();
+
+-- ============================================================
+-- After running this:
+-- - Every dealer's push behavior for network broadcasts defaults to OFF
+--   (notify_network_broadcasts = false), matching the "quiet by default"
+--   goal. Existing dealers are not opted in automatically.
+-- - The Seller App's Notifications modal now exposes:
+--     "Also alert me for open-market broadcasts" (toggle)
+--     "Only alert me about these brands" (optional, up to 3, shown once the
+--     toggle above is on)
+-- - No changes needed to how broadcasts are inserted from the client —
+--   this is entirely a database-side change.
+-- ============================================================
+
+======================================================================================================================================================
+
+migrations\20260724_add_dealer_chat.sql
+
+-- Migration: 1:1 dealer-to-dealer chat
+--
+-- What this adds:
+--   1. A `messages` table — plain text messages between two dealers.
+--   2. RLS so a dealer can only ever see messages where they are the
+--      sender or the recipient (same pattern as suppliers/consignments).
+--   3. Adds `messages` to the realtime publication, so both sides see new
+--      messages live without refreshing (same mechanism already used for
+--      broadcasts/broadcast_responses).
+--   4. A push-notification trigger (notify_new_message_push) that fires
+--      the existing send-push Edge Function whenever a message is inserted,
+--      so a dealer gets a phone alert for a new chat message even with the
+--      app closed — same pattern as notify_new_request_push.
+--
+-- Who can message whom: any two registered dealers can technically message
+-- each other once they know each other's dealer id (same trust boundary as
+-- the open dealer network / broadcasts). The Seller App UI only ever lets a
+-- dealer START a chat with a saved contact that has linked_dealer_id set
+-- (i.e. a contact they've already confirmed is a real PhoneHub account) —
+-- this migration doesn't restrict at the database level beyond that, to
+-- keep it simple. Tighten later with a "only if a supplier row links you
+-- both" check if you want it stricter.
+--
+-- Safe to re-run: uses IF NOT EXISTS / CREATE OR REPLACE / DROP ... IF EXISTS.
+-- Run in Supabase: Dashboard > SQL Editor > New query > paste > Run.
+-- ============================================================
+
+create table if not exists messages (
+  id uuid primary key default gen_random_uuid(),
+  sender_id uuid not null references dealers(id) on delete cascade,
+  recipient_id uuid not null references dealers(id) on delete cascade,
+  body text not null,
+  read_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_messages_sender on messages(sender_id);
+create index if not exists idx_messages_recipient on messages(recipient_id);
+create index if not exists idx_messages_conversation
+  on messages(least(sender_id, recipient_id), greatest(sender_id, recipient_id), created_at);
+
+alter table messages enable row level security;
+
+drop policy if exists "messages_select_own" on messages;
+create policy "messages_select_own" on messages for select
+  using (sender_id = auth.uid() or recipient_id = auth.uid());
+
+drop policy if exists "messages_insert_own" on messages;
+create policy "messages_insert_own" on messages for insert
+  with check (sender_id = auth.uid());
+
+-- Recipients can update read_at on messages sent TO them (marking as read).
+-- Senders cannot edit/retract message content this way (body is not
+-- covered by this policy's typical use — Supabase update() from the client
+-- should only ever send {read_at: ...} for this table).
+drop policy if exists "messages_update_mark_read" on messages;
+create policy "messages_update_mark_read" on messages for update
+  using (recipient_id = auth.uid())
+  with check (recipient_id = auth.uid());
+
+drop policy if exists "messages_select_admin" on messages;
+create policy "messages_select_admin" on messages for select
+  using (is_admin());
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'messages'
+  ) then
+    alter publication supabase_realtime add table messages;
+  end if;
+end $$;
+
+-- Push notification: fires once per new message, same as
+-- notify_new_request_push. Uses the same app_config edge_function_url /
+-- edge_function_secret already set up for broadcasts and requests.
+create or replace function notify_new_message_push()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_url text; v_secret text; v_sender_name text;
+begin
+  select value into v_url from app_config where key='edge_function_url';
+  select value into v_secret from app_config where key='edge_function_secret';
+  if v_url is null then return new; end if;
+
+  select shop_name into v_sender_name from dealers where id = new.sender_id;
+
+  perform net.http_post(
+    url := v_url,
+    headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
+    body := jsonb_build_object(
+      'dealer_id', new.recipient_id,
+      'title', 'New message from ' || coalesce(v_sender_name, 'a dealer'),
+      'body', left(new.body, 120),
+      'url', './#tab=chats', 'type', 'message'
+    )
+  );
+  return new;
+end; $$;
+
+drop trigger if exists trg_notify_new_message_push on messages;
+create trigger trg_notify_new_message_push after insert on messages
+for each row execute function notify_new_message_push();
+
+-- ============================================================
+-- After running this:
+-- - The `messages` table exists with RLS matching the rest of the schema.
+-- - New messages push a notification to the recipient (respecting whatever
+--   device push subscriptions they already have — no extra opt-in needed,
+--   the same way a private broadcast or a customer request always pushes).
+-- - Add sw.js routing for 'message' notifications (see CHATS_FEATURE_GUIDE.md)
+--   so tapping the notification opens the Chats tab.
+-- ============================================================
 
 ======================================================================================================================================================
 
@@ -7081,6 +7883,15 @@ function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').repl
 function escapeAttr(s){ return (s||'').toString().replace(/"/g,'&quot;'); }
 function val(id){ const el=document.getElementById(id); return el?el.value:''; }
 
+/* ---------- feedback (mailto) ---------- */
+const FEEDBACK_EMAIL = 'datatutorsandtech@gmail.com';
+function feedbackMailtoHref(){
+  const shopName = state.selectedShop ? state.selectedShop.shop_name : '';
+  const subject = 'PhoneHub Pro Customer Feedback' + (shopName ? (' — '+shopName) : '');
+  const body = 'Hi PhoneHub team,\n\nHere\'s my feedback:\n\n\n\n(Feel free to leave your name and phone number if you\'d like a reply.)';
+  return 'mailto:'+FEEDBACK_EMAIL+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
+}
+
 function loadConfig(){
   if(HARDCODED_SUPABASE_URL && HARDCODED_SUPABASE_ANON_KEY){
     return { url: HARDCODED_SUPABASE_URL, key: HARDCODED_SUPABASE_ANON_KEY };
@@ -7173,6 +7984,7 @@ function render(){
     '<div class="topbar"><div class="brand"><div class="mark">PH</div>PhoneHub</div>' +
       '<div class="shop-pill" id="switchShopBtn">'+escapeHtml(state.selectedShop.shop_name)+' · switch shop</div>' +
       '<div class="nav-tabs">' + navTab('shop','Shop') + navTab('request','Request a phone') + navTab('lookup','My purchases') + '</div>' +
+      '<a class="shop-pill" href="'+feedbackMailtoHref()+'" style="text-decoration:none;">✉️ Feedback</a>' +
     '</div>' +
     '<div class="wrap">'+renderTab()+'</div>' +
     (state.modal ? renderModal() : '') +
@@ -7675,8 +8487,10 @@ const ICONS = {
   bell:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>',
   consign:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="8" r="3"/><path d="M2.5 21v-1.5A4 4 0 016.5 15.5h1"/><path d="M21.5 21v-1.5a4 4 0 00-4-3.5h-1"/><path d="M9.5 17h5"/></svg>',
   broadcast:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 10v4a1 1 0 001 1h1.5l5 4v-14l-5 4H5a1 1 0 00-1 1z"/><path d="M15 9a3.5 3.5 0 010 6"/><path d="M17.5 6.5a7 7 0 010 11"/></svg>',
+  chat:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg>',
   hamburger:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
-  theme:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'  
+  theme:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  feedback:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg>'
 };
 
 const CONFIG_KEY = 'phonehub-supabase-config';
@@ -7705,6 +8519,63 @@ if(window.matchMedia){
   });
 }
 
+/* ---------- network "last seen" tracking (unread/read demarcation) ---------- */
+// Persisted per-device, keyed by dealer id (so switching accounts on the same
+// browser doesn't mix up unread state). Records the last moment this dealer
+// actually left the Broadcasts view — anything created after that moment is
+// "unread" until they view it again.
+const NETWORK_SEEN_KEY = 'phonehub-network-last-seen';
+function loadNetworkLastSeen(dealerId){
+  try{
+    const raw = localStorage.getItem(NETWORK_SEEN_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    return map[dealerId] || null;
+  } catch(e){ return null; }
+}
+function saveNetworkLastSeen(dealerId, iso){
+  try{
+    const raw = localStorage.getItem(NETWORK_SEEN_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    map[dealerId] = iso;
+    localStorage.setItem(NETWORK_SEEN_KEY, JSON.stringify(map));
+  } catch(e){ /* ignore */ }
+}
+// Call when the dealer navigates AWAY from the Broadcasts view (switching
+// sub-tab, switching main app tab, closing/backgrounding the page) — marks
+// everything currently loaded as "seen" so next visit only shows what's
+// genuinely new since this moment.
+function commitNetworkLastSeen(){
+  if(!state.profile) return;
+  const now = new Date().toISOString();
+  state.networkLastSeenAt = now;
+  saveNetworkLastSeen(state.profile.id, now);
+}
+// Call when the dealer arrives AT the Broadcasts view — snapshots the
+// previous "last seen" value so the unread markers/divider stay stable for
+// the whole time they're looking at the list (switching to another app tab
+// and back, or minimizing the browser and reopening, won't reset it — only
+// actually leaving the Broadcasts view commits a new "seen" point).
+function enterBroadcastsView(){
+  state.networkSeenThreshold = state.networkLastSeenAt;
+}
+// Total count of broadcasts (Need or Stock) from OTHER dealers created after
+// this dealer's last committed "seen" point — drives the Network rail badge.
+function computeUnreadBroadcastCount(){
+  if(!state.profile || !state.networkLastSeenAt) return 0;
+  const seenAt = new Date(state.networkLastSeenAt);
+  return state.broadcasts.filter(function(b){
+    return b.dealer_id !== state.profile.id && new Date(b.created_at) > seenAt;
+  }).length;
+}
+
+/* ---------- feedback (mailto) ---------- */
+const FEEDBACK_EMAIL = 'phonehubpro.dts@gmail.com';
+function feedbackMailtoHref(context){
+  const subject = 'PhoneHub Pro Feedback' + (context ? (' — '+context) : '');
+  const body = 'Hi PhoneHub team,\n\nHere\'s my feedback:\n\n\n\n(Feel free to leave your name/shop and phone number if you\'d like a reply.)';
+  return 'mailto:'+FEEDBACK_EMAIL+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
+}
+
 // If you've deployed this app for real, paste your Supabase project URL and anon key here.
 // Doing so skips the "Connect" screen entirely for every dealer who opens this app.
 // Safe to leave blank while testing — the app will ask for them once and remember
@@ -7731,6 +8602,8 @@ let state = {
   adminDealers:[], adminInventory:[], adminSales:[],
   searchQuery:'', modal:null, toast:null, toastErr:false, calcInputs:{cost:1150000,target:45000,min:25000,offer:1195000},
   networkView:'search', dealerSearchQuery:'', networkOrder:[], networkVisibleCount:20,
+  networkLastSeenAt:null, // persisted "last time I left the Broadcasts view" (loaded from localStorage at login)
+  networkSeenThreshold:null, // stable snapshot of the above, captured on arrival at Broadcasts — drives the unread divider/markers for this viewing session
   networkCategoryFilter:'All', // All | Phone | Laptop — filter for the Network > Search stock view
   networkDealerFilter:null, dealerFilterQuery:'', dealerFilterOpen:false,
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'', bulkImportSupplierId:'',
@@ -7754,6 +8627,8 @@ let state = {
                       // rows (see refreshAll's .eq('dealer_id', state.profile.id) query) —
                       // never a network-wide log of other dealers' sales.
   historyQuery:'', historyMonthFilter:'All',
+  brandFocusDraft:'', // comma-separated draft text for the "brands I deal in" input in Notification settings
+  messages:[], chatActiveDealerId:null, chatText:'',
 };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -7970,6 +8845,18 @@ window.addEventListener('appinstalled', function(){
   render();
 });
 
+// If the dealer backgrounds/closes the tab while actually looking at the
+// Broadcasts view, treat that as "seen" too — otherwise reopening the app
+// later would still show everything from before as unread even though they
+// were just looking right at it.
+function commitNetworkLastSeenIfViewingBroadcasts(){
+  if(state.tab === 'network' && state.networkView === 'broadcasts') commitNetworkLastSeen();
+}
+window.addEventListener('pagehide', commitNetworkLastSeenIfViewingBroadcasts);
+window.addEventListener('visibilitychange', function(){
+  if(document.visibilityState === 'hidden') commitNetworkLastSeenIfViewingBroadcasts();
+});
+
 function checkInstallBannerVisibility(){
   if(state.stage === 'app' || state.stage === 'auth'){
     render();
@@ -8070,9 +8957,9 @@ async function refreshBroadcastsData(){
   ]);
   state.broadcasts = bc.data || [];
   state.broadcastResponses = br.data || [];
-  if(state.tab === 'network' && state.networkView === 'broadcasts'){
-    render();
-  }
+  // Always re-render (not just while on the Broadcasts view) so the unread
+  // count on the Network rail badge stays live as new broadcasts arrive.
+  render();
 }
 
 async function enablePush(){
@@ -8658,6 +9545,7 @@ async function loadAfterAuth(){
     const { data: profile, error: pErr } = await sb.from('dealers').select('*').eq('id', user.id).single();
     if(pErr) throw pErr;
     state.profile = profile; state.isAdmin = !!profile.is_admin;
+    state.networkLastSeenAt = loadNetworkLastSeen(profile.id);
     await refreshAll();
     state.stage = 'app';
     initPush();
@@ -8735,7 +9623,7 @@ function applyHashTab(){
   var hash = window.location.hash;
   if (hash.startsWith('#tab=')){
     var tab = hash.slice(5);
-    var valid = ['dashboard','inventory','sales','calc','requests','network','admin'];
+    var valid = ['dashboard','inventory','sales','calc','requests','network','chats','admin'];
     if (valid.indexOf(tab) !== -1 && state.tab !== tab){
       state.tab = tab;
       render();
@@ -8746,6 +9634,7 @@ function openModal(name, payload){
   if(name==='addPhone' || name==='editPhone' || name==='addLaptop' || name==='editLaptop' || name==='addGadget' || name==='editGadget') state.photoModalRemovedUrls = [];
   if(name==='viewNetworkItem' || name==='viewStockItem') state.galleryIndex = 0;
   if(name==='clearInventory') state.clearInventoryConfirmText = '';
+  if(name==='notifSettings') state.brandFocusDraft = (state.profile.brand_focus||[]).join(', ');
   if(name==='logSale'){ state.saleModalQuery = ''; state.saleModalSelectedId = null; state.saleModalOpen = false; }
   if(name==='addSupplier' || name==='editSupplier'){
     state.supplierSuggestions = []; state.supplierSuggestOpen = false;
@@ -8851,11 +9740,12 @@ function render(){
       railItem('dashboard','Home') + railItem('inventory','Stock') + railItem('sales','Sales') +
       railItem('calc','Price') + railItem('requests','Asks', badgeCount(state.requests.filter(function(r){return r.status==='Pending';}).length)) +
       railItem('consign','Owed', badgeCount(state.consignments.filter(function(c){return c.status!=='Settled' && c.status!=='Returned';}).length)) +
-      railItem('network','Network', badgeCount(state.broadcasts.filter(function(b){return b.status==='Open';}).length)) +
+      railItem('network','Network', badgeCount(computeUnreadBroadcastCount())) +
       (state.isAdmin ? railItem('admin','Admin') : '') +
       '<div class="rail-bottom">' +
         '<div class="rail-bottom-item '+(state.pushStatus==='on'?'on':'')+'" id="notifBellBtn" title="Notification settings">'+ICONS.bell+'<span>Alerts</span></div>' +
         '<div class="rail-bottom-item" id="themeSettingsBtn" title="Display theme">'+ICONS.theme+'<span>Theme</span></div>' +
+        '<a class="rail-bottom-item" href="'+feedbackMailtoHref(state.profile.shop_name)+'" title="Send feedback" style="text-decoration:none;">'+ICONS.feedback+'<span>Feedback</span></a>' +
         '<div class="rail-bottom-item" id="logoutBtn" title="Log out">'+ICONS.gear+'<span>Logout</span></div>' +
       '</div>' +
     '</div>' +
@@ -8867,6 +9757,7 @@ function render(){
         (state.searchQuery ? renderSearchDropdown() : '') +
         '<div class="topbar-right">' +
           '<span class="dot"></span> '+escapeHtml(state.profile.shop_name)+(state.isAdmin?' <span class="badge badge-admin">admin</span>':'') +
+          '<a href="'+feedbackMailtoHref(state.profile.shop_name)+'" class="theme-toggle" title="Send feedback" style="text-decoration:none;display:flex;">'+ICONS.feedback+'</a>' +
           '<span class="bell '+(state.pushStatus==='on'?'on':'')+' notifBellBtn" title="Notification settings">'+ICONS.bell+'</span>' +
           '<span class="theme-toggle themeSettingsBtn" title="Display theme">'+ICONS.theme+'</span>' +
           '<span class="gear logoutBtn" title="Log out">'+ICONS.gear+'</span>' +
@@ -9500,13 +10391,14 @@ function dealerPhone(id){
   return n ? n.dealer_phone : '';
 }
 
-function renderStockAdvertCard(b){
+function renderStockAdvertCard(b, isUnread){
   const isMine = b.dealer_id === state.profile.id;
   const items = Array.isArray(b.items) ? b.items : (b.items ? (function(){ try{ return JSON.parse(b.items); }catch(e){ return []; } })() : []);
   const phone = dealerPhone(b.dealer_id);
-  return '<div class="section">' +
+  return '<div class="section" style="'+(isUnread?'border-left:3px solid var(--accent);':'')+'">' +
     '<div class="section-head"><div><strong>'+ICONS.broadcast.replace('<svg ', '<svg style="width:13px;height:13px;vertical-align:-2px;margin-right:5px;color:var(--accent)" ')+
       (isMine ? 'Your stock advert' : escapeHtml(dealerName(b.dealer_id))+'\'s stock advert')+'</strong>' +
+      (isUnread ? ' <span class="badge" style="background:var(--accent);color:#10141C;margin-left:6px;">NEW</span>' : '') +
       '<div style="font-size:11.5px;color:var(--text-faint);margin-top:3px;">'+escapeHtml(b.date)+(b.visibility==='private'?' · <span style="color:var(--accent);">Sent to you directly</span>':'')+'</div></div>' +
       '<div style="display:flex;align-items:center;gap:10px;">'+badge(b.status)+
         (isMine && b.status==='Open'?('<button class="btn btn-sm" data-close-broadcast="'+b.id+'">Close</button>'):'') +
@@ -9528,19 +10420,29 @@ function renderStockAdvertCard(b){
     '</div></div>';
 }
 
+function isUnreadBroadcast(b){
+  return !!(state.networkSeenThreshold && b.dealer_id !== state.profile.id && new Date(b.created_at) > new Date(state.networkSeenThreshold));
+}
+
 function renderBroadcasts(){
   const filter = state.networkBroadcastTypeFilter;
   const rows = state.broadcasts.slice()
     .filter(function(b){ return filter==='All' || (b.type||'Need')===filter; })
     .sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
 
-  const body = rows.map(function(b){
-    if((b.type||'Need')==='Stock') return renderStockAdvertCard(b);
+  // Build each card along with its unread status (rows are already sorted
+  // newest-first, so unread items naturally cluster at the top — we just
+  // need to drop a "resume here" divider at the point where unread gives
+  // way to already-seen).
+  const cards = rows.map(function(b){
+    const isUnread = isUnreadBroadcast(b);
+    if((b.type||'Need')==='Stock') return { html: renderStockAdvertCard(b, isUnread), isUnread: isUnread };
     const responses = state.broadcastResponses.filter(function(r){ return r.broadcast_id===b.id; }).sort(function(a,b2){ return (Number(a.price)||0)-(Number(b2.price)||0); });
     const isMine = b.dealer_id === state.profile.id;
     const canAccept = isMine && b.status==='Open';
-    return '<div class="section">' +
+    const html = '<div class="section" style="'+(isUnread?'border-left:3px solid var(--accent);':'')+'">' +
       '<div class="section-head"><div><strong>'+escapeHtml(b.model)+'</strong> '+(b.storage?(' · '+escapeHtml(b.storage)):'')+' '+(b.color?(' · '+escapeHtml(b.color)):'')+(isMine?' <span style="font-size:10px;color:var(--text-faint)">(your request)</span>':'')+
+      (isUnread ? ' <span class="badge" style="background:var(--accent);color:#10141C;margin-left:6px;">NEW</span>' : '') +
       '<div style="font-size:11.5px;color:var(--text-faint);margin-top:3px;">'+escapeHtml(b.date)+' · '+escapeHtml(b.urgency)+'</div></div>' +
       '<div style="display:flex;align-items:center;gap:10px;">'+badge(b.status)+
         (isMine && b.status==='Open'?('<button class="btn btn-sm" data-close-broadcast="'+b.id+'">Close (no deal)</button>'):'') +
@@ -9558,7 +10460,27 @@ function renderBroadcasts(){
           '</tr>'; }).join('') +
         '</tbody></table>') : '<div class="empty" style="padding:20px;">No responses yet.</div>') +
       '</div></div>';
-  }).join('');
+    return { html: html, isUnread: isUnread };
+  });
+
+  // Insert the "resume here" divider exactly once, at the transition from
+  // unread to already-seen (only shown when there's genuinely a mix of both —
+  // no divider if everything is new, or everything is already seen).
+  let bodyParts = [];
+  let dividerInserted = false;
+  cards.forEach(function(c, i){
+    const prevWasUnread = i>0 ? cards[i-1].isUnread : null;
+    if(!dividerInserted && prevWasUnread === true && c.isUnread === false){
+      bodyParts.push(
+        '<div style="display:flex;align-items:center;gap:10px;margin:18px 0 14px;color:var(--text-faint);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;">' +
+          '<div style="flex:1;height:1px;background:var(--border);"></div>Seen earlier<div style="flex:1;height:1px;background:var(--border);"></div>' +
+        '</div>'
+      );
+      dividerInserted = true;
+    }
+    bodyParts.push(c.html);
+  });
+  const body = bodyParts.join('');
 
   const openNeedCount = state.broadcasts.filter(function(b){ return b.status==='Open' && (b.type||'Need')==='Need'; }).length;
   const openStockCount = state.broadcasts.filter(function(b){ return b.status==='Open' && (b.type||'Need')==='Stock'; }).length;
@@ -9757,8 +10679,23 @@ function renderNotifModal(){
           status==='denied' ? '' :
           '<button class="btn btn-accent btn-sm" id="enablePushBtn" '+(status==='prompting'?'disabled':'')+'>Enable</button>') +
       '</div>' +
-      '<div class="notif-row"><div class="n-sub">You\'ll be alerted for: new customer requests, dealer network broadcasts and responses, warranty phones expiring within 2 days, and phones down to their last unit. Alerts arrive even if this app isn\'t open, as long as your phone has data/wifi.</div></div>' +
+      '<div class="notif-row"><div class="n-sub">You\'ll always be alerted for: new customer requests to your shop, private broadcasts sent to you directly, responses to your own broadcasts, warranty phones expiring within 2 days, and phones down to their last unit. Alerts arrive even if this app isn\'t open, as long as your phone has data/wifi.</div></div>' +
       (status==='denied' ? '<div class="n-sub" style="margin-top:8px;color:var(--danger)">Notifications are blocked for this site in your browser. Open your browser\'s site settings for this page and allow notifications, then reopen this dialog.</div>' : '') +
+      '<div class="notif-row"><div><div class="n-label">Also alert me for open-market broadcasts</div>' +
+        '<div class="n-sub">Off by default — with many dealers on the network, every "need it" or "for sale" post would otherwise buzz your phone constantly. Open-market broadcasts still show up in the Network tab badge either way.</div></div>' +
+        '<input type="checkbox" id="notifyNetworkToggle" '+(state.profile.notify_network_broadcasts?'checked':'')+' style="width:20px;height:20px;flex-shrink:0;"/>' +
+      '</div>' +
+      (state.profile.notify_network_broadcasts ? (
+        '<div class="notif-row" style="flex-direction:column;align-items:stretch;gap:8px;">' +
+          '<div><div class="n-label">Only alert me about these brands (optional)</div>' +
+            '<div class="n-sub">e.g. iPhone, Samsung — up to 3. Leave blank to get pushed for every open-market broadcast.</div></div>' +
+          '<div style="display:flex;gap:8px;">' +
+            '<input id="brandFocusInput" placeholder="iPhone, Samsung, iPad" value="'+escapeAttr(state.brandFocusDraft)+'" ' +
+              'style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 11px;color:var(--text);font-family:var(--font-body);font-size:13px;outline:none;"/>' +
+            '<button class="btn btn-accent btn-sm" id="saveBrandFocusBtn">Save</button>' +
+          '</div>' +
+        '</div>'
+      ) : '') +
     '</div>' +
   '</div></div>';
 }
@@ -10329,9 +11266,12 @@ function renderRespondModal(m){
 function attachHandlers(){
   const app = document.getElementById('app');
   app.querySelectorAll('[data-tab]').forEach(function(el){ el.addEventListener('click', function(){
+    const nextTab = el.getAttribute('data-tab');
+    if(state.tab==='network' && state.networkView==='broadcasts' && nextTab!=='network') commitNetworkLastSeen();
     state.inventorySupplierFilter = null; state.supplierFilterName = '';
     state.mobileMenuOpen = false;
-    setTab(el.getAttribute('data-tab'));
+    setTab(nextTab);
+    if(nextTab==='network' && state.networkView==='broadcasts') enterBroadcastsView();
   }); });
 
   const forceCacheUpdateBtn = document.getElementById('forceCacheUpdateBtn');
@@ -10355,6 +11295,34 @@ function attachHandlers(){
   if(enablePushBtn) enablePushBtn.addEventListener('click', enablePush);
   const disablePushBtn = document.getElementById('disablePushBtn');
   if(disablePushBtn) disablePushBtn.addEventListener('click', disablePush);
+
+  const notifyNetworkToggle = document.getElementById('notifyNetworkToggle');
+  if(notifyNetworkToggle) notifyNetworkToggle.addEventListener('change', async function(){
+    const wantsOn = notifyNetworkToggle.checked;
+    try{
+      const { error } = await sb.from('dealers').update({ notify_network_broadcasts: wantsOn }).eq('id', state.profile.id);
+      if(error) throw error;
+      state.profile.notify_network_broadcasts = wantsOn;
+      showToast(wantsOn ? 'You\'ll now be alerted for open-market broadcasts too' : 'Open-market broadcasts will stay in-app only');
+    } catch(e){
+      notifyNetworkToggle.checked = !wantsOn; // revert the visual toggle on failure
+      showToast('Could not update: '+(e.message||e), true);
+    }
+    render();
+  });
+  const saveBrandFocusBtn = document.getElementById('saveBrandFocusBtn');
+  if(saveBrandFocusBtn) saveBrandFocusBtn.addEventListener('click', async function(){
+    const brandFocusInput = document.getElementById('brandFocusInput');
+    state.brandFocusDraft = brandFocusInput ? brandFocusInput.value : state.brandFocusDraft;
+    const brands = state.brandFocusDraft.split(',').map(function(b){ return b.trim(); }).filter(Boolean).slice(0,3);
+    try{
+      const { error } = await sb.from('dealers').update({ brand_focus: brands }).eq('id', state.profile.id);
+      if(error) throw error;
+      state.profile.brand_focus = brands;
+      showToast(brands.length ? 'Saved — you\'ll only be pushed for '+brands.join(', ') : 'Saved — you\'ll be pushed for every open-market broadcast');
+    } catch(e){ showToast('Could not save: '+(e.message||e), true); }
+    render();
+  });
 
   const installAppBtn = document.getElementById('installAppBtn');
   if(installAppBtn) installAppBtn.addEventListener('click', async function(){
@@ -10381,7 +11349,13 @@ function attachHandlers(){
   app.querySelectorAll('[data-close-modal]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-close-overlay]').forEach(function(el){ el.addEventListener('click', closeModal); });
   app.querySelectorAll('[data-stop]').forEach(function(el){ el.addEventListener('click', function(e){ e.stopPropagation(); }); });
-  app.querySelectorAll('[data-network-view]').forEach(function(el){ el.addEventListener('click', function(){ state.networkView = el.getAttribute('data-network-view'); render(); }); });
+  app.querySelectorAll('[data-network-view]').forEach(function(el){ el.addEventListener('click', function(){
+    const nextView = el.getAttribute('data-network-view');
+    if(state.networkView==='broadcasts' && nextView!=='broadcasts') commitNetworkLastSeen();
+    state.networkView = nextView;
+    if(nextView==='broadcasts') enterBroadcastsView();
+    render();
+  }); });
   app.querySelectorAll('[data-sales-subtab]').forEach(function(el){ el.addEventListener('click', function(){ state.salesSubTab = el.getAttribute('data-sales-subtab'); render(); }); });
   const historySearch = document.getElementById('historySearch');
   if(historySearch) historySearch.addEventListener('input', function(e){
@@ -11279,6 +12253,231 @@ init();
 
 ======================================================================================================================================================
 
+supabase\functions\send-push\index.ts
+
+// PhoneHub Pro — send-push Edge Function
+//
+// Receives a small JSON payload from a Postgres trigger (or the daily cron check)
+// and delivers it as a real Web Push notification to every subscribed device for
+// the relevant dealer(s). This is what makes the alert show up even if the
+// Seller App isn't open.
+//
+// Deploy with:  supabase functions deploy send-push --no-verify-jwt
+// (--no-verify-jwt because this is called by Postgres via pg_net, not a logged-in user)
+//
+// Required secrets (set with `supabase secrets set NAME=value`):
+//   VAPID_PUBLIC_KEY       — same value pasted into seller/index.html
+//   VAPID_PRIVATE_KEY      — keep this one secret, never put it in client code
+//   VAPID_SUBJECT          — e.g. mailto:you@example.com
+//   WEBHOOK_SECRET         — any random string; must match app_config.edge_function_secret
+//   SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY — usually already present by default in Edge Functions
+
+import webpush from "npm:web-push@3.6.7";
+import { createClient } from "npm:@supabase/supabase-js@2";
+
+const VAPID_PUBLIC_KEY = Deno.env.get("VAPID_PUBLIC_KEY") || "";
+const VAPID_PRIVATE_KEY = Deno.env.get("VAPID_PRIVATE_KEY") || "";
+const VAPID_SUBJECT = Deno.env.get("VAPID_SUBJECT") || "mailto:admin@example.com";
+const WEBHOOK_SECRET = Deno.env.get("WEBHOOK_SECRET") || "";
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
+webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+
+const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+
+Deno.serve(async (req: Request) => {
+  try {
+    if (WEBHOOK_SECRET) {
+      const got = req.headers.get("x-webhook-secret");
+      if (got !== WEBHOOK_SECRET) {
+        return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+      }
+    }
+
+    const payload = await req.json();
+    const { type, dealer_id, dealer_ids, exclude_dealer_id, title, body, url, tag } = payload || {};
+
+    let query = supabase.from("push_subscriptions").select("*");
+    if (dealer_id) query = query.eq("dealer_id", dealer_id);
+    else if (dealer_ids && Array.isArray(dealer_ids) && dealer_ids.length) query = query.in("dealer_id", dealer_ids);
+    else if (exclude_dealer_id) query = query.neq("dealer_id", exclude_dealer_id);
+    else {
+      return new Response(JSON.stringify({ error: "no dealer_id, dealer_ids, or exclude_dealer_id given" }), { status: 400 });
+    }
+
+    const { data: subs, error } = await query;
+    if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+
+    const notifPayload = JSON.stringify({
+      title: title || "PhoneHub Pro",
+      body: body || "",
+      url: url || "./",
+      type: type || "alert",
+      tag: tag || undefined,
+    });
+
+    const results = await Promise.allSettled(
+      (subs || []).map(async (s: any) => {
+        try {
+          await webpush.sendNotification(
+            { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } },
+            notifPayload
+          );
+        } catch (err: any) {
+          // 404/410 means the browser/device unsubscribed or the subscription is stale — clean it up.
+          if (err && (err.statusCode === 404 || err.statusCode === 410)) {
+            await supabase.from("push_subscriptions").delete().eq("id", s.id);
+          }
+          throw err;
+        }
+      })
+    );
+
+    const sent = results.filter((r) => r.status === "fulfilled").length;
+    const failed = results.length - sent;
+
+    return new Response(JSON.stringify({ recipients: results.length, sent, failed }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (e: any) {
+    return new Response(JSON.stringify({ error: e.message || String(e) }), { status: 500 });
+  }
+});
+
+======================================================================================================================================================
+
+seller\manifest.json
+
+{
+  "name": "PhoneHub Pro — Seller",
+  "short_name": "PhoneHub",
+  "description": "Business management console for Computer Village phone dealers.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#10141C",
+  "theme_color": "#10141C",
+  "icons": [
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
+
+======================================================================================================================================================
+
+migrations\migration_add_images.sql
+
+-- ============================================================
+-- PhoneHub Pro — Migration: add phone photos
+-- ============================================================
+-- Only needed if you already ran an OLDER version of schema.sql before
+-- image support was added. The schema.sql in this package already
+-- includes everything below — skip this file on a fresh project.
+--
+-- Run once in Supabase: Dashboard > SQL Editor > New query > paste > Run.
+-- Safe to re-run.
+-- ============================================================
+
+alter table inventory add column if not exists image_url text;
+
+drop view if exists dealer_network_view;
+create or replace view dealer_network_view
+  with (security_invoker = false) as
+  select
+    i.id, i.dealer_id, d.shop_name as dealer_name, d.phone as dealer_phone,
+    i.model, i.storage, i.color, i.condition, i.battery, i.price, i.updated_at, i.image_url
+  from inventory i
+  join dealers d on d.id = i.dealer_id
+  where i.status = 'In Stock';
+
+drop view if exists public_catalog;
+create or replace view public_catalog
+  with (security_invoker = false) as
+  select id, dealer_id, model, storage, color, condition, battery, price, status, image_url
+  from inventory
+  where status = 'In Stock';
+
+insert into storage.buckets (id, name, public)
+  values ('phone-images', 'phone-images', true)
+  on conflict (id) do nothing;
+
+drop policy if exists "phone_images_public_read" on storage.objects;
+create policy "phone_images_public_read" on storage.objects for select
+  using (bucket_id = 'phone-images');
+
+drop policy if exists "phone_images_insert_own" on storage.objects;
+create policy "phone_images_insert_own" on storage.objects for insert
+  with check (bucket_id = 'phone-images' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists "phone_images_update_own" on storage.objects;
+create policy "phone_images_update_own" on storage.objects for update
+  using (bucket_id = 'phone-images' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists "phone_images_delete_own" on storage.objects;
+create policy "phone_images_delete_own" on storage.objects for delete
+  using (bucket_id = 'phone-images' and (storage.foldername(name))[1] = auth.uid()::text);
+
+======================================================================================================================================================
+
+migrations\migration_optional_imei.sql
+
+-- ============================================================
+-- PhoneHub Pro — Migration: make IMEI optional
+-- ============================================================
+-- ONLY needed if you already ran an OLDER version of schema.sql that had
+-- IMEI as NOT NULL. The schema.sql in this package already has IMEI as
+-- optional and sell_phone() matching by inventory id — skip this file
+-- entirely on a fresh project.
+--
+-- Run this once in Supabase: Dashboard > SQL Editor > New query > paste > Run.
+-- Safe to re-run.
+-- ============================================================
+
+-- 1. Allow phones/sales to be saved without an IMEI (e.g. accessories,
+--    or stock not yet logged with its IMEI).
+alter table inventory alter column imei drop not null;
+alter table sales alter column imei drop not null;
+
+-- 2. Replace sell_phone() to match by the phone's internal id instead of
+--    its IMEI. This avoids ambiguity now that IMEI can be blank (multiple
+--    IMEI-less phones would otherwise be indistinguishable when selling).
+drop function if exists sell_phone(text,numeric,text,text,text,text,int,text,text);
+
+create or replace function sell_phone(
+  p_inventory_id uuid, p_sale_price numeric, p_customer_name text, p_customer_phone text,
+  p_payment_method text, p_staff text, p_warranty_days int, p_accessories text, p_notes text
+)
+returns sales
+language plpgsql
+as $$
+declare
+  v_phone inventory%rowtype;
+  v_sale sales%rowtype;
+begin
+  select * into v_phone from inventory
+    where id = p_inventory_id and dealer_id = auth.uid() and status = 'In Stock'
+    limit 1;
+
+  if v_phone.id is null then
+    raise exception 'No in-stock phone found for that selection';
+  end if;
+
+  insert into sales (dealer_id, imei, model, cost, sale_price, customer_name, customer_phone,
+                      payment_method, staff, warranty_days, accessories, notes)
+  values (auth.uid(), v_phone.imei, v_phone.model, v_phone.cost, p_sale_price, p_customer_name, p_customer_phone,
+          p_payment_method, p_staff, p_warranty_days, p_accessories, p_notes)
+  returning * into v_sale;
+
+  update inventory set status = 'Sold', updated_at = now() where id = v_phone.id;
+
+  return v_sale;
+end;
+$$;
+grant execute on function sell_phone(uuid,numeric,text,text,text,text,int,text,text) to authenticated;
+
+======================================================================================================================================================
+
 README.md
 
 # PhoneHub Pro
@@ -11338,6 +12537,18 @@ create table if not exists dealers (
   is_admin boolean not null default false,
   created_at timestamptz not null default now()
 );
+
+-- Notification preferences: open-market ("network" visibility) broadcasts
+-- push to NO ONE by default — only private broadcasts (addressed directly
+-- to saved contacts) push automatically. A dealer opts in here if they want
+-- to also be pushed for open-market broadcasts, optionally narrowed to a
+-- handful of brands they actually deal in. See notify_broadcast_push() below.
+alter table dealers add column if not exists notify_network_broadcasts boolean not null default false;
+alter table dealers add column if not exists brand_focus text[] not null default '{}';
+comment on column dealers.notify_network_broadcasts is
+  'If true, this dealer receives push notifications for open-market (visibility=network) broadcasts, not just private ones addressed directly to them. Default false to avoid notification fatigue.';
+comment on column dealers.brand_focus is
+  'Optional list (recommended max 3) of brand keywords, e.g. {"iPhone","Samsung"}. When notify_network_broadcasts is true and this is non-empty, only network broadcasts whose model/items text matches one of these brands will be pushed to this dealer. Empty array = no brand filtering.';
 
 alter table dealers enable row level security;
 
@@ -11967,9 +13178,46 @@ on conflict (key) do nothing;
 -- ^^^ Edit these two values to your real Edge Function URL and webhook secret.
 -- (Find them again any time with: select * from app_config;)
 
+-- Helper: does a broadcast's content mention any of a dealer's focus brands?
+-- Checks the top-level model/storage/color text plus every item inside the
+-- items jsonb array (for multi-item "Stock" adverts), case-insensitively.
+-- An empty/null brand_focus list means "no filtering" (matches everything).
+create or replace function broadcast_matches_brand_focus(p_broadcast broadcasts, p_brand_focus text[])
+returns boolean
+language sql
+stable
+as $$
+  select
+    (p_brand_focus is null or array_length(p_brand_focus,1) is null)
+    or exists (
+      select 1 from unnest(p_brand_focus) as brand
+      where
+        p_broadcast.model ilike '%' || brand || '%'
+        or coalesce(p_broadcast.storage,'') ilike '%' || brand || '%'
+        or coalesce(p_broadcast.color,'') ilike '%' || brand || '%'
+        or exists (
+          select 1 from jsonb_array_elements(coalesce(p_broadcast.items, '[]'::jsonb)) as it
+          where (it->>'model') ilike '%' || brand || '%'
+             or coalesce(it->>'brand','') ilike '%' || brand || '%'
+        )
+    );
+$$;
+
+-- Fires the send-push Edge Function whenever a broadcast is inserted.
+-- For a 'private' broadcast: notifies only the dealers in target_dealer_ids
+-- (i.e. every one of your saved contacts who has a PhoneHub account).
+-- For a 'network' (open-market) broadcast: does NOT push to every dealer —
+-- with many dealers on the platform that becomes constant unwanted noise.
+-- Instead it only pushes to dealers who have explicitly opted in via
+-- notify_network_broadcasts=true, and (if they set one) whose brand_focus
+-- matches this broadcast. Every dealer still SEES all open-market
+-- broadcasts via the Network tab's badge count and realtime subscription —
+-- this only controls who gets an actual push/buzz for it.
 create or replace function notify_broadcast_push()
 returns trigger language plpgsql security definer set search_path = public as $$
-declare v_url text; v_secret text; v_title text; v_body text;
+declare
+  v_url text; v_secret text; v_title text; v_body text;
+  v_target_ids uuid[];
 begin
   select value into v_url from app_config where key='edge_function_url';
   select value into v_secret from app_config where key='edge_function_secret';
@@ -11987,10 +13235,20 @@ begin
         'title', v_title, 'body', v_body, 'url', './#tab=network', 'type', 'broadcast')
     );
   else
+    select array_agg(d.id) into v_target_ids
+    from dealers d
+    where d.id <> new.dealer_id
+      and d.notify_network_broadcasts = true
+      and broadcast_matches_brand_focus(new, d.brand_focus);
+
+    if v_target_ids is null or array_length(v_target_ids,1) is null then
+      return new; -- nobody opted in / matched — badge/realtime still updates for everyone, just no push
+    end if;
+
     perform net.http_post(
       url := v_url,
       headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
-      body := jsonb_build_object('exclude_dealer_id', new.dealer_id,
+      body := jsonb_build_object('dealer_ids', to_jsonb(v_target_ids),
         'title', v_title, 'body', v_body, 'url', './#tab=network', 'type', 'broadcast')
     );
   end if;

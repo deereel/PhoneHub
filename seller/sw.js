@@ -27,7 +27,7 @@ self.addEventListener('push', function(event){
     vibrate: [250, 100, 250, 100, 250],
     tag: data.tag || ('phonehub-' + (data.type || 'alert')),
     renotify: true,
-    requireInteraction: data.type === 'request' || data.type === 'broadcast',
+    requireInteraction: data.type === 'request' || data.type === 'broadcast' || data.type === 'message',
     data: { url: data.url || './', type: data.type || 'alert' }
   };
 
@@ -45,7 +45,8 @@ self.addEventListener('notificationclick', function(event){
       broadcast: './#tab=network',
       warranty: './#tab=sales',
       stock: './#tab=inventory',
-      response: './#tab=network'
+      response: './#tab=network',
+      message: './#tab=chats'
     };
     targetPath = typeToPath[notifType] || './';
   }

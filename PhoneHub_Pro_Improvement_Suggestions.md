@@ -61,3 +61,12 @@ In a trust/reputation-driven market, a well-regarded shop visibly using and vouc
 - Should the brand-focus filter also apply to the Network tab's default random-order listing (not just push notifications) — i.e. let dealers set a persistent "show me X brand first" preference?
 - Does the anti-theft blacklist need a formal dispute/appeal process (e.g. someone wrongly marked as receiving a stolen phone)?
 - At what dealer count does the free Supabase tier need to be revisited (500MB DB storage / 50k MAU)?
+
+
+## Improvements for the chat interface
+
+- Typing indicators / online status
+- Image attachments in chat (would reuse the existing phone-images storage bucket + resizeImageFile)
+- Group chats
+- Deleting/editing sent messages
+- multi line text using shift enter
