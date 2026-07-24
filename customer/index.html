@@ -157,6 +157,15 @@ function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').repl
 function escapeAttr(s){ return (s||'').toString().replace(/"/g,'&quot;'); }
 function val(id){ const el=document.getElementById(id); return el?el.value:''; }
 
+/* ---------- feedback (mailto) ---------- */
+const FEEDBACK_EMAIL = 'datatutorsandtech@gmail.com';
+function feedbackMailtoHref(){
+  const shopName = state.selectedShop ? state.selectedShop.shop_name : '';
+  const subject = 'PhoneHub Pro Customer Feedback' + (shopName ? (' — '+shopName) : '');
+  const body = 'Hi PhoneHub team,\n\nHere\'s my feedback:\n\n\n\n(Feel free to leave your name and phone number if you\'d like a reply.)';
+  return 'mailto:'+FEEDBACK_EMAIL+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
+}
+
 function loadConfig(){
   if(HARDCODED_SUPABASE_URL && HARDCODED_SUPABASE_ANON_KEY){
     return { url: HARDCODED_SUPABASE_URL, key: HARDCODED_SUPABASE_ANON_KEY };
@@ -249,6 +258,7 @@ function render(){
     '<div class="topbar"><div class="brand"><div class="mark">PH</div>PhoneHub</div>' +
       '<div class="shop-pill" id="switchShopBtn">'+escapeHtml(state.selectedShop.shop_name)+' · switch shop</div>' +
       '<div class="nav-tabs">' + navTab('shop','Shop') + navTab('request','Request a phone') + navTab('lookup','My purchases') + '</div>' +
+      '<a class="shop-pill" href="'+feedbackMailtoHref()+'" style="text-decoration:none;">✉️ Feedback</a>' +
     '</div>' +
     '<div class="wrap">'+renderTab()+'</div>' +
     (state.modal ? renderModal() : '') +
