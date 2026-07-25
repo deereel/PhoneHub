@@ -405,6 +405,7 @@ let state = {
   networkView:'search', dealerSearchQuery:'', networkOrder:[], networkVisibleCount:20,
   networkLastSeenAt:null, // persisted "last time I left the Broadcasts view" (loaded from localStorage at login)
   networkSeenThreshold:null, // stable snapshot of the above, captured on arrival at Broadcasts — drives the unread divider/markers for this viewing session
+  networkShouldScrollToUnread:false, // one-shot flag: set on arrival at Broadcasts, consumed (and cleared) by scrollToNetworkUnreadIfNeeded() right after render
   networkCategoryFilter:'All', // All | Phone | Laptop — filter for the Network > Search stock view
   networkDealerFilter:null, dealerFilterQuery:'', dealerFilterOpen:false,
   bulkImportText:'', bulkImportRows:[], bulkImportSkipped:[], bulkImportCondition:'Used', bulkImportSupplier:'', bulkImportSupplierId:'',
@@ -2455,6 +2456,20 @@ function scrollChatToBottom(){
     if(el) el.scrollTop = el.scrollHeight;
   }, 0);
 }
+
+// One-shot: on arrival at the Broadcasts view (set via networkShouldScrollToUnread
+// in the tab/network-view click handlers), scroll straight to the "new since
+// your last visit" divider so the dealer lands at their unread items and can
+// scroll down from there, instead of always starting at the oldest broadcast.
+// If everything is read (no divider) or everything is unread (divider sits
+// right at the top), this is a no-op and the view just opens at the top as usual.
+function scrollToNetworkUnreadIfNeeded(){
+  if(!state.networkShouldScrollToUnread) return;
+  state.networkShouldScrollToUnread = false;
+  if(state.tab !== 'network' || state.networkView !== 'broadcasts') return;
+  const divider = document.getElementById('networkUnreadDivider');
+  if(divider) divider.scrollIntoView({ block: 'start' });
+}
 async function refreshMessagesData(){
   if(!state.profile) return;
   const { data, error } = await sb.from('messages').select('*')
@@ -2501,12 +2516,13 @@ function renderBroadcasts(){
   const filter = state.networkBroadcastTypeFilter;
   const rows = state.broadcasts.slice()
     .filter(function(b){ return filter==='All' || (b.type||'Need')===filter; })
-    .sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
+    .sort(function(a,b){ return new Date(a.created_at)-new Date(b.created_at); });
 
-  // Build each card along with its unread status (rows are already sorted
-  // newest-first, so unread items naturally cluster at the top — we just
-  // need to drop a "resume here" divider at the point where unread gives
-  // way to already-seen).
+  // Build each card along with its unread status (rows are sorted oldest
+  // first, so already-seen items sit at the top and unread items cluster
+  // at the bottom — we drop a "new since last visit" divider at the point
+  // where seen gives way to unread, then auto-scroll there on arrival so
+  // the dealer lands right at their unread items and can scroll down).
   const cards = rows.map(function(b){
     const isUnread = isUnreadBroadcast(b);
     if((b.type||'Need')==='Stock') return { html: renderStockAdvertCard(b, isUnread), isUnread: isUnread };
@@ -2536,17 +2552,19 @@ function renderBroadcasts(){
     return { html: html, isUnread: isUnread };
   });
 
-  // Insert the "resume here" divider exactly once, at the transition from
-  // unread to already-seen (only shown when there's genuinely a mix of both —
-  // no divider if everything is new, or everything is already seen).
+  // Insert the "new since last visit" divider exactly once, at the
+  // transition from already-seen to unread (only shown when there's
+  // genuinely a mix of both — no divider if everything is new, or
+  // everything is already seen). Carries an id so scrollToNetworkUnreadIfNeeded()
+  // can jump straight to it on arrival.
   let bodyParts = [];
   let dividerInserted = false;
   cards.forEach(function(c, i){
     const prevWasUnread = i>0 ? cards[i-1].isUnread : null;
-    if(!dividerInserted && prevWasUnread === true && c.isUnread === false){
+    if(!dividerInserted && prevWasUnread === false && c.isUnread === true){
       bodyParts.push(
-        '<div style="display:flex;align-items:center;gap:10px;margin:18px 0 14px;color:var(--text-faint);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;">' +
-          '<div style="flex:1;height:1px;background:var(--border);"></div>Seen earlier<div style="flex:1;height:1px;background:var(--border);"></div>' +
+        '<div id="networkUnreadDivider" style="display:flex;align-items:center;gap:10px;margin:18px 0 14px;color:var(--text-faint);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;">' +
+          '<div style="flex:1;height:1px;background:var(--border);"></div>New since your last visit<div style="flex:1;height:1px;background:var(--border);"></div>' +
         '</div>'
       );
       dividerInserted = true;
@@ -3452,7 +3470,7 @@ function attachHandlers(){
     state.inventorySupplierFilter = null; state.supplierFilterName = '';
     state.mobileMenuOpen = false;
     setTab(nextTab);
-    if(nextTab==='network' && state.networkView==='broadcasts') enterBroadcastsView();
+    if(nextTab==='network' && state.networkView==='broadcasts'){ enterBroadcastsView(); state.networkShouldScrollToUnread = true; }
   }); });
 
   const forceCacheUpdateBtn = document.getElementById('forceCacheUpdateBtn');
@@ -3534,7 +3552,7 @@ function attachHandlers(){
     const nextView = el.getAttribute('data-network-view');
     if(state.networkView==='broadcasts' && nextView!=='broadcasts') commitNetworkLastSeen();
     state.networkView = nextView;
-    if(nextView==='broadcasts') enterBroadcastsView();
+    if(nextView==='broadcasts'){ enterBroadcastsView(); state.networkShouldScrollToUnread = true; }
     render();
   }); });
   app.querySelectorAll('[data-sales-subtab]').forEach(function(el){ el.addEventListener('click', function(){ state.salesSubTab = el.getAttribute('data-sales-subtab'); render(); }); });
@@ -4483,6 +4501,8 @@ function attachHandlers(){
   });
 
   window.addEventListener('hashchange', applyHashTab);
+  scrollToNetworkUnreadIfNeeded();
+}
 }
 
 applyTheme();
