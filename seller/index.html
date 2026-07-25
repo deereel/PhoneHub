@@ -396,6 +396,8 @@ let state = {
   theme: loadTheme(),
   configError:null, configuring:false, urlInput:'', keyInput:'',
   authMode:'login', authError:null, authBusy:false,
+  forgotEmail:'', forgotSent:false, forgotBusy:false, forgotError:null,
+  resetBusy:false, resetError:null,
   profile:null, isAdmin:false,
   tab:'dashboard', inventory:[], sales:[], requests:[], suppliers:[], dealerNetwork:[], broadcasts:[], broadcastResponses:[], dealerReputation:{}, consignments:[], consignmentPayments:[],
   adminDealers:[], adminInventory:[], adminSales:[],
@@ -1048,13 +1050,17 @@ function normKey(s){
 
 function isDuplicatePhone(row, inventory){
   if(!inventory || !inventory.length) return null;
+  // NOTE: supplier is intentionally NOT part of the identity check below.
+  // It's freeform text the dealer types fresh on every paste/add, so requiring
+  // it to match exactly let the same phone re-import every time the supplier
+  // note was worded differently. A phone's identity is its model/storage/
+  // color/condition/battery — the supplier label is just metadata about it.
   return inventory.find(function(p){
     return normKey(p.model) === normKey(row.model) &&
       normKey(p.storage) === normKey(row.storage) &&
       normKey(p.color) === normKey(row.color) &&
       (p.condition||'') === (row.condition||'') &&
-      (p.battery==null?'':p.battery) === (row.battery==null?'':row.battery) &&
-      normKey(p.supplier) === normKey(row.supplier);
+      (p.battery==null?'':p.battery) === (row.battery==null?'':row.battery);
   }) || null;
 }
 
@@ -1214,6 +1220,7 @@ function parseBulkLaptopLine(raw){
 
 function isDuplicateLaptop(row, inventory){
   if(!inventory || !inventory.length) return null;
+  // supplier is deliberately excluded — see the note in isDuplicatePhone().
   return inventory.find(function(p){
     return p.item_type === 'Laptop' &&
       normKey(p.brand) === normKey(row.brand) &&
@@ -1225,13 +1232,13 @@ function isDuplicateLaptop(row, inventory){
       normKey(p.gpu) === normKey(row.gpu) &&
       normKey(p.color) === normKey(row.color) &&
       (p.condition||'') === (row.condition||'') &&
-      (p.battery==null?'':p.battery) === (row.battery==null?'':row.battery) &&
-      normKey(p.supplier) === normKey(row.supplier);
+      (p.battery==null?'':p.battery) === (row.battery==null?'':row.battery);
   }) || null;
 }
 
 function isDuplicateGadget(row, inventory){
   if(!inventory || !inventory.length) return null;
+  // supplier is deliberately excluded — see the note in isDuplicatePhone().
   return inventory.find(function(p){
     return p.item_type === 'Gadget' &&
       normKey(p.model) === normKey(row.model) &&
@@ -1239,8 +1246,7 @@ function isDuplicateGadget(row, inventory){
       normKey(p.color) === normKey(row.color) &&
       (p.condition||'') === (row.condition||'') &&
       (p.battery==null?'':p.battery) === (row.battery==null?'':row.battery) &&
-      normKey(p.notes) === normKey(row.notes) &&
-      normKey(p.supplier) === normKey(row.supplier);
+      normKey(p.notes) === normKey(row.notes);
   }) || null;
 }
 
@@ -1340,10 +1346,26 @@ async function init(){
 async function connectSupabase(url, key, persist){
   try{
     sb = window.supabase.createClient(url, key);
+    // A password-reset email link lands back here with a recovery token in
+    // the URL (hash or query string). supabase-js exchanges it for a
+    // temporary session automatically and fires a PASSWORD_RECOVERY event —
+    // catch that whenever it happens, not just on this initial load, since
+    // it can fire slightly after getSession() resolves.
+    sb.auth.onAuthStateChange(function(event){
+      if(event === 'PASSWORD_RECOVERY'){
+        state.stage = 'resetPassword'; state.resetError = null; state.resetBusy = false; render();
+      }
+    });
+    const isRecoveryLink = /type=recovery/.test(window.location.hash) || /type=recovery/.test(window.location.search);
     const { data, error } = await sb.auth.getSession();
     if(error) throw error;
     if(persist) await saveConfig(url, key);
-    if(data.session){
+    if(isRecoveryLink){
+      // Belt-and-braces: go straight to the reset screen even if the
+      // PASSWORD_RECOVERY event hasn't fired yet, so a recovery link never
+      // silently drops the dealer into their normal dashboard instead.
+      state.stage = 'resetPassword'; render();
+    } else if(data.session){
       await loadAfterAuth();
     } else {
       state.stage = 'auth'; render();
@@ -1546,6 +1568,7 @@ function render(){
   const app = document.getElementById('app');
   if(state.stage==='loading'){ app.innerHTML = '<div class="loading-screen"><div class="spinner"></div>booting dealer console…</div>'; return; }
   if(state.stage==='configure'){ app.innerHTML = renderConfigureScreen(); attachConfigureHandlers(); return; }
+  if(state.stage==='resetPassword'){ app.innerHTML = renderResetPasswordScreen() + renderInstallBanner(); attachResetPasswordHandlers(); return; }
   if(state.stage==='auth'){ app.innerHTML = renderAuthScreen() + renderInstallBanner(); attachAuthHandlers(); return; }
 
   app.innerHTML =
@@ -1615,8 +1638,9 @@ function attachConfigureHandlers(){
   });
 }
 
-/* ---------- auth (sign up / log in) ---------- */
+/* ---------- auth (sign up / log in / forgot password) ---------- */
 function renderAuthScreen(){
+  if(state.authMode==='forgot') return renderForgotPasswordScreen();
   const signup = state.authMode==='signup';
   return '<div class="connect-wrap"><div class="connect-card">' +
     '<h2>'+(signup?'Register your shop':'Welcome back')+'</h2>' +
@@ -1632,12 +1656,30 @@ function renderAuthScreen(){
     ) : '') +
     '<input id="a-email" placeholder="Email" type="email"/>' +
     '<input id="a-password" placeholder="Password" type="password"/>' +
+    (!signup ? '<div style="text-align:right;margin:-6px 0 14px;"><a class="linklike" id="forgotPasswordLink" style="font-size:12px;">Forgot password?</a></div>' : '') +
     '<button class="btn btn-accent" id="authBtn" style="width:100%;justify-content:center;" '+(state.authBusy?'disabled':'')+'>' +
       (state.authBusy ? 'Please wait…' : (signup?'Create shop account':'Log in')) +
     '</button>' +
     (signup ? '<div class="footer-note">If email confirmation is on in your Supabase project, check your inbox after registering.</div>' : '') +
   '</div></div>';
 }
+
+function renderForgotPasswordScreen(){
+  return '<div class="connect-wrap"><div class="connect-card">' +
+    '<h2>Reset your password</h2>' +
+    '<p style="color:var(--text-dim);font-size:13px;line-height:1.5;margin:0 0 18px;">Enter the email you registered your shop with — we\'ll send you a link to set a new password.</p>' +
+    (state.forgotError ? ('<div class="connect-status err">'+escapeHtml(state.forgotError)+'</div>') : '') +
+    (state.forgotSent ? (
+      '<div class="connect-status ok">Reset link sent — check your email (it can take a minute or two to arrive, and don\'t forget spam/junk).</div>' +
+      '<button class="btn" id="backToLoginBtn" style="width:100%;justify-content:center;">← Back to log in</button>'
+    ) : (
+      '<input id="forgot-email" placeholder="Email" type="email" value="'+escapeAttr(state.forgotEmail)+'"/>' +
+      '<button class="btn btn-accent" id="sendResetLinkBtn" style="width:100%;justify-content:center;" '+(state.forgotBusy?'disabled':'')+'>'+(state.forgotBusy?'Sending…':'Send reset link')+'</button>' +
+      '<div class="footer-note"><a class="linklike" id="backToLoginBtnAlt">← Back to log in</a></div>'
+    )) +
+  '</div></div>';
+}
+
 function attachAuthHandlers(){
   document.querySelectorAll('[data-auth-mode]').forEach(function(el){
     el.addEventListener('click', function(){ state.authMode = el.getAttribute('data-auth-mode'); state.authError=null; render(); });
@@ -1670,6 +1712,68 @@ function attachAuthHandlers(){
       await loadAfterAuth();
     } catch(e){
       state.authBusy = false; state.authError = e.message || String(e); render();
+    }
+  });
+
+  const forgotLink = document.getElementById('forgotPasswordLink');
+  if(forgotLink) forgotLink.addEventListener('click', function(){
+    state.forgotEmail = val('a-email') || '';
+    state.authMode = 'forgot'; state.forgotError = null; state.forgotSent = false; render();
+  });
+  const forgotEmailInput = document.getElementById('forgot-email');
+  if(forgotEmailInput) forgotEmailInput.addEventListener('input', function(e){ state.forgotEmail = e.target.value; });
+  const sendResetLinkBtn = document.getElementById('sendResetLinkBtn');
+  if(sendResetLinkBtn) sendResetLinkBtn.addEventListener('click', async function(){
+    const email = (val('forgot-email')||'').trim();
+    if(!email){ state.forgotError = 'Please enter your email.'; render(); return; }
+    state.forgotBusy = true; state.forgotError = null; render();
+    try{
+      // Send the dealer back to this exact page (without any existing hash),
+      // where connectSupabase() detects the recovery link and shows the
+      // "set a new password" screen.
+      const redirectTo = window.location.href.split('#')[0].split('?')[0];
+      const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: redirectTo });
+      if(error) throw error;
+      state.forgotSent = true;
+    } catch(e){
+      state.forgotError = e.message || String(e);
+    }
+    state.forgotBusy = false; render();
+  });
+  document.querySelectorAll('#backToLoginBtn, #backToLoginBtnAlt').forEach(function(el){
+    el.addEventListener('click', function(){
+      state.authMode = 'login'; state.forgotSent = false; state.forgotError = null; render();
+    });
+  });
+}
+
+/* ---------- reset password (landing from the emailed recovery link) ---------- */
+function renderResetPasswordScreen(){
+  return '<div class="connect-wrap"><div class="connect-card">' +
+    '<h2>Set a new password</h2>' +
+    '<p style="color:var(--text-dim);font-size:13px;line-height:1.5;margin:0 0 18px;">Choose a new password for your PhoneHub account.</p>' +
+    (state.resetError ? ('<div class="connect-status err">'+escapeHtml(state.resetError)+'</div>') : '') +
+    '<input id="rp-password1" placeholder="New password" type="password"/>' +
+    '<input id="rp-password2" placeholder="Confirm new password" type="password"/>' +
+    '<button class="btn btn-accent" id="savePasswordBtn" style="width:100%;justify-content:center;" '+(state.resetBusy?'disabled':'')+'>'+(state.resetBusy?'Saving…':'Save new password')+'</button>' +
+  '</div></div>';
+}
+function attachResetPasswordHandlers(){
+  const btn = document.getElementById('savePasswordBtn');
+  if(btn) btn.addEventListener('click', async function(){
+    const p1 = val('rp-password1'), p2 = val('rp-password2');
+    if(!p1 || p1.length < 6){ state.resetError = 'Password must be at least 6 characters.'; render(); return; }
+    if(p1 !== p2){ state.resetError = 'Passwords do not match.'; render(); return; }
+    state.resetBusy = true; state.resetError = null; render();
+    try{
+      const { error } = await sb.auth.updateUser({ password: p1 });
+      if(error) throw error;
+      state.resetBusy = false;
+      showToast('Password updated');
+      history.replaceState(null, '', window.location.pathname);
+      await loadAfterAuth();
+    } catch(e){
+      state.resetBusy = false; state.resetError = e.message || String(e); render();
     }
   });
 }
