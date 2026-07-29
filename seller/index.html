@@ -434,6 +434,8 @@ let state = {
   chatEditingId:null, chatEditText:'', chatConfirmDeleteId:null,
   chatPendingImage:null, // {file, previewUrl} — selected but not-yet-sent photo attachment
   chatSendingImage:false,
+  offlineQueue:[], // loaded from localStorage at login — writes waiting for a connection, see "offline write queue" section
+  offlineSyncing:false,
 };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -470,6 +472,153 @@ function escapeAttr(s){ return (s||'').toString().replace(/"/g,'&quot;'); }
 function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function val(id){ const el = document.getElementById(id); return el ? el.value : ''; }
 function slugify(s){ return (s||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,''); }
+
+/* ---------- offline write queue ---------- */
+// Computer Village connections drop mid-transaction often — this queue makes
+// sure that never means a lost sale or a lost bulk import. When a write that
+// matters (logging a sale, importing stock) fails because of the network
+// rather than because the data itself is invalid, it's saved to this
+// localStorage-backed queue instead of just showing an error, and retried
+// automatically the moment a connection is available again (on the browser's
+// 'online' event, on a background timer, and once right after login).
+const OFFLINE_QUEUE_KEY = 'phonehub-offline-queue';
+function loadOfflineQueue(){
+  try{ const raw = localStorage.getItem(OFFLINE_QUEUE_KEY); return raw ? JSON.parse(raw) : []; }
+  catch(e){ return []; }
+}
+function saveOfflineQueue(q){
+  try{ localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(q||[])); } catch(e){ /* ignore */ }
+}
+// Distinguishes "the connection dropped" (queue it, retry later) from "the
+// server rejected this" (show the real error — retrying won't fix a
+// validation failure or an RLS violation, and silently queuing it would just
+// hide a mistake from the dealer instead of letting them fix it).
+function isLikelyNetworkError(e){
+  if(typeof navigator!=='undefined' && navigator.onLine===false) return true;
+  const msg = (e && (e.message || String(e))) || '';
+  return /failed to fetch|networkerror|network request failed|load failed|err_internet|err_connection|timeout|the internet connection appears to be offline/i.test(msg);
+}
+function enqueueOfflineWrite(type, payload, meta){
+  const item = { id: uid(), type: type, createdAt: new Date().toISOString(), payload: payload, meta: meta||{}, attempts: 0, lastError: null };
+  state.offlineQueue.push(item);
+  saveOfflineQueue(state.offlineQueue);
+  return item;
+}
+// Replays a single queued write against Supabase. Throws on failure (network
+// or otherwise) so the caller can decide whether to keep it queued.
+async function replayOfflineItem(item){
+  if(item.type === 'sell_phone'){
+    const { error } = await sb.rpc('sell_phone', item.payload);
+    if(error) throw error;
+  } else if(item.type === 'bulk_insert_inventory'){
+    const { error } = await sb.from('inventory').insert(item.payload.rows);
+    if(error) throw error;
+  } else {
+    throw new Error('Unknown queued item type: '+item.type);
+  }
+}
+// Walks the queue oldest-first (so a phone sold twice offline settles in the
+// order it actually happened) and replays each item. Network failures stay
+// queued for the next attempt; anything else (a real server-side rejection)
+// also stays queued but is flagged with lastError so the dealer can see it
+// in "Pending sync" and choose to retry or discard it themselves, rather
+// than it silently retrying forever.
+async function processOfflineQueue(){
+  if(state.offlineSyncing || !state.offlineQueue.length) return;
+  if(typeof navigator!=='undefined' && navigator.onLine===false) return;
+  state.offlineSyncing = true; render();
+  let syncedCount = 0;
+  const remaining = [];
+  for(const item of state.offlineQueue){
+    try{
+      await replayOfflineItem(item);
+      syncedCount++;
+    } catch(e){
+      item.attempts = (item.attempts||0) + 1;
+      item.lastError = (e && (e.message || String(e))) || 'Unknown error';
+      remaining.push(item);
+    }
+  }
+  state.offlineQueue = remaining;
+  saveOfflineQueue(state.offlineQueue);
+  state.offlineSyncing = false;
+  if(syncedCount > 0){
+    await refreshAll();
+    showToast(syncedCount+' pending item'+(syncedCount===1?'':'s')+' synced successfully');
+  }
+  render();
+}
+// Optimistic local-only stock decrement so a dealer who sells the same
+// offline phone twice in a row (before either sale has synced) doesn't
+// accidentally oversell it from this device. This is UI-only — the real,
+// authoritative decrement happens server-side inside sell_phone() once the
+// queued write actually syncs, so this can be safely overwritten by the
+// next refreshAll() without any risk of double-counting on the server.
+function applyOptimisticSaleQuantity(inventoryId, quantitySold){
+  const item = state.inventory.find(function(p){ return p.id===inventoryId; });
+  if(!item) return;
+  const remaining = (Number(item.quantity)||1) - (Number(quantitySold)||1);
+  item.quantity = Math.max(remaining, 0);
+  if(remaining <= 0) item.status = 'Sold';
+}
+// Reconstructs "pending sale" rows purely for display from whatever
+// sell_phone writes are still sitting in the offline queue — nothing here
+// is written to state.sales, so there's no risk of it duplicating the real
+// row once refreshAll() pulls it in after a successful sync.
+function pendingSalesFromQueue(){
+  return state.offlineQueue.filter(function(q){ return q.type==='sell_phone'; }).map(function(q){
+    const item = state.inventory.find(function(p){ return p.id===q.payload.p_inventory_id; });
+    return {
+      date: q.createdAt.slice(0,10),
+      model: (item && item.model) || q.meta.model || 'Item',
+      customer_name: q.payload.p_customer_name, customer_phone: q.payload.p_customer_phone,
+      sale_price: q.payload.p_sale_price, cost: (item && item.cost) || 0,
+      payment_method: q.payload.p_payment_method, staff: q.payload.p_staff,
+      _pendingSync: true, _queueId: q.id, _lastError: q.lastError
+    };
+  });
+}
+function renderOfflineQueueBanner(){
+  const q = state.offlineQueue;
+  if(!q.length) return '';
+  const bottomOffset = shouldShowInstallBanner() ? '64px' : '0';
+  const failing = q.filter(function(i){ return i.attempts>0; }).length;
+  return '<div id="offlineQueueBanner" style="position:fixed;left:0;right:0;bottom:'+bottomOffset+';z-index:140;background:var(--panel-2);border-top:1px solid var(--danger);padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;box-shadow:0 -6px 20px rgba(0,0,0,.35);">' +
+    '<div style="flex:1;min-width:200px;font-size:12.5px;color:var(--text);">' +
+      '<strong>'+q.length+' item'+(q.length===1?'':'s')+' waiting to sync</strong>' +
+      (typeof navigator!=='undefined' && navigator.onLine===false ? ' <span style="color:var(--text-faint);">— you\'re offline</span>' : '') +
+      (failing ? (' <span style="color:var(--danger);">· '+failing+' retried and failed — see details</span>') : '') +
+    '</div>' +
+    '<button class="btn btn-sm" id="offlineQueueDetailsBtn">Details</button>' +
+    '<button class="btn btn-accent btn-sm" id="offlineQueueRetryBtn" '+(state.offlineSyncing?'disabled':'')+'>'+(state.offlineSyncing?'Syncing…':'Retry now')+'</button>' +
+  '</div>';
+}
+function renderOfflineQueueModal(){
+  const rows = state.offlineQueue.slice().sort(function(a,b){ return new Date(a.createdAt)-new Date(b.createdAt); });
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:560px;">' +
+    '<div class="modal-head"><h3>Pending sync</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      '<p style="color:var(--text-dim);font-size:12.5px;margin-top:0;">These were saved on this device because the connection dropped. They\'ll sync automatically — you only need to act here if one keeps failing.</p>' +
+      (rows.length ? rows.map(function(item){
+        const label = item.type==='sell_phone'
+          ? ('Sale: '+((item.meta&&item.meta.model)||'item')+' — '+naira(item.payload.p_sale_price))
+          : ('Bulk import: '+((item.payload.rows&&item.payload.rows.length)||0)+' '+((item.meta&&item.meta.itemType)||'item')+'(s)');
+        return '<div class="section" style="margin-bottom:10px;"><div class="section-body" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">' +
+          '<div><div class="strong" style="font-size:13px;">'+escapeHtml(label)+'</div>' +
+          '<div style="font-size:11px;color:var(--text-faint);">Queued '+new Date(item.createdAt).toLocaleString()+(item.attempts?(' · '+item.attempts+' attempt'+(item.attempts===1?'':'s')+' failed'):'')+'</div>' +
+          (item.lastError ? ('<div style="font-size:11px;color:var(--danger);margin-top:2px;">'+escapeHtml(item.lastError)+'</div>') : '') +
+          '</div>' +
+          '<div style="display:flex;gap:6px;flex-shrink:0;">' +
+            '<button class="btn btn-sm" data-retry-queue-item="'+item.id+'">Retry</button>' +
+            '<button class="btn btn-sm btn-danger" data-discard-queue-item="'+item.id+'">Discard</button>' +
+          '</div>' +
+        '</div></div>';
+      }).join('') : '<div class="empty">Nothing pending.</div>') +
+    '</div>' +
+    '<div class="modal-foot"><button class="btn" data-close-modal="1">Close</button>' +
+      (rows.length ? ('<button class="btn btn-accent" id="offlineQueueRetryAllBtn" '+(state.offlineSyncing?'disabled':'')+'>Retry all</button>') : '') +
+    '</div></div></div>';
+}
 
 /* ---------- phone photos ---------- */
 function thumbHTML(url){
@@ -660,6 +809,14 @@ function commitNetworkLastSeenIfViewingBroadcasts(){
 window.addEventListener('pagehide', commitNetworkLastSeenIfViewingBroadcasts);
 window.addEventListener('visibilitychange', function(){
   if(document.visibilityState === 'hidden') commitNetworkLastSeenIfViewingBroadcasts();
+});
+
+// Offline write queue: retry the moment the browser reports a connection,
+// and warn the dealer up front the moment it's lost so a dropped sale isn't
+// a silent surprise later.
+window.addEventListener('online', function(){ processOfflineQueue(); });
+window.addEventListener('offline', function(){
+  showToast('You\'re offline — sales and stock imports will be saved on this device and sync automatically once you\'re back online.');
 });
 
 function checkInstallBannerVisibility(){
@@ -1383,11 +1540,13 @@ async function loadAfterAuth(){
     if(pErr) throw pErr;
     state.profile = profile; state.isAdmin = !!profile.is_admin;
     state.networkLastSeenAt = loadNetworkLastSeen(profile.id);
+    state.offlineQueue = loadOfflineQueue();
     await refreshAll();
     state.stage = 'app';
     initPush();
     initRealtime();
     applyHashTab();
+    processOfflineQueue(); // in case anything was left over from a previous dropped-connection session
   } catch(e){
     state.stage = 'auth'; state.authError = 'Could not load your shop profile: ' + (e.message||e);
   }
@@ -1608,6 +1767,7 @@ function render(){
     '</div>' +
     (state.modal ? renderModal() : '') +
     renderInstallBanner() +
+    renderOfflineQueueBanner() +
     (state.toast ? ('<div class="toast '+(state.toastErr?'err':'')+'">'+escapeHtml(state.toast)+'</div>') : '');
   attachHandlers();
 }
@@ -2035,9 +2195,25 @@ function renderSales(){
 }
 
 function renderSalesLog(){
+  const pending = pendingSalesFromQueue();
   const rows = state.sales.slice().sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
+  const pendingHtml = pending.map(function(s){
+    return '<tr style="background:var(--panel-2);">' +
+      '<td class="mono">'+escapeHtml(s.date)+'</td>' +
+      '<td class="strong">'+escapeHtml(s.model)+'<div style="margin-top:3px;"><span class="badge badge-reserved" title="Saved on this device — will sync once you\'re back online">⏳ Pending sync</span></div>' +
+        (s._lastError ? ('<div style="font-size:10.5px;color:var(--danger);margin-top:3px;">'+escapeHtml(s._lastError)+'</div>') : '') + '</td>' +
+      '<td>'+escapeHtml(s.customer_name||'—')+'<br><span class="mono" style="color:var(--text-faint);font-size:11px">'+escapeHtml(s.customer_phone||'')+'</span></td>' +
+      '<td class="mono">'+naira(s.sale_price)+'</td>' +
+      '<td class="mono" style="color:var(--success)">'+naira((Number(s.sale_price)||0)-(Number(s.cost)||0))+'</td>' +
+      '<td>'+escapeHtml(s.payment_method||'—')+'</td>' +
+      '<td>'+escapeHtml(s.staff||'—')+'</td>' +
+      '<td>—</td>' +
+      '<td style="display:flex;gap:6px;white-space:nowrap;"><button class="btn btn-sm" data-retry-queue-item="'+s._queueId+'">Retry</button><button class="btn btn-sm btn-danger" data-discard-queue-item="'+s._queueId+'">Discard</button></td>' +
+    '</tr>';
+  }).join('');
   return '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
-      (rows.length ? ('<table><thead><tr><th>Date</th><th>Phone</th><th>Customer</th><th>Sale price</th><th>Profit</th><th>Payment</th><th>Staff</th><th>Warranty</th><th></th></tr></thead><tbody>' +
+      ((rows.length||pending.length) ? ('<table><thead><tr><th>Date</th><th>Phone</th><th>Customer</th><th>Sale price</th><th>Profit</th><th>Payment</th><th>Staff</th><th>Warranty</th><th></th></tr></thead><tbody>' +
+        pendingHtml +
         rows.map(function(s){
           const expiry = new Date(s.date); expiry.setDate(expiry.getDate()+Number(s.warranty_days||0));
           const daysLeft = daysBetween(todayISO(), expiry.toISOString().slice(0,10));
@@ -2769,6 +2945,7 @@ function renderModal(){
   if(m.name==='viewStockItem') return renderStockItemModal(m);
   if(m.name==='viewNetworkItem') return renderNetworkItemModal(m);
   if(m.name==='clearInventory') return renderClearInventoryModal();
+  if(m.name==='offlineQueueDetails') return renderOfflineQueueModal();
   return '';
 }
 
@@ -3475,6 +3652,37 @@ function attachHandlers(){
 
   const forceCacheUpdateBtn = document.getElementById('forceCacheUpdateBtn');
   if(forceCacheUpdateBtn) forceCacheUpdateBtn.addEventListener('click', forceCacheUpdate);
+
+  const offlineQueueDetailsBtn = document.getElementById('offlineQueueDetailsBtn');
+  if(offlineQueueDetailsBtn) offlineQueueDetailsBtn.addEventListener('click', function(){ openModal('offlineQueueDetails'); });
+  const offlineQueueRetryBtn = document.getElementById('offlineQueueRetryBtn');
+  if(offlineQueueRetryBtn) offlineQueueRetryBtn.addEventListener('click', function(){ processOfflineQueue(); });
+  const offlineQueueRetryAllBtn = document.getElementById('offlineQueueRetryAllBtn');
+  if(offlineQueueRetryAllBtn) offlineQueueRetryAllBtn.addEventListener('click', function(){ processOfflineQueue(); });
+  app.querySelectorAll('[data-retry-queue-item]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-retry-queue-item');
+    const item = state.offlineQueue.find(function(x){ return x.id===id; });
+    if(!item) return;
+    try{
+      await replayOfflineItem(item);
+      state.offlineQueue = state.offlineQueue.filter(function(x){ return x.id!==id; });
+      saveOfflineQueue(state.offlineQueue);
+      await refreshAll();
+      showToast('Synced successfully');
+    } catch(e){
+      item.attempts = (item.attempts||0)+1; item.lastError = (e && (e.message||String(e))) || 'Unknown error';
+      saveOfflineQueue(state.offlineQueue);
+      showToast('Still failing: '+(item.lastError), true);
+    }
+    render();
+  }); });
+  app.querySelectorAll('[data-discard-queue-item]').forEach(function(el){ el.addEventListener('click', function(){
+    const id = el.getAttribute('data-discard-queue-item');
+    state.offlineQueue = state.offlineQueue.filter(function(x){ return x.id!==id; });
+    saveOfflineQueue(state.offlineQueue);
+    showToast('Discarded — this item will not be synced');
+    render();
+  }); });
   const hamburgerBtn = document.getElementById('hamburgerBtn');
   if(hamburgerBtn) hamburgerBtn.addEventListener('click', function(){ state.mobileMenuOpen = true; render(); });
   const railCloseBtn = document.getElementById('railCloseBtn');
@@ -4115,20 +4323,33 @@ function attachHandlers(){
     if(!inventoryId){ showToast('Select an item to sell', true); return; }
     const price = Number(val('s-price'));
     if(!price){ showToast('Enter a sale price', true); return; }
+    const params = {
+      p_inventory_id: inventoryId, p_sale_price: price, p_customer_name: val('s-name'), p_customer_phone: val('s-phone'),
+      p_payment_method: val('s-payment'), p_staff: val('s-staff'), p_warranty_days: Number(val('s-warranty'))||0,
+      p_accessories: val('s-accessories'), p_notes: '',
+      p_imei: val('s-imei')||null, p_quantity: Number(val('s-quantity'))||1
+    };
     try{
-      const { data, error } = await sb.rpc('sell_phone', {
-        p_inventory_id: inventoryId, p_sale_price: price, p_customer_name: val('s-name'), p_customer_phone: val('s-phone'),
-        p_payment_method: val('s-payment'), p_staff: val('s-staff'), p_warranty_days: Number(val('s-warranty'))||0,
-        p_accessories: val('s-accessories'), p_notes: '',
-        p_imei: val('s-imei')||null, p_quantity: Number(val('s-quantity'))||1
-      });
+      const { data, error } = await sb.rpc('sell_phone', params);
       if(error) throw error;
       await refreshAll();
       state.saleModalQuery = ''; state.saleModalSelectedId = null; state.saleModalOpen = false;
       closeModal(); showToast('Sale logged — invoice downloading');
       const savedSale = Array.isArray(data) ? data[0] : data;
       if(savedSale) generateInvoicePDF(savedSale);
-    } catch(e){ showToast('Sale failed: '+e.message, true); render(); }
+    } catch(e){
+      if(isLikelyNetworkError(e)){
+        const item = state.inventory.find(function(p){ return p.id===inventoryId; });
+        applyOptimisticSaleQuantity(inventoryId, params.p_quantity);
+        enqueueOfflineWrite('sell_phone', params, { model: item ? item.model : null });
+        state.saleModalQuery = ''; state.saleModalSelectedId = null; state.saleModalOpen = false;
+        closeModal();
+        showToast('No connection — sale saved on this device and will sync automatically once you\'re back online');
+        render();
+      } else {
+        showToast('Sale failed: '+(e.message||e), true); render();
+      }
+    }
   }); });
 
   app.querySelectorAll('[data-save-supplier]').forEach(function(el){ el.addEventListener('click', async function(){
@@ -4375,7 +4596,15 @@ function attachHandlers(){
       state.bulkImportRows = []; state.bulkImportText=''; state.bulkImportSupplierId='';
       closeModal();
       showToast(toInsert.length+' phones imported'+(dupCount ? ' ('+dupCount+' duplicate'+(dupCount===1?'':'s')+' skipped)' : ''));
-    } catch(e){ showToast('Import failed: '+e.message, true); render(); }
+    } catch(e){
+      if(isLikelyNetworkError(e)){
+        enqueueOfflineWrite('bulk_insert_inventory', { rows: toInsert }, { itemType: 'phone' });
+        state.bulkImportRows = []; state.bulkImportText=''; state.bulkImportSupplierId='';
+        closeModal();
+        showToast('No connection — '+toInsert.length+' phones saved on this device and will import automatically once you\'re back online');
+        render();
+      } else { showToast('Import failed: '+(e.message||e), true); render(); }
+    }
   });
 
   const bliParseBtn = document.getElementById('bli-parse-btn');
@@ -4432,7 +4661,15 @@ function attachHandlers(){
       state.bulkImportLaptopRows = []; state.bulkImportLaptopText=''; state.bulkImportLaptopSupplierId='';
       closeModal();
       showToast(toInsert.length+' laptops imported'+(dupCount ? ' ('+dupCount+' duplicate'+(dupCount===1?'':'s')+' skipped)' : ''));
-     } catch(e){ showToast('Import failed: '+(e.message||e), true); render(); }
+     } catch(e){
+      if(isLikelyNetworkError(e)){
+        enqueueOfflineWrite('bulk_insert_inventory', { rows: toInsert }, { itemType: 'laptop' });
+        state.bulkImportLaptopRows = []; state.bulkImportLaptopText=''; state.bulkImportLaptopSupplierId='';
+        closeModal();
+        showToast('No connection — '+toInsert.length+' laptops saved on this device and will import automatically once you\'re back online');
+        render();
+      } else { showToast('Import failed: '+(e.message||e), true); render(); }
+    }
   });
 
   const bgiParseBtn = document.getElementById('bgi-parse-btn');
@@ -4489,7 +4726,15 @@ function attachHandlers(){
       state.bulkImportGadgetRows = []; state.bulkImportGadgetText=''; state.bulkImportGadgetSupplierId='';
       closeModal();
       showToast(toInsert.length+' gadgets imported'+(dupCount ? ' ('+dupCount+' duplicate'+(dupCount===1?'':'s')+' skipped)' : ''));
-    } catch(e){ showToast('Import failed: '+(e.message||e), true); render(); }
+    } catch(e){
+      if(isLikelyNetworkError(e)){
+        enqueueOfflineWrite('bulk_insert_inventory', { rows: toInsert }, { itemType: 'gadget' });
+        state.bulkImportGadgetRows = []; state.bulkImportGadgetText=''; state.bulkImportGadgetSupplierId='';
+        closeModal();
+        showToast('No connection — '+toInsert.length+' gadgets saved on this device and will import automatically once you\'re back online');
+        render();
+      } else { showToast('Import failed: '+(e.message||e), true); render(); }
+    }
   });
 
   ['calc-cost','calc-target','calc-min','calc-offer'].forEach(function(id){
@@ -4503,9 +4748,10 @@ function attachHandlers(){
   window.addEventListener('hashchange', applyHashTab);
   scrollToNetworkUnreadIfNeeded();
 }
-}
+
 
 applyTheme();
+setInterval(function(){ if(state.stage==='app') processOfflineQueue(); }, 25000); // background safety-net, in case the 'online' event doesn't fire on flaky (rather than fully dropped) connections
 init();
 })();
 </script>

@@ -962,3 +962,402 @@ $$;
 -- 3. Edit the two app_config rows in section 9 with your real Edge Function
 --    URL and webhook secret (or leave them if you already have push working).
 -- ============================================================
+
+-- ============================================================
+-- SUBDEALER / AGENT LINKING (from migrations/subdealer_linking.sql)
+-- ============================================================
+-- A sub-dealer is a dealer account with no inventory of their own,
+-- representing exactly one principal dealer's stock at any given time.
+-- Both sides must consent before a link goes active. Strictly two-tier.
+
+alter table dealers add column if not exists is_sub_dealer boolean not null default false;
+comment on column dealers.is_sub_dealer is
+  'True if this dealer account operates as a sub-dealer/agent — sells on behalf of a principal dealer''s stock, no inventory of their own. Can never itself be a principal to other sub-dealers.';
+
+create table if not exists sub_dealer_links (
+  id uuid primary key default gen_random_uuid(),
+  sub_dealer_id uuid not null references dealers(id) on delete cascade,
+  principal_dealer_id uuid not null references dealers(id) on delete cascade,
+  status text not null default 'pending'
+    check (status in ('pending','active','release_requested','ended','revoked')),
+  commission_type text check (commission_type in ('flat','percent')),
+  commission_value numeric,
+  requested_by text not null default 'sub_dealer' check (requested_by in ('sub_dealer','principal')),
+  ended_reason text check (
+    ended_reason is null or ended_reason in (
+      'rejected_by_principal','cancelled_by_sub_dealer',
+      'released_by_principal','revoked_by_principal'
+    )
+  ),
+  created_at timestamptz not null default now(),
+  activated_at timestamptz,
+  ended_at timestamptz,
+  check (sub_dealer_id <> principal_dealer_id)
+);
+
+create index if not exists idx_sdl_sub_dealer on sub_dealer_links(sub_dealer_id);
+create index if not exists idx_sdl_principal on sub_dealer_links(principal_dealer_id);
+
+-- Only one in-flight link per sub-dealer at a time (pending, active, or mid-release).
+create unique index if not exists uniq_inflight_link_per_subdealer
+  on sub_dealer_links(sub_dealer_id)
+  where status in ('pending','active','release_requested');
+
+-- Hard backstop: a sub-dealer can never be listed as someone else's principal.
+create or replace function check_subdealer_link_tiers()
+returns trigger language plpgsql as $$
+declare
+  v_principal_is_sub boolean;
+begin
+  select is_sub_dealer into v_principal_is_sub from dealers where id = new.principal_dealer_id;
+  if v_principal_is_sub then
+    raise exception 'A sub-dealer account cannot act as a principal for other sub-dealers';
+  end if;
+  return new;
+end; $$;
+
+drop trigger if exists trg_check_subdealer_link_tiers on sub_dealer_links;
+create trigger trg_check_subdealer_link_tiers before insert on sub_dealer_links
+for each row execute function check_subdealer_link_tiers();
+
+alter table sub_dealer_links enable row level security;
+
+drop policy if exists "sdl_select_related" on sub_dealer_links;
+create policy "sdl_select_related" on sub_dealer_links for select
+  using (sub_dealer_id = auth.uid() or principal_dealer_id = auth.uid() or is_admin());
+
+-- Sub-dealer requests a link to a principal.
+create or replace function request_subdealer_link(
+  p_principal_id uuid, p_commission_type text default null, p_commission_value numeric default null
+)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_row sub_dealer_links;
+  v_principal_is_sub boolean;
+  v_caller_is_principal_elsewhere boolean;
+begin
+  if p_principal_id = auth.uid() then
+    raise exception 'Cannot link to yourself';
+  end if;
+
+  select is_sub_dealer into v_principal_is_sub from dealers where id = p_principal_id;
+  if v_principal_is_sub then
+    raise exception 'That account is itself a sub-dealer and cannot take on sub-dealers of its own';
+  end if;
+
+  select exists(
+    select 1 from sub_dealer_links
+    where principal_dealer_id = auth.uid() and status in ('pending','active','release_requested')
+  ) into v_caller_is_principal_elsewhere;
+  if v_caller_is_principal_elsewhere then
+    raise exception 'You currently have your own sub-dealers linked to you — a dealer cannot be both a principal and a sub-dealer';
+  end if;
+
+  insert into sub_dealer_links (sub_dealer_id, principal_dealer_id, status, commission_type, commission_value, requested_by)
+  values (auth.uid(), p_principal_id, 'pending', p_commission_type, p_commission_value, 'sub_dealer')
+  returning * into v_row;
+
+  update dealers set is_sub_dealer = true where id = auth.uid() and is_sub_dealer is distinct from true;
+
+  return v_row;
+exception
+  when unique_violation then
+    raise exception 'You already have an active or pending principal link — end it first before requesting a new one';
+end; $$;
+grant execute on function request_subdealer_link(uuid, text, numeric) to authenticated;
+
+-- Principal approves a sub-dealer-initiated request.
+create or replace function approve_subdealer_link(
+  p_link_id uuid, p_commission_type text default null, p_commission_value numeric default null
+)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'active',
+        activated_at = now(),
+        commission_type = coalesce(p_commission_type, commission_type),
+        commission_value = coalesce(p_commission_value, commission_value)
+    where id = p_link_id and principal_dealer_id = auth.uid()
+      and status = 'pending' and requested_by = 'sub_dealer'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No pending request found for you to approve'; end if;
+  return v_row;
+end; $$;
+grant execute on function approve_subdealer_link(uuid, text, numeric) to authenticated;
+
+-- Principal rejects a sub-dealer-initiated request.
+create or replace function reject_subdealer_link(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'ended', ended_at = now(), ended_reason = 'rejected_by_principal'
+    where id = p_link_id and principal_dealer_id = auth.uid()
+      and status = 'pending' and requested_by = 'sub_dealer'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No pending request found for you to reject'; end if;
+  return v_row;
+end; $$;
+grant execute on function reject_subdealer_link(uuid) to authenticated;
+
+-- Sub-dealer withdraws their own still-pending request.
+create or replace function cancel_own_subdealer_request(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'ended', ended_at = now(), ended_reason = 'cancelled_by_sub_dealer'
+    where id = p_link_id and sub_dealer_id = auth.uid()
+      and status = 'pending' and requested_by = 'sub_dealer'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No pending request found to cancel'; end if;
+  return v_row;
+end; $$;
+grant execute on function cancel_own_subdealer_request(uuid) to authenticated;
+
+-- Principal invites a specific dealer to become their sub-dealer.
+create or replace function invite_subdealer_link(
+  p_subdealer_id uuid, p_commission_type text default null, p_commission_value numeric default null
+)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_row sub_dealer_links;
+  v_caller_is_sub boolean;
+begin
+  if p_subdealer_id = auth.uid() then
+    raise exception 'Cannot link to yourself';
+  end if;
+
+  select is_sub_dealer into v_caller_is_sub from dealers where id = auth.uid();
+  if v_caller_is_sub then
+    raise exception 'A sub-dealer account cannot invite sub-dealers of its own';
+  end if;
+
+  insert into sub_dealer_links (sub_dealer_id, principal_dealer_id, status, commission_type, commission_value, requested_by)
+  values (p_subdealer_id, auth.uid(), 'pending', p_commission_type, p_commission_value, 'principal')
+  returning * into v_row;
+
+  return v_row;
+exception
+  when unique_violation then
+    raise exception 'That dealer already has an active or pending principal link';
+end; $$;
+grant execute on function invite_subdealer_link(uuid, text, numeric) to authenticated;
+
+-- Invited sub-dealer accepts.
+create or replace function accept_subdealer_invite(
+  p_link_id uuid, p_commission_type text default null, p_commission_value numeric default null
+)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_row sub_dealer_links;
+  v_caller_is_principal_elsewhere boolean;
+begin
+  select exists(
+    select 1 from sub_dealer_links
+    where principal_dealer_id = auth.uid() and status in ('pending','active','release_requested')
+  ) into v_caller_is_principal_elsewhere;
+  if v_caller_is_principal_elsewhere then
+    raise exception 'You currently have your own sub-dealers linked to you — a dealer cannot be both a principal and a sub-dealer';
+  end if;
+
+  update sub_dealer_links
+    set status = 'active', activated_at = now(),
+        commission_type = coalesce(p_commission_type, commission_type),
+        commission_value = coalesce(p_commission_value, commission_value)
+    where id = p_link_id and sub_dealer_id = auth.uid()
+      and status = 'pending' and requested_by = 'principal'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No pending invite found for you to accept'; end if;
+
+  update dealers set is_sub_dealer = true where id = auth.uid() and is_sub_dealer is distinct from true;
+
+  return v_row;
+end; $$;
+grant execute on function accept_subdealer_invite(uuid, text, numeric) to authenticated;
+
+-- Invited sub-dealer declines.
+create or replace function decline_subdealer_invite(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'ended', ended_at = now(), ended_reason = 'cancelled_by_sub_dealer'
+    where id = p_link_id and sub_dealer_id = auth.uid()
+      and status = 'pending' and requested_by = 'principal'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No pending invite found to decline'; end if;
+  return v_row;
+end; $$;
+grant execute on function decline_subdealer_invite(uuid) to authenticated;
+
+-- Sub-dealer asks to leave their current active link (principal must approve release).
+create or replace function request_subdealer_release(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'release_requested'
+    where id = p_link_id and sub_dealer_id = auth.uid() and status = 'active'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No active link found to release'; end if;
+  return v_row;
+end; $$;
+grant execute on function request_subdealer_release(uuid) to authenticated;
+
+-- Principal approves the release.
+create or replace function approve_subdealer_release(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'ended', ended_at = now(), ended_reason = 'released_by_principal'
+    where id = p_link_id and principal_dealer_id = auth.uid() and status = 'release_requested'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No release request found for you to approve'; end if;
+  return v_row;
+end; $$;
+grant execute on function approve_subdealer_release(uuid) to authenticated;
+
+-- Principal can terminate a link at any stage unilaterally.
+create or replace function revoke_subdealer_link(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'revoked', ended_at = now(), ended_reason = 'revoked_by_principal'
+    where id = p_link_id and principal_dealer_id = auth.uid()
+      and status in ('pending','active','release_requested')
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No linkable request found for you to revoke'; end if;
+  return v_row;
+end; $$;
+grant execute on function revoke_subdealer_link(uuid) to authenticated;
+
+-- Convenience view — "my current link" for whichever side is calling.
+create or replace view my_subdealer_link_view
+  with (security_invoker = true) as
+  select
+    l.*,
+    dp.shop_name as principal_shop_name, dp.phone as principal_phone,
+    ds.shop_name as sub_dealer_shop_name, ds.phone as sub_dealer_phone
+  from sub_dealer_links l
+  join dealers dp on dp.id = l.principal_dealer_id
+  join dealers ds on ds.id = l.sub_dealer_id
+  where l.status in ('pending','active','release_requested');
+grant select on my_subdealer_link_view to authenticated;
+
+-- ============================================================
+-- DEALER CHAT (from migrations/20260724_add_dealer_chat.sql)
+-- ============================================================
+
+create table if not exists messages (
+  id uuid primary key default gen_random_uuid(),
+  sender_id uuid not null references dealers(id) on delete cascade,
+  recipient_id uuid not null references dealers(id) on delete cascade,
+  body text not null,
+  read_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_messages_sender on messages(sender_id);
+create index if not exists idx_messages_recipient on messages(recipient_id);
+create index if not exists idx_messages_conversation
+  on messages(least(sender_id, recipient_id), greatest(sender_id, recipient_id), created_at);
+
+alter table messages enable row level security;
+
+drop policy if exists "messages_select_own" on messages;
+create policy "messages_select_own" on messages for select
+  using (sender_id = auth.uid() or recipient_id = auth.uid());
+
+drop policy if exists "messages_insert_own" on messages;
+create policy "messages_insert_own" on messages for insert
+  with check (sender_id = auth.uid());
+
+drop policy if exists "messages_update_mark_read" on messages;
+create policy "messages_update_mark_read" on messages for update
+  using (recipient_id = auth.uid())
+  with check (recipient_id = auth.uid());
+
+drop policy if exists "messages_select_admin" on messages;
+create policy "messages_select_admin" on messages for select
+  using (is_admin());
+
+-- Add messages to realtime publication so both sides see new messages live.
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'messages'
+  ) then
+    alter publication supabase_realtime add table messages;
+  end if;
+end $$;
+
+-- Push notification for new chat messages.
+create or replace function notify_new_message_push()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_url text; v_secret text; v_sender_name text;
+begin
+  select value into v_url from app_config where key='edge_function_url';
+  select value into v_secret from app_config where key='edge_function_secret';
+  if v_url is null then return new; end if;
+
+  select shop_name into v_sender_name from dealers where id = new.sender_id;
+
+  perform net.http_post(
+    url := v_url,
+    headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
+    body := jsonb_build_object(
+      'dealer_id', new.recipient_id,
+      'title', 'New message from ' || coalesce(v_sender_name, 'a dealer'),
+      'body', left(new.body, 120),
+      'url', './#tab=chats', 'type', 'message'
+    )
+  );
+  return new;
+end; $$;
+
+drop trigger if exists trg_notify_new_message_push on messages;
+create trigger trg_notify_new_message_push after insert on messages
+for each row execute function notify_new_message_push();
