@@ -436,7 +436,14 @@ let state = {
   chatSendingImage:false,
   offlineQueue:[], // loaded from localStorage at login — writes waiting for a connection, see "offline write queue" section
   offlineSyncing:false,
+  onlineDealerIds:{}, // presence: dealer_id -> true, for contacts currently online (see initPresence)
+  typingFrom:{}, // key ('dealer:'+id or 'group:'+id) -> true while the other side is typing
+  chatGroups:[], chatGroupMembers:[], // chat_groups / chat_group_members rows this dealer belongs to
+  newGroupName:'', newGroupSelectedIds:[], // draft state for the "New group" modal
 };
+let presenceChannel = null;
+let typingChannels = {}; // conversation key -> subscribed realtime channel, so we don't resubscribe every render
+let typingClearTimers = {}; // conversation key -> setTimeout handle for auto-clearing a stale "typing…" flag
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function shuffleArray(arr){
@@ -912,7 +919,75 @@ async function initRealtime(){
       refreshMessagesData();
     }).subscribe();
   } catch(e){ console.warn('Realtime init failed:', e); }
+  initPresence();
 }
+
+/* ---------- presence (online status) ---------- */
+// Every logged-in dealer joins this single shared channel and "tracks"
+// themselves as present. Everyone else's client sees the full presence
+// state (a map of dealer_id -> [{...}]) and we just check "is this dealer's
+// id a key in that map" to show an online dot next to their name. No table,
+// no writes, no cleanup — presence auto-clears when a client disconnects.
+function initPresence(){
+  if(!sb || !state.profile) return;
+  try{
+    presenceChannel = sb.channel('presence:dealers', { config:{ presence:{ key: state.profile.id } } });
+    presenceChannel.on('presence', { event:'sync' }, function(){
+      const s = presenceChannel.presenceState();
+      state.onlineDealerIds = {};
+      Object.keys(s||{}).forEach(function(id){ state.onlineDealerIds[id] = true; });
+      render();
+    }).subscribe(async function(status){
+      if(status === 'SUBSCRIBED'){
+        await presenceChannel.track({ online_at: new Date().toISOString() });
+      }
+    });
+  } catch(e){ console.warn('Presence init failed:', e); }
+}
+function isDealerOnline(dealerId){ return !!state.onlineDealerIds[dealerId]; }
+
+/* ---------- typing indicator ---------- */
+// Lightweight realtime "broadcast" (not a DB write) per open conversation.
+// A conversation key is either 'dealer:<other_dealer_id>' (1:1) or
+// 'group:<group_id>'. Subscribing/broadcasting only happens for the
+// conversation currently open, and the channel is torn down when leaving it.
+function conversationKey(){
+  if(state.chatActiveGroupId) return 'group:'+state.chatActiveGroupId;
+  if(state.chatActiveDealerId){
+    const ids = [state.profile.id, state.chatActiveDealerId].sort();
+    return 'dealer:'+ids[0]+':'+ids[1];
+  }
+  return null;
+}
+function joinTypingChannel(key){
+  if(!sb || !key || typingChannels[key]) return;
+  const ch = sb.channel('typing:'+key);
+  ch.on('broadcast', { event:'typing' }, function(payload){
+    const fromId = payload.payload && payload.payload.dealer_id;
+    if(!fromId || fromId === state.profile.id) return;
+    state.typingFrom[key] = true;
+    render();
+    if(typingClearTimers[key]) clearTimeout(typingClearTimers[key]);
+    typingClearTimers[key] = setTimeout(function(){ state.typingFrom[key] = false; render(); }, 3000);
+  }).subscribe();
+  typingChannels[key] = ch;
+}
+function leaveTypingChannel(key){
+  if(!key || !typingChannels[key]) return;
+  try{ sb.removeChannel(typingChannels[key]); } catch(e){ /* ignore */ }
+  delete typingChannels[key];
+  state.typingFrom[key] = false;
+  if(typingClearTimers[key]){ clearTimeout(typingClearTimers[key]); delete typingClearTimers[key]; }
+}
+let typingBroadcastDebounce = null;
+function broadcastTyping(){
+  const key = conversationKey();
+  if(!key || !typingChannels[key]) return;
+  if(typingBroadcastDebounce) return; // already sent one recently, wait for it to cool down
+  typingChannels[key].send({ type:'broadcast', event:'typing', payload:{ dealer_id: state.profile.id } });
+  typingBroadcastDebounce = setTimeout(function(){ typingBroadcastDebounce = null; }, 1500);
+}
+
 async function refreshBroadcastsData(){
   if(!state.profile) return;
   const [bc, br] = await Promise.all([
@@ -1564,13 +1639,17 @@ async function refreshAll(){
     sb.from('dealer_reputation_view').select('*'),
     sb.from('consignments').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
     sb.from('consignment_payments').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
-    sb.from('messages').select('*').or('sender_id.eq.'+state.profile.id+',recipient_id.eq.'+state.profile.id).order('created_at',{ascending:true}),
+    // No .or() filter here anymore — RLS on `messages` already scopes rows to
+    // (sender_id/recipient_id = me) OR (I'm a member of the row's group_id),
+    // so a plain select('*') picks up both 1:1 AND group messages correctly.
+    sb.from('messages').select('*').order('created_at',{ascending:true}),
   ]);
   state.inventory = inv.data || []; state.sales = sales.data || []; state.requests = reqs.data || [];
   state.suppliers = sups.data || []; state.dealerNetwork = dn.data || []; state.broadcasts = bc.data || [];
   state.consignments = cons.data || [];
   state.consignmentPayments = cnp.data || [];
   state.messages = msgs.data || [];
+  await refreshGroupsData();
   syncNetworkOrder();
   const repMap = {};
   (rep.data || []).forEach(function(r){ repMap[r.dealer_id] = r; });
@@ -1589,6 +1668,26 @@ async function refreshAll(){
     ]);
     state.adminDealers = ad.data || []; state.adminInventory = ai.data || []; state.adminSales = as_.data || [];
   }
+}
+
+// Loads every group this dealer belongs to, plus the full member roster for
+// each of those groups (needed for member counts / names in the group list
+// and thread header). Two queries: "which group_ids am I in" -> "who's in
+// those groups" — RLS on chat_group_members only lets you see rows for
+// groups you're actually a member of, so this can't leak other groups.
+async function refreshGroupsData(){
+  if(!state.profile) return;
+  try{
+    const mine = await sb.from('chat_group_members').select('group_id').eq('dealer_id', state.profile.id);
+    const groupIds = (mine.data||[]).map(function(r){ return r.group_id; });
+    if(!groupIds.length){ state.chatGroups = []; state.chatGroupMembers = []; return; }
+    const [groups, members] = await Promise.all([
+      sb.from('chat_groups').select('*').in('id', groupIds),
+      sb.from('chat_group_members').select('*').in('group_id', groupIds)
+    ]);
+    state.chatGroups = groups.data || [];
+    state.chatGroupMembers = members.data || [];
+  } catch(e){ console.warn('Could not load chat groups:', e); }
 }
 
 async function refreshOne(table, target, extraFilter){
@@ -1634,6 +1733,7 @@ function openModal(name, payload){
   if(name==='clearInventory') state.clearInventoryConfirmText = '';
   if(name==='notifSettings') state.brandFocusDraft = (state.profile.brand_focus||[]).join(', ');
   if(name==='logSale'){ state.saleModalQuery = ''; state.saleModalSelectedId = null; state.saleModalOpen = false; }
+  if(name==='newGroupChat'){ state.newGroupName = ''; state.newGroupSelectedIds = []; }
   if(name==='addSupplier' || name==='editSupplier'){
     state.supplierSuggestions = []; state.supplierSuggestOpen = false;
     state.supplierLinkedDealerId = null; state.supplierLinkedDealerName = '';
@@ -2494,16 +2594,60 @@ function dealerPhone(id){
 // Contacts you can chat with: saved contacts you've linked to a real
 // PhoneHub account (via the "pick from registered dealers" suggestion
 // when adding/editing a contact under Network > My contacts).
+/* ---------- group chats ---------- */
+// Per-group "last seen" timestamps, persisted per device (same pattern as
+// NETWORK_SEEN_KEY elsewhere in this file) — group messages don't have a
+// per-recipient read_at, since a group has many recipients, so unread state
+// for groups is derived client-side from "newer than when I last opened it."
+const GROUP_SEEN_KEY = 'phonehub-group-last-seen';
+function loadGroupLastSeen(){
+  try{ const raw = localStorage.getItem(GROUP_SEEN_KEY); return raw ? JSON.parse(raw) : {}; } catch(e){ return {}; }
+}
+function saveGroupLastSeen(map){
+  try{ localStorage.setItem(GROUP_SEEN_KEY, JSON.stringify(map||{})); } catch(e){ /* ignore */ }
+}
+function markGroupSeenNow(groupId){
+  const map = loadGroupLastSeen();
+  map[groupId] = new Date().toISOString();
+  saveGroupLastSeen(map);
+}
+function groupMembersOf(groupId){
+  return state.chatGroupMembers.filter(function(m){ return m.group_id===groupId; });
+}
+function groupById(groupId){ return state.chatGroups.find(function(g){ return g.id===groupId; }); }
+function messagesInGroup(groupId){
+  return state.messages.filter(function(m){ return m.group_id===groupId; });
+}
+function lastMessageInGroup(groupId){
+  const list = messagesInGroup(groupId);
+  return list.length ? list[list.length-1] : null;
+}
+function unreadCountInGroup(groupId){
+  const seenMap = loadGroupLastSeen();
+  const seenAt = seenMap[groupId] ? new Date(seenMap[groupId]) : null;
+  return messagesInGroup(groupId).filter(function(m){
+    return m.sender_id !== state.profile.id && (!seenAt || new Date(m.created_at) > seenAt);
+  }).length;
+}
+function computeUnreadGroupCount(){
+  return state.chatGroups.reduce(function(a,g){ return a + unreadCountInGroup(g.id); }, 0);
+}
+
 function chatContacts(){
   const seen = {}; const list = [];
   state.suppliers.forEach(function(s){
     if(s.linked_dealer_id && !seen[s.linked_dealer_id]){
       seen[s.linked_dealer_id] = true;
-      list.push({ dealerId: s.linked_dealer_id, name: s.name, phone: s.phone });
+      list.push({ kind:'dealer', dealerId: s.linked_dealer_id, name: s.name, phone: s.phone });
     }
   });
+  state.chatGroups.forEach(function(g){
+    const memberCount = groupMembersOf(g.id).length;
+    list.push({ kind:'group', groupId: g.id, name: g.name, memberCount: memberCount });
+  });
   return list.sort(function(a,b){
-    const la = lastMessageWith(a.dealerId), lb = lastMessageWith(b.dealerId);
+    const la = a.kind==='group' ? lastMessageInGroup(a.groupId) : lastMessageWith(a.dealerId);
+    const lb = b.kind==='group' ? lastMessageInGroup(b.groupId) : lastMessageWith(b.dealerId);
     const ta = la ? new Date(la.created_at).getTime() : 0;
     const tb = lb ? new Date(lb.created_at).getTime() : 0;
     return tb - ta;
@@ -2511,8 +2655,9 @@ function chatContacts(){
 }
 function messagesWith(dealerId){
   return state.messages.filter(function(m){
-    return (m.sender_id===dealerId && m.recipient_id===state.profile.id) ||
-           (m.recipient_id===dealerId && m.sender_id===state.profile.id);
+    return !m.group_id && (
+      (m.sender_id===dealerId && m.recipient_id===state.profile.id) ||
+      (m.recipient_id===dealerId && m.sender_id===state.profile.id));
   });
 }
 function lastMessageWith(dealerId){
@@ -2520,21 +2665,35 @@ function lastMessageWith(dealerId){
   return list.length ? list[list.length-1] : null;
 }
 function unreadCountWith(dealerId){
-  return state.messages.filter(function(m){ return m.sender_id===dealerId && m.recipient_id===state.profile.id && !m.read_at; }).length;
+  return state.messages.filter(function(m){ return !m.group_id && m.sender_id===dealerId && m.recipient_id===state.profile.id && !m.read_at; }).length;
 }
 function computeUnreadMessageCount(){
-  return state.messages.filter(function(m){ return m.recipient_id===state.profile.id && !m.read_at; }).length;
+  return state.messages.filter(function(m){ return !m.group_id && m.recipient_id===state.profile.id && !m.read_at; }).length + computeUnreadGroupCount();
 }
 async function openChat(dealerId){
+  leaveTypingChannel(conversationKey());
+  state.chatActiveGroupId = null;
   state.chatActiveDealerId = dealerId; state.chatText = '';
   state.chatEditingId = null; state.chatEditText = ''; state.chatConfirmDeleteId = null;
   clearPendingChatImage();
   render();
   scrollChatToBottom();
+  joinTypingChannel(conversationKey());
   await markMessagesRead(dealerId);
 }
+async function openGroupChat(groupId){
+  leaveTypingChannel(conversationKey());
+  state.chatActiveDealerId = null;
+  state.chatActiveGroupId = groupId; state.chatText = '';
+  state.chatEditingId = null; state.chatEditText = ''; state.chatConfirmDeleteId = null;
+  clearPendingChatImage();
+  markGroupSeenNow(groupId);
+  render();
+  scrollChatToBottom();
+  joinTypingChannel(conversationKey());
+}
 async function markMessagesRead(dealerId){
-  const unreadIds = state.messages.filter(function(m){ return m.sender_id===dealerId && m.recipient_id===state.profile.id && !m.read_at; }).map(function(m){ return m.id; });
+  const unreadIds = state.messages.filter(function(m){ return !m.group_id && m.sender_id===dealerId && m.recipient_id===state.profile.id && !m.read_at; }).map(function(m){ return m.id; });
   if(!unreadIds.length) return;
   try{
     const nowIso = new Date().toISOString();
@@ -2546,9 +2705,10 @@ async function markMessagesRead(dealerId){
 }
 async function sendChatMessage(){
   const dealerId = state.chatActiveDealerId;
+  const groupId = state.chatActiveGroupId;
   const text = (state.chatText||'').trim();
   const pending = state.chatPendingImage;
-  if(!dealerId || (!text && !pending)) return;
+  if((!dealerId && !groupId) || (!text && !pending)) return;
 
   state.chatText = '';
   let imageUrl = null;
@@ -2565,12 +2725,15 @@ async function sendChatMessage(){
   clearPendingChatImage();
   state.chatSendingImage = false;
 
+  const row = groupId
+    ? { sender_id: state.profile.id, group_id: groupId, body: text||null, image_url: imageUrl }
+    : { sender_id: state.profile.id, recipient_id: dealerId, body: text||null, image_url: imageUrl };
+
   try{
-    const { data, error } = await sb.from('messages')
-      .insert({ sender_id: state.profile.id, recipient_id: dealerId, body: text||null, image_url: imageUrl })
-      .select().single();
+    const { data, error } = await sb.from('messages').insert(row).select().single();
     if(error) throw error;
     state.messages.push(data);
+    if(groupId) markGroupSeenNow(groupId);
     render();
     scrollChatToBottom();
   } catch(e){ showToast('Could not send: '+(e.message||e), true); render(); }
@@ -2648,8 +2811,10 @@ function scrollToNetworkUnreadIfNeeded(){
 }
 async function refreshMessagesData(){
   if(!state.profile) return;
+  // RLS scopes this to rows where I'm sender/recipient OR a member of the
+  // row's group_id — see the comment in refreshAll() for why no .or() filter
+  // is needed here anymore.
   const { data, error } = await sb.from('messages').select('*')
-    .or('sender_id.eq.'+state.profile.id+',recipient_id.eq.'+state.profile.id)
     .order('created_at',{ascending:true});
   if(!error) state.messages = data || [];
   render();
@@ -2819,11 +2984,32 @@ function renderAdmin(){
 
 function renderChats(){
   if(state.chatActiveDealerId) return renderChatThread(state.chatActiveDealerId);
+  if(state.chatActiveGroupId) return renderGroupChatThread(state.chatActiveGroupId);
   const contacts = chatContacts();
-  return '<h1 class="page-title">Chats</h1>' +
-    '<p class="page-sub">Message your saved contacts who are on PhoneHub. Tap a contact to start chatting.</p>' +
+  return '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">' +
+      '<div><h1 class="page-title">Chats</h1><p class="page-sub">Message your saved contacts who are on PhoneHub, or start a group. Tap one to start chatting.</p></div>' +
+      '<button class="btn btn-accent" data-open-modal="newGroupChat">'+ICONS.plus+' New group</button>' +
+    '</div>' +
     '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
       (contacts.length ? contacts.map(function(c){
+        if(c.kind==='group'){
+          const last = lastMessageInGroup(c.groupId);
+          const unread = unreadCountInGroup(c.groupId);
+          const mine = last && last.sender_id===state.profile.id;
+          let previewText;
+          if(!last) previewText = 'No messages yet — say hello';
+          else if(last.deleted_at) previewText = (mine?'You: ':'')+'Message deleted';
+          else if(last.body) previewText = (mine?'You: ':'')+last.body;
+          else if(last.image_url) previewText = (mine?'You: ':'')+'📷 Photo';
+          else previewText = 'No messages yet — say hello';
+          return '<div class="search-row" data-open-group-chat="'+c.groupId+'" style="padding:14px 16px;">' +
+            '<div style="min-width:0;flex:1;">' +
+              '<div class="sr-main">👥 '+escapeHtml(c.name)+' <span style="font-size:10.5px;color:var(--text-faint);font-weight:400;">('+c.memberCount+')</span></div>' +
+              '<div class="sr-sub" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escapeHtml(previewText)+'</div>' +
+            '</div>' +
+            (unread>0 ? '<span class="badge" style="background:var(--accent);color:#10141C;flex-shrink:0;">'+unread+'</span>' : (last ? '<span style="font-size:10.5px;color:var(--text-faint);flex-shrink:0;">'+new Date(last.created_at).toLocaleDateString()+'</span>' : '')) +
+          '</div>';
+        }
         const last = lastMessageWith(c.dealerId);
         const unread = unreadCountWith(c.dealerId);
         const mine = last && last.sender_id===state.profile.id;
@@ -2836,12 +3022,12 @@ function renderChats(){
         const preview = previewText;
         return '<div class="search-row" data-open-chat="'+c.dealerId+'" style="padding:14px 16px;">' +
           '<div style="min-width:0;flex:1;">' +
-            '<div class="sr-main">'+escapeHtml(c.name)+'</div>' +
+            '<div class="sr-main">'+escapeHtml(c.name)+(isDealerOnline(c.dealerId)?' <span title="Online" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--success);vertical-align:1px;"></span>':'')+'</div>' +
             '<div class="sr-sub" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escapeHtml(preview)+'</div>' +
           '</div>' +
           (unread>0 ? '<span class="badge" style="background:var(--accent);color:#10141C;flex-shrink:0;">'+unread+'</span>' : (last ? '<span style="font-size:10.5px;color:var(--text-faint);flex-shrink:0;">'+new Date(last.created_at).toLocaleDateString()+'</span>' : '')) +
         '</div>';
-      }).join('') : ('<div class="empty">'+ICONS.empty+'<div>No linked contacts yet.<br/>Add one under Network → My contacts and pick a suggested registered dealer to link them — then they\'ll show up here.</div></div>')) +
+      }).join('') : ('<div class="empty">'+ICONS.empty+'<div>No linked contacts yet.<br/>Add one under Network → My contacts and pick a suggested registered dealer to link them, or start a group — then they\'ll show up here.</div></div>')) +
     '</div></div>';
 }
 
@@ -2901,13 +3087,47 @@ function renderChatThread(dealerId){
   const phone = c ? c.phone : dealerPhone(dealerId);
   const list = messagesWith(dealerId);
   const pending = state.chatPendingImage;
+  const isTyping = !!state.typingFrom[conversationKey()];
   return '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">' +
       '<button class="btn btn-sm" id="chatBackBtn">← Back</button>' +
-      '<div><div class="strong" style="font-family:var(--font-display);font-size:16px;">'+escapeHtml(name)+'</div>' +
+      '<div><div class="strong" style="font-family:var(--font-display);font-size:16px;">'+escapeHtml(name)+(isDealerOnline(dealerId)?' <span title="Online" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--success);vertical-align:1px;"></span>':'')+'</div>' +
       (phone ? ('<div style="font-size:11px;color:var(--text-faint);">'+escapeHtml(phone)+'</div>') : '') + '</div>' +
     '</div>' +
     '<div id="chatScroll" class="section" style="height:min(58vh,520px);overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;">' +
       (list.length ? list.map(renderChatBubble).join('') : ('<div class="empty" style="margin:auto;">'+ICONS.empty+'<div>No messages yet — say hello.</div></div>')) +
+      (isTyping ? '<div style="font-size:11px;color:var(--text-faint);font-style:italic;">Typing…</div>' : '') +
+    '</div>' +
+    (pending ? (
+      '<div style="display:flex;align-items:center;gap:10px;margin-top:12px;background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;">' +
+        '<img src="'+escapeAttr(pending.previewUrl)+'" style="width:44px;height:44px;object-fit:cover;border-radius:8px;"/>' +
+        '<span style="flex:1;font-size:12px;color:var(--text-dim);">Photo ready to send'+(state.chatSendingImage?' — uploading…':'')+'</span>' +
+        (!state.chatSendingImage ? '<button type="button" id="chatRemoveImageBtn" class="btn btn-sm">Remove</button>' : '') +
+      '</div>'
+    ) : '') +
+    '<div style="display:flex;gap:8px;margin-top:12px;align-items:flex-end;">' +
+      '<input type="file" id="chatImageInput" accept="image/*" style="display:none;"/>' +
+      '<button type="button" class="btn btn-sm" id="chatAttachBtn" title="Attach a photo" '+(state.chatSendingImage?'disabled':'')+' style="flex-shrink:0;padding:11px;">📎</button>' +
+      '<textarea id="chatInput" rows="1" placeholder="Type a message… (Shift+Enter for a new line)" ' +
+        'style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:11px 13px;color:var(--text);font-family:var(--font-body);font-size:13px;outline:none;resize:none;max-height:120px;overflow-y:auto;line-height:1.4;">'+escapeHtml(state.chatText)+'</textarea>' +
+      '<button class="btn btn-accent" id="chatSendBtn" '+(state.chatSendingImage?'disabled':'')+' style="flex-shrink:0;">Send</button>' +
+    '</div>';
+}
+
+function renderGroupChatThread(groupId){
+  const g = groupById(groupId);
+  const members = groupMembersOf(groupId);
+  const list = messagesInGroup(groupId);
+  const pending = state.chatPendingImage;
+  const isTyping = !!state.typingFrom['group:'+groupId];
+  return '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">' +
+      '<button class="btn btn-sm" id="chatBackBtn">← Back</button>' +
+      '<div style="flex:1;"><div class="strong" style="font-family:var(--font-display);font-size:16px;">👥 '+escapeHtml(g?g.name:'Group')+'</div>' +
+      '<div style="font-size:11px;color:var(--text-faint);">'+members.length+' member'+(members.length===1?'':'s')+'</div></div>' +
+      '<button class="btn btn-sm" data-open-modal="manageGroupMembers" data-id="'+groupId+'">👤 Members</button>' +
+    '</div>' +
+    '<div id="chatScroll" class="section" style="height:min(58vh,520px);overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;">' +
+      (list.length ? list.map(renderChatBubble).join('') : ('<div class="empty" style="margin:auto;">'+ICONS.empty+'<div>No messages yet — say hello.</div></div>')) +
+      (isTyping ? '<div style="font-size:11px;color:var(--text-faint);font-style:italic;">Someone is typing…</div>' : '') +
     '</div>' +
     (pending ? (
       '<div style="display:flex;align-items:center;gap:10px;margin-top:12px;background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;">' +
@@ -2946,7 +3166,72 @@ function renderModal(){
   if(m.name==='viewNetworkItem') return renderNetworkItemModal(m);
   if(m.name==='clearInventory') return renderClearInventoryModal();
   if(m.name==='offlineQueueDetails') return renderOfflineQueueModal();
+  if(m.name==='newGroupChat') return renderNewGroupModal();
+  if(m.name==='manageGroupMembers') return renderManageGroupModal(m);
   return '';
+}
+
+function renderNewGroupModal(){
+  const dealerContacts = chatContacts().filter(function(c){ return c.kind==='dealer'; });
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
+    '<div class="modal-head"><h3>New group</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      '<div class="field"><label>Group name</label><input id="ng-name" value="'+escapeAttr(state.newGroupName||'')+'" placeholder="e.g. iPhone Dealers"/></div>' +
+      '<div class="field"><label>Members</label>' +
+      (dealerContacts.length ? (
+        '<div style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;">' +
+        dealerContacts.map(function(c){ return '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;border-bottom:1px solid var(--border);">' +
+          '<input type="checkbox" data-ng-member="'+c.dealerId+'" '+(state.newGroupSelectedIds.indexOf(c.dealerId)>-1?'checked':'')+'/>' +
+          '<span class="strong">'+escapeHtml(c.name)+'</span>' +
+        '</label>'; }).join('') +
+        '</div>'
+      ) : '<div class="empty">No linked contacts yet — add one under Network → My contacts and link them to a registered dealer first.</div>') +
+      '</div>' +
+    '</div>' +
+    '<div class="modal-foot"><button class="btn" data-close-modal="1">Cancel</button>' +
+      '<button class="btn btn-accent" id="createGroupBtn">Create group</button></div>' +
+  '</div></div>';
+}
+
+function renderManageGroupModal(m){
+  const groupId = m.payload.id;
+  const g = groupById(groupId);
+  if(!g) return '';
+  const members = groupMembersOf(groupId);
+  const isCreator = g.created_by === state.profile.id;
+  const memberIds = members.map(function(x){ return x.dealer_id; });
+  const addable = chatContacts().filter(function(c){ return c.kind==='dealer' && memberIds.indexOf(c.dealerId)===-1; });
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1">' +
+    '<div class="modal-head"><h3>'+escapeHtml(g.name)+' — Members</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      '<div class="field"><label>Current members ('+members.length+')</label>' +
+      '<div style="border:1px solid var(--border);border-radius:var(--radius-sm);">' +
+      members.map(function(mem){
+        const isSelf = mem.dealer_id === state.profile.id;
+        const isCreatorRow = mem.dealer_id === g.created_by;
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px;">' +
+          '<span>'+escapeHtml(dealerName(mem.dealer_id))+(isSelf?' <span style="color:var(--text-faint);">(you)</span>':'')+(isCreatorRow?' <span class="badge badge-new" style="margin-left:6px;">Creator</span>':'')+'</span>' +
+          (isCreator && !isSelf ? '<button class="btn btn-sm btn-danger" data-remove-group-member="'+mem.dealer_id+'" data-group-id="'+groupId+'">Remove</button>' : '') +
+        '</div>';
+      }).join('') +
+      '</div></div>' +
+      (isCreator ? (
+        '<div class="field" style="margin-top:14px;"><label>Add members</label>' +
+        (addable.length ? (
+          '<div style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;">' +
+          addable.map(function(c){ return '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;border-bottom:1px solid var(--border);">' +
+            '<input type="checkbox" data-add-group-member="'+c.dealerId+'" data-group-id="'+groupId+'"/>' +
+            '<span class="strong">'+escapeHtml(c.name)+'</span>' +
+          '</label>'; }).join('') +
+          '</div>'
+        ) : '<div class="empty" style="padding:16px;">All your linked contacts are already in this group.</div>') +
+        '</div>'
+      ) : '') +
+    '</div>' +
+    '<div class="modal-foot">' +
+      '<button class="btn btn-danger" data-leave-group="'+groupId+'">Leave group</button>' +
+      '<button class="btn" data-close-modal="1">Close</button>' +
+    '</div></div></div>';
 }
 
 // "Clear all inventory" — a bulk delete for every phone/laptop/gadget owned by
@@ -4003,9 +4288,11 @@ function attachHandlers(){
   }); });
 
   app.querySelectorAll('[data-open-chat]').forEach(function(el){ el.addEventListener('click', function(){ openChat(el.getAttribute('data-open-chat')); }); });
+  app.querySelectorAll('[data-open-group-chat]').forEach(function(el){ el.addEventListener('click', function(){ openGroupChat(el.getAttribute('data-open-group-chat')); }); });
   const chatBackBtn = document.getElementById('chatBackBtn');
   if(chatBackBtn) chatBackBtn.addEventListener('click', function(){
-    state.chatActiveDealerId = null; state.chatEditingId = null; state.chatConfirmDeleteId = null;
+    leaveTypingChannel(conversationKey());
+    state.chatActiveDealerId = null; state.chatActiveGroupId = null; state.chatEditingId = null; state.chatConfirmDeleteId = null;
     clearPendingChatImage();
     render();
   });
@@ -4015,6 +4302,7 @@ function attachHandlers(){
       state.chatText = e.target.value;
       e.target.style.height = 'auto';
       e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+      broadcastTyping();
     });
     chatInput.addEventListener('keydown', function(e){
       if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendChatMessage(); }
@@ -4059,6 +4347,68 @@ function attachHandlers(){
   if(chatEditCancelBtn) chatEditCancelBtn.addEventListener('click', cancelEditMessage);
   const chatEditSaveBtn = document.getElementById('chatEditSaveBtn');
   if(chatEditSaveBtn) chatEditSaveBtn.addEventListener('click', saveEditMessage);
+
+  const ngName = document.getElementById('ng-name');
+  if(ngName) ngName.addEventListener('input', function(e){ state.newGroupName = e.target.value; });
+  app.querySelectorAll('[data-ng-member]').forEach(function(el){ el.addEventListener('change', function(){
+    const id = el.getAttribute('data-ng-member');
+    const idx = state.newGroupSelectedIds.indexOf(id);
+    if(el.checked && idx===-1) state.newGroupSelectedIds.push(id);
+    else if(!el.checked && idx>-1) state.newGroupSelectedIds.splice(idx,1);
+  }); });
+  const createGroupBtn = document.getElementById('createGroupBtn');
+  if(createGroupBtn) createGroupBtn.addEventListener('click', async function(){
+    const name = (state.newGroupName||'').trim();
+    if(!name){ showToast('Enter a group name', true); return; }
+    if(!state.newGroupSelectedIds.length){ showToast('Select at least one member', true); return; }
+    try{
+      const { data, error } = await sb.rpc('create_chat_group', { p_name: name, p_member_ids: state.newGroupSelectedIds });
+      if(error) throw error;
+      await refreshGroupsData();
+      closeModal();
+      showToast('Group created');
+      if(data && data.id) await openGroupChat(data.id); else render();
+    } catch(e){ showToast('Could not create group: '+(e.message||e), true); render(); }
+  });
+
+  app.querySelectorAll('[data-remove-group-member]').forEach(function(el){ el.addEventListener('click', async function(){
+    const dealerId = el.getAttribute('data-remove-group-member');
+    const groupId = el.getAttribute('data-group-id');
+    try{
+      const { error } = await sb.from('chat_group_members').delete().eq('group_id', groupId).eq('dealer_id', dealerId);
+      if(error) throw error;
+      await refreshGroupsData();
+      showToast('Member removed');
+      render();
+    } catch(e){ showToast('Could not remove member: '+(e.message||e), true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-add-group-member]').forEach(function(el){ el.addEventListener('change', async function(){
+    if(!el.checked) return;
+    const dealerId = el.getAttribute('data-add-group-member');
+    const groupId = el.getAttribute('data-group-id');
+    try{
+      const { error } = await sb.from('chat_group_members').insert({ group_id: groupId, dealer_id: dealerId });
+      if(error) throw error;
+      await refreshGroupsData();
+      showToast('Member added');
+      render();
+    } catch(e){ showToast('Could not add member: '+(e.message||e), true); render(); }
+  }); });
+
+  app.querySelectorAll('[data-leave-group]').forEach(function(el){ el.addEventListener('click', async function(){
+    const groupId = el.getAttribute('data-leave-group');
+    try{
+      const { error } = await sb.from('chat_group_members').delete().eq('group_id', groupId).eq('dealer_id', state.profile.id);
+      if(error) throw error;
+      leaveTypingChannel(conversationKey());
+      state.chatActiveGroupId = null;
+      await refreshGroupsData();
+      closeModal();
+      showToast('You left the group');
+      render();
+    } catch(e){ showToast('Could not leave group: '+(e.message||e), true); render(); }
+  }); });
 
   scrollChatToBottom();
 

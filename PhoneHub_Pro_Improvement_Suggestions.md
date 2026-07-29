@@ -68,42 +68,79 @@ In a trust/reputation-driven market, a well-regarded shop visibly using and vouc
 - Typing indicators / online status
 - Group chats
 
+Typing indicators / online status
+
+Approach: Use Supabase Realtime Presence rather than a DB table, so there's no extra write per keystroke and nothing to clean up.
+
+Each dealer joins a presence channel keyed to their own id on login (track({online_at: ...})); any contact who has them linked can subscribe to see "online" / "last seen."
+Typing uses a lightweight broadcast (not presence) on a per-conversation channel — debounce ~1.5s on keystroke, show "typing…" for ~3s after the last event, then auto-clear.
+Shown as a badge next to the contact name in the chat list and thread header; typing shows as a small line under the last bubble in #chatScroll.
+No schema changes required.
+Group chats
+
+Approach: Add conversation objects instead of overloading the existing 1:1 messages table.
+
+sql
+create table if not exists chat_groups (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  created_by uuid not null references dealers(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists chat_group_members (
+  group_id uuid not null references chat_groups(id) on delete cascade,
+  dealer_id uuid not null references dealers(id) on delete cascade,
+  joined_at timestamptz not null default now(),
+  primary key (group_id, dealer_id)
+);
+
+alter table messages add column if not exists group_id uuid references chat_groups(id) on delete cascade;
+alter table messages alter column recipient_id drop not null;
+alter table messages add constraint messages_target_check
+  check ((recipient_id is not null and group_id is null) or (recipient_id is null and group_id is not null));
+RLS: insert/select gated on exists (select 1 from chat_group_members where group_id = messages.group_id and dealer_id = auth.uid()).
+Realtime subscription keys off group_id instead of dealer pairs; chat_group_members also goes into the realtime publication so membership changes update live.
+notify_new_message_push() gets a group branch that fans out to every member except the sender, reusing the existing dealer_ids array push pattern.
+UI: chatContacts() merges 1:1 contacts and groups into one list; renderChatThread() accepts either a dealerId or groupId and swaps the header between a contact name and a group name + member count.
+
 
 Change barnd name to "dts GadgetHub"
 
+Good context — merging everything into one clean set, deduplicated. I've kept the strongest framing from each version where they overlapped.
+
 Flagship: Verified Sub-Dealer / Agent Network
 
-This is genuinely strong because it turns the Customer App from "a nicer storefront" into a way to recruit an unpaid sales force for real dealers, and a way for people with zero capital to earn from phone sales.
+This is the centerpiece — it's the one thing WhatsApp structurally cannot replicate, and it flips the pitch from "pay for what you already have" to "make money you couldn't make before."
 
-How it would work:
+How it works:
 
-A real, KYC'd dealer ("Principal") can approve one or more Sub-Dealers/Agents — people who don't own stock but want to sell.
-The sub-dealer gets their own storefront in the Customer App (own name/photo/location shown to buyers), but it's actually pulling from the Principal's live inventory, tagged as "available via [Agent Name]."
-Sub-dealer shares their personal storefront link (WhatsApp status, Instagram, TikTok) — this is the viral distribution loop that gets non-dealers pulling in customers.
-When a sale closes, the app auto-splits the money: Principal gets their cost + agreed margin, Sub-Dealer gets an agreed commission (flat ₦ or %) — tracked and visible to both, no manual accounting.
-Hard rule enforced at signup: a sub-dealer account can link to exactly one Principal, and cannot themselves have sub-dealers — so this stays a two-tier tree, not a pyramid. That's an important trust/legal boundary to keep explicit in the KYC flow ("this is retail agency, not MLM").
-KYC on the sub-dealer (phone, ID, selfie, Principal's consent confirmation) protects the Principal from being impersonated and gives the platform a paper trail if a sub-dealer runs off with payment.
+A KYC'd, verified store owner ("Principal") approves one or more Sub-Dealers/Agents — people with no stock of their own who want to sell.
+The agent gets their own storefront in the Customer App — own name, photo, location — but it draws live from the Principal's real inventory, tagged "available via [Agent Name]."
+The agent shares their personal storefront link (WhatsApp status, Instagram, TikTok) — this is the viral loop that pulls in people who don't currently touch your app at all.
+On a closed sale, the app auto-splits the money: Principal gets cost + agreed margin, Agent gets an agreed commission (flat ₦ or %) — tracked for both sides, no manual accounting.
+Hard structural rule, enforced at signup: a sub-dealer links to exactly one Principal, and cannot themselves have sub-dealers. Two-tier tree only, never deeper. State this explicitly in the KYC flow as "retail agency, not MLM" — this protects you legally and protects trust in the platform.
+KYC on the sub-dealer (phone, ID, selfie, Principal's in-app consent confirmation) protects the Principal from impersonation and gives you a paper trail if an agent runs off with a customer's payment.
 
-Why this earns real money for real people, not just the platform:
+Why it actually generates money, not just data:
 
-Sub-dealer earns commission with zero capital — this is the "come for the free income, stay for the app" hook you need for the non-dealer side.
-Principal earns sales volume they'd never get walking their own shop floor, for free labor.
-Platform can justify a fee here specifically because it's new money being created (commission splits didn't exist before), not asking dealers to pay for something they already do for free.
-Other income streams, roughly by how fast you could ship + how directly dealers see cash
-
-Near-term, low build effort
-
-Transaction-based platform fee, not subscription — instead of "pay ₦X/month," take a small % only on sales that actually close through the app (in-person sale logged, or sub-dealer sale). No sale, no fee. This directly answers "why pay when WhatsApp is free" — WhatsApp doesn't get you the sub-dealer network or the sale-closing infrastructure, so the fee rides on value actually delivered.
-Referral/affiliate links for ordinary customers — not even a full sub-dealer, just "share this phone's link, if someone buys you get ₦2,000." Way lower friction than full agent onboarding, and it's the funnel that finds you your best future sub-dealers.
-Featured/boosted listings — a dealer pays a small fee to have their stock rank first in Network Search or Customer App browse for a hot model. Classic marketplace revenue, and it doesn't require dealers to change behavior — they just spend a little to sell faster.
-
-Medium-term
-
-Extended warranty / device insurance upsell at checkout — partner with an insurer; customer buys optional protection when logging a sale, dealer and platform both get a cut of the premium. Pure upside for the dealer with no cost or effort on their part.
-Inventory/stock financing — once you have 3-6 months of a dealer's real sales data (which only your app has, WhatsApp never will), you can partner with a fintech to offer short-term stock loans based on that track record — "Shopify Capital" style. This is a big one: capital access is often the actual bottleneck for dealers, not sales volume.
-Buy-now-pay-later for customers — partner with a BNPL provider; dealer gets paid in full immediately, customer pays in installments, platform/dealer earn a slice of the financing fee. This also increases average sale size for dealers.
-
-Longer-term, needs more trust/scale first
-
-Group buying / bulk import pooling — aggregate demand across many dealers for the same model ("200 dealers want iPhone 15 128GB this week") to negotiate better import pricing than any single dealer could alone, and split the savings. Requires real volume on the platform first to have negotiating leverage.
-Verified trade-in/buy-back desk — tie into the IMEI/anti-theft registry you already planned; platform runs (or partners on) a buy-back program, dealers get a finder's fee for every trade-in they source.
+Agent earns commission with zero capital — the "come for free income, stay for the app" hook for the huge population of non-dealers in Computer Village who currently just refer customers informally for nothing.
+Principal gets sales volume they'd never get from their own shop floor or contact list, for free labor.
+The platform can charge here specifically because this money didn't exist before you built it — you're not asking anyone to start paying for inventory tracking they already get free.
+Near-term (low build effort, direct cash line)
+Transaction fee on sub-dealer sales — small % taken only when a sale actually closes through an agent's storefront. No sale, no fee. This is the natural monetization on top of the agent network above, not a separate idea.
+Sub-dealer KYC/verification fee — small one-time fee to get an agent verified and linked, framed as a "digital agent badge" rather than a tax. Pairs with a real ID-verification API (Smile ID, Youverify, etc.).
+Referral/affiliate links for ordinary customers — lighter than full agent onboarding: "share this phone's link, earn ₦2,000 if it sells." Much lower friction, and it's the funnel that surfaces your best future agents.
+Boosted/featured listings — dealers pay to rank a hot model first in Network Search or the Customer App browse view. Doesn't require any behavior change, just a small spend to sell faster.
+"Verified Dealer" trust badge — KYC'd dealers get a visible checkmark and rank higher in search. In a trust-driven market like Computer Village, status is genuinely something dealers will pay for once buyers start preferring badged shops.
+Sponsored broadcasts — importers or accessory brands pay to broadcast to the entire network, not just their own contacts — a paid version of the existing free broadcast feature, aimed upstream at wholesalers rather than individual dealers.
+Medium-term (needs a bit more trust/volume first)
+Extended warranty / device insurance upsell at checkout — partner with an insurer; offered as an optional add-on when logging a sale. Pure upside for the dealer, no cost or effort on their side, platform + dealer share the commission.
+Buy-now-pay-later for customers — partner with a BNPL provider; dealer gets paid in full immediately, customer pays in installments, platform/dealer split the financing fee. Also raises average sale size.
+Inventory/stock financing — once you've got 3–6 months of a dealer's real sales data (which only your app has — WhatsApp never will), partner with a fintech to offer short-term stock loans against that track record, Shopify-Capital-style. Capital, not sales volume, is often the actual bottleneck for these dealers, so this can be a bigger unlock than it sounds.
+Escrow / in-app payment take-rate — if you build payment collection into the flow (this also solves the trust gap in agent-to-customer-to-principal money movement, which is exactly where things break down without a formal system), take a small cut per transaction processed.
+Aggregated market data — anonymized pricing/demand trends sold to importers or manufacturers. Monetizes data you're already collecting without charging the dealers who generated it.
+Longer-term (needs real scale first)
+Group buying / bulk import pooling — aggregate demand across many dealers for the same model ("200 dealers want iPhone 15 128GB this week") to negotiate better import pricing than any single dealer could alone, and split the savings. Needs real platform volume to have negotiating leverage.
+Verified trade-in / buy-back desk — ties directly into the IMEI/anti-theft registry already planned. Platform runs or partners on a buy-back program; dealers earn a finder's fee for every trade-in they source, and it deepens the anti-theft network's value at the same time.
+Anti-theft network — freemium tier — basic IMEI registration/lookup stays free (drives adoption of the safety feature itself), but bulk/API-style verification for repair shops, importers, or high-volume dealers is a paid tier.

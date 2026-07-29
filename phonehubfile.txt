@@ -2360,7 +2360,16 @@ let state = {
   chatEditingId:null, chatEditText:'', chatConfirmDeleteId:null,
   chatPendingImage:null, // {file, previewUrl} — selected but not-yet-sent photo attachment
   chatSendingImage:false,
+  offlineQueue:[], // loaded from localStorage at login — writes waiting for a connection, see "offline write queue" section
+  offlineSyncing:false,
+  onlineDealerIds:{}, // presence: dealer_id -> true, for contacts currently online (see initPresence)
+  typingFrom:{}, // key ('dealer:'+id or 'group:'+id) -> true while the other side is typing
+  chatGroups:[], chatGroupMembers:[], // chat_groups / chat_group_members rows this dealer belongs to
+  newGroupName:'', newGroupSelectedIds:[], // draft state for the "New group" modal
 };
+let presenceChannel = null;
+let typingChannels = {}; // conversation key -> subscribed realtime channel, so we don't resubscribe every render
+let typingClearTimers = {}; // conversation key -> setTimeout handle for auto-clearing a stale "typing…" flag
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function shuffleArray(arr){
@@ -2396,6 +2405,153 @@ function escapeAttr(s){ return (s||'').toString().replace(/"/g,'&quot;'); }
 function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function val(id){ const el = document.getElementById(id); return el ? el.value : ''; }
 function slugify(s){ return (s||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,''); }
+
+/* ---------- offline write queue ---------- */
+// Computer Village connections drop mid-transaction often — this queue makes
+// sure that never means a lost sale or a lost bulk import. When a write that
+// matters (logging a sale, importing stock) fails because of the network
+// rather than because the data itself is invalid, it's saved to this
+// localStorage-backed queue instead of just showing an error, and retried
+// automatically the moment a connection is available again (on the browser's
+// 'online' event, on a background timer, and once right after login).
+const OFFLINE_QUEUE_KEY = 'phonehub-offline-queue';
+function loadOfflineQueue(){
+  try{ const raw = localStorage.getItem(OFFLINE_QUEUE_KEY); return raw ? JSON.parse(raw) : []; }
+  catch(e){ return []; }
+}
+function saveOfflineQueue(q){
+  try{ localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(q||[])); } catch(e){ /* ignore */ }
+}
+// Distinguishes "the connection dropped" (queue it, retry later) from "the
+// server rejected this" (show the real error — retrying won't fix a
+// validation failure or an RLS violation, and silently queuing it would just
+// hide a mistake from the dealer instead of letting them fix it).
+function isLikelyNetworkError(e){
+  if(typeof navigator!=='undefined' && navigator.onLine===false) return true;
+  const msg = (e && (e.message || String(e))) || '';
+  return /failed to fetch|networkerror|network request failed|load failed|err_internet|err_connection|timeout|the internet connection appears to be offline/i.test(msg);
+}
+function enqueueOfflineWrite(type, payload, meta){
+  const item = { id: uid(), type: type, createdAt: new Date().toISOString(), payload: payload, meta: meta||{}, attempts: 0, lastError: null };
+  state.offlineQueue.push(item);
+  saveOfflineQueue(state.offlineQueue);
+  return item;
+}
+// Replays a single queued write against Supabase. Throws on failure (network
+// or otherwise) so the caller can decide whether to keep it queued.
+async function replayOfflineItem(item){
+  if(item.type === 'sell_phone'){
+    const { error } = await sb.rpc('sell_phone', item.payload);
+    if(error) throw error;
+  } else if(item.type === 'bulk_insert_inventory'){
+    const { error } = await sb.from('inventory').insert(item.payload.rows);
+    if(error) throw error;
+  } else {
+    throw new Error('Unknown queued item type: '+item.type);
+  }
+}
+// Walks the queue oldest-first (so a phone sold twice offline settles in the
+// order it actually happened) and replays each item. Network failures stay
+// queued for the next attempt; anything else (a real server-side rejection)
+// also stays queued but is flagged with lastError so the dealer can see it
+// in "Pending sync" and choose to retry or discard it themselves, rather
+// than it silently retrying forever.
+async function processOfflineQueue(){
+  if(state.offlineSyncing || !state.offlineQueue.length) return;
+  if(typeof navigator!=='undefined' && navigator.onLine===false) return;
+  state.offlineSyncing = true; render();
+  let syncedCount = 0;
+  const remaining = [];
+  for(const item of state.offlineQueue){
+    try{
+      await replayOfflineItem(item);
+      syncedCount++;
+    } catch(e){
+      item.attempts = (item.attempts||0) + 1;
+      item.lastError = (e && (e.message || String(e))) || 'Unknown error';
+      remaining.push(item);
+    }
+  }
+  state.offlineQueue = remaining;
+  saveOfflineQueue(state.offlineQueue);
+  state.offlineSyncing = false;
+  if(syncedCount > 0){
+    await refreshAll();
+    showToast(syncedCount+' pending item'+(syncedCount===1?'':'s')+' synced successfully');
+  }
+  render();
+}
+// Optimistic local-only stock decrement so a dealer who sells the same
+// offline phone twice in a row (before either sale has synced) doesn't
+// accidentally oversell it from this device. This is UI-only — the real,
+// authoritative decrement happens server-side inside sell_phone() once the
+// queued write actually syncs, so this can be safely overwritten by the
+// next refreshAll() without any risk of double-counting on the server.
+function applyOptimisticSaleQuantity(inventoryId, quantitySold){
+  const item = state.inventory.find(function(p){ return p.id===inventoryId; });
+  if(!item) return;
+  const remaining = (Number(item.quantity)||1) - (Number(quantitySold)||1);
+  item.quantity = Math.max(remaining, 0);
+  if(remaining <= 0) item.status = 'Sold';
+}
+// Reconstructs "pending sale" rows purely for display from whatever
+// sell_phone writes are still sitting in the offline queue — nothing here
+// is written to state.sales, so there's no risk of it duplicating the real
+// row once refreshAll() pulls it in after a successful sync.
+function pendingSalesFromQueue(){
+  return state.offlineQueue.filter(function(q){ return q.type==='sell_phone'; }).map(function(q){
+    const item = state.inventory.find(function(p){ return p.id===q.payload.p_inventory_id; });
+    return {
+      date: q.createdAt.slice(0,10),
+      model: (item && item.model) || q.meta.model || 'Item',
+      customer_name: q.payload.p_customer_name, customer_phone: q.payload.p_customer_phone,
+      sale_price: q.payload.p_sale_price, cost: (item && item.cost) || 0,
+      payment_method: q.payload.p_payment_method, staff: q.payload.p_staff,
+      _pendingSync: true, _queueId: q.id, _lastError: q.lastError
+    };
+  });
+}
+function renderOfflineQueueBanner(){
+  const q = state.offlineQueue;
+  if(!q.length) return '';
+  const bottomOffset = shouldShowInstallBanner() ? '64px' : '0';
+  const failing = q.filter(function(i){ return i.attempts>0; }).length;
+  return '<div id="offlineQueueBanner" style="position:fixed;left:0;right:0;bottom:'+bottomOffset+';z-index:140;background:var(--panel-2);border-top:1px solid var(--danger);padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;box-shadow:0 -6px 20px rgba(0,0,0,.35);">' +
+    '<div style="flex:1;min-width:200px;font-size:12.5px;color:var(--text);">' +
+      '<strong>'+q.length+' item'+(q.length===1?'':'s')+' waiting to sync</strong>' +
+      (typeof navigator!=='undefined' && navigator.onLine===false ? ' <span style="color:var(--text-faint);">— you\'re offline</span>' : '') +
+      (failing ? (' <span style="color:var(--danger);">· '+failing+' retried and failed — see details</span>') : '') +
+    '</div>' +
+    '<button class="btn btn-sm" id="offlineQueueDetailsBtn">Details</button>' +
+    '<button class="btn btn-accent btn-sm" id="offlineQueueRetryBtn" '+(state.offlineSyncing?'disabled':'')+'>'+(state.offlineSyncing?'Syncing…':'Retry now')+'</button>' +
+  '</div>';
+}
+function renderOfflineQueueModal(){
+  const rows = state.offlineQueue.slice().sort(function(a,b){ return new Date(a.createdAt)-new Date(b.createdAt); });
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:560px;">' +
+    '<div class="modal-head"><h3>Pending sync</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      '<p style="color:var(--text-dim);font-size:12.5px;margin-top:0;">These were saved on this device because the connection dropped. They\'ll sync automatically — you only need to act here if one keeps failing.</p>' +
+      (rows.length ? rows.map(function(item){
+        const label = item.type==='sell_phone'
+          ? ('Sale: '+((item.meta&&item.meta.model)||'item')+' — '+naira(item.payload.p_sale_price))
+          : ('Bulk import: '+((item.payload.rows&&item.payload.rows.length)||0)+' '+((item.meta&&item.meta.itemType)||'item')+'(s)');
+        return '<div class="section" style="margin-bottom:10px;"><div class="section-body" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">' +
+          '<div><div class="strong" style="font-size:13px;">'+escapeHtml(label)+'</div>' +
+          '<div style="font-size:11px;color:var(--text-faint);">Queued '+new Date(item.createdAt).toLocaleString()+(item.attempts?(' · '+item.attempts+' attempt'+(item.attempts===1?'':'s')+' failed'):'')+'</div>' +
+          (item.lastError ? ('<div style="font-size:11px;color:var(--danger);margin-top:2px;">'+escapeHtml(item.lastError)+'</div>') : '') +
+          '</div>' +
+          '<div style="display:flex;gap:6px;flex-shrink:0;">' +
+            '<button class="btn btn-sm" data-retry-queue-item="'+item.id+'">Retry</button>' +
+            '<button class="btn btn-sm btn-danger" data-discard-queue-item="'+item.id+'">Discard</button>' +
+          '</div>' +
+        '</div></div>';
+      }).join('') : '<div class="empty">Nothing pending.</div>') +
+    '</div>' +
+    '<div class="modal-foot"><button class="btn" data-close-modal="1">Close</button>' +
+      (rows.length ? ('<button class="btn btn-accent" id="offlineQueueRetryAllBtn" '+(state.offlineSyncing?'disabled':'')+'>Retry all</button>') : '') +
+    '</div></div></div>';
+}
 
 /* ---------- phone photos ---------- */
 function thumbHTML(url){
@@ -2588,6 +2744,14 @@ window.addEventListener('visibilitychange', function(){
   if(document.visibilityState === 'hidden') commitNetworkLastSeenIfViewingBroadcasts();
 });
 
+// Offline write queue: retry the moment the browser reports a connection,
+// and warn the dealer up front the moment it's lost so a dropped sale isn't
+// a silent surprise later.
+window.addEventListener('online', function(){ processOfflineQueue(); });
+window.addEventListener('offline', function(){
+  showToast('You\'re offline — sales and stock imports will be saved on this device and sync automatically once you\'re back online.');
+});
+
 function checkInstallBannerVisibility(){
   if(state.stage === 'app' || state.stage === 'auth'){
     render();
@@ -2681,7 +2845,72 @@ async function initRealtime(){
       refreshMessagesData();
     }).subscribe();
   } catch(e){ console.warn('Realtime init failed:', e); }
+  initPresence();
 }
+
+/* ---------- presence (online status) ---------- */
+// Every logged-in dealer joins this single shared channel and "tracks"
+// themselves as present. Everyone else's client sees the full presence
+// state (a map of dealer_id -> [{...}]) and we just check "is this dealer's
+// id a key in that map" to show an online dot next to their name. No table,
+// no writes, no cleanup — presence auto-clears when a client disconnects.
+function initPresence(){
+  if(!sb || !state.profile) return;
+  try{
+    presenceChannel = sb.channel('presence:dealers', { config:{ presence:{ key: state.profile.id } } });
+    presenceChannel.on('presence', { event:'sync' }, function(){
+      const s = presenceChannel.presenceState();
+      state.onlineDealerIds = {};
+      Object.keys(s||{}).forEach(function(id){ state.onlineDealerIds[id] = true; });
+      render();
+    }).subscribe(async function(status){
+      if(status === 'SUBSCRIBED'){
+        await presenceChannel.track({ online_at: new Date().toISOString() });
+      }
+    });
+  } catch(e){ console.warn('Presence init failed:', e); }
+}
+function isDealerOnline(dealerId){ return !!state.onlineDealerIds[dealerId]; }
+
+/* ---------- typing indicator ---------- */
+// Lightweight realtime "broadcast" (not a DB write) per open conversation.
+// A conversation key is either 'dealer:<other_dealer_id>' (1:1) or
+// 'group:<group_id>'. Subscribing/broadcasting only happens for the
+// conversation currently open, and the channel is torn down when leaving it.
+function conversationKey(){
+  if(state.chatActiveGroupId) return 'group:'+state.chatActiveGroupId;
+  if(state.chatActiveDealerId) return 'dealer:'+state.chatActiveDealerId;
+  return null;
+}
+function joinTypingChannel(key){
+  if(!sb || !key || typingChannels[key]) return;
+  const ch = sb.channel('typing:'+key);
+  ch.on('broadcast', { event:'typing' }, function(payload){
+    const fromId = payload.payload && payload.payload.dealer_id;
+    if(!fromId || fromId === state.profile.id) return;
+    state.typingFrom[key] = true;
+    render();
+    if(typingClearTimers[key]) clearTimeout(typingClearTimers[key]);
+    typingClearTimers[key] = setTimeout(function(){ state.typingFrom[key] = false; render(); }, 3000);
+  }).subscribe();
+  typingChannels[key] = ch;
+}
+function leaveTypingChannel(key){
+  if(!key || !typingChannels[key]) return;
+  try{ sb.removeChannel(typingChannels[key]); } catch(e){ /* ignore */ }
+  delete typingChannels[key];
+  state.typingFrom[key] = false;
+  if(typingClearTimers[key]){ clearTimeout(typingClearTimers[key]); delete typingClearTimers[key]; }
+}
+let typingBroadcastDebounce = null;
+function broadcastTyping(){
+  const key = conversationKey();
+  if(!key || !typingChannels[key]) return;
+  if(typingBroadcastDebounce) return; // already sent one recently, wait for it to cool down
+  typingChannels[key].send({ type:'broadcast', event:'typing', payload:{ dealer_id: state.profile.id } });
+  typingBroadcastDebounce = setTimeout(function(){ typingBroadcastDebounce = null; }, 1500);
+}
+
 async function refreshBroadcastsData(){
   if(!state.profile) return;
   const [bc, br] = await Promise.all([
@@ -3309,11 +3538,13 @@ async function loadAfterAuth(){
     if(pErr) throw pErr;
     state.profile = profile; state.isAdmin = !!profile.is_admin;
     state.networkLastSeenAt = loadNetworkLastSeen(profile.id);
+    state.offlineQueue = loadOfflineQueue();
     await refreshAll();
     state.stage = 'app';
     initPush();
     initRealtime();
     applyHashTab();
+    processOfflineQueue(); // in case anything was left over from a previous dropped-connection session
   } catch(e){
     state.stage = 'auth'; state.authError = 'Could not load your shop profile: ' + (e.message||e);
   }
@@ -3331,13 +3562,17 @@ async function refreshAll(){
     sb.from('dealer_reputation_view').select('*'),
     sb.from('consignments').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
     sb.from('consignment_payments').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
-    sb.from('messages').select('*').or('sender_id.eq.'+state.profile.id+',recipient_id.eq.'+state.profile.id).order('created_at',{ascending:true}),
+    // No .or() filter here anymore — RLS on `messages` already scopes rows to
+    // (sender_id/recipient_id = me) OR (I'm a member of the row's group_id),
+    // so a plain select('*') picks up both 1:1 AND group messages correctly.
+    sb.from('messages').select('*').order('created_at',{ascending:true}),
   ]);
   state.inventory = inv.data || []; state.sales = sales.data || []; state.requests = reqs.data || [];
   state.suppliers = sups.data || []; state.dealerNetwork = dn.data || []; state.broadcasts = bc.data || [];
   state.consignments = cons.data || [];
   state.consignmentPayments = cnp.data || [];
   state.messages = msgs.data || [];
+  await refreshGroupsData();
   syncNetworkOrder();
   const repMap = {};
   (rep.data || []).forEach(function(r){ repMap[r.dealer_id] = r; });
@@ -3356,6 +3591,26 @@ async function refreshAll(){
     ]);
     state.adminDealers = ad.data || []; state.adminInventory = ai.data || []; state.adminSales = as_.data || [];
   }
+}
+
+// Loads every group this dealer belongs to, plus the full member roster for
+// each of those groups (needed for member counts / names in the group list
+// and thread header). Two queries: "which group_ids am I in" -> "who's in
+// those groups" — RLS on chat_group_members only lets you see rows for
+// groups you're actually a member of, so this can't leak other groups.
+async function refreshGroupsData(){
+  if(!state.profile) return;
+  try{
+    const mine = await sb.from('chat_group_members').select('group_id').eq('dealer_id', state.profile.id);
+    const groupIds = (mine.data||[]).map(function(r){ return r.group_id; });
+    if(!groupIds.length){ state.chatGroups = []; state.chatGroupMembers = []; return; }
+    const [groups, members] = await Promise.all([
+      sb.from('chat_groups').select('*').in('id', groupIds),
+      sb.from('chat_group_members').select('*').in('group_id', groupIds)
+    ]);
+    state.chatGroups = groups.data || [];
+    state.chatGroupMembers = members.data || [];
+  } catch(e){ console.warn('Could not load chat groups:', e); }
 }
 
 async function refreshOne(table, target, extraFilter){
@@ -3534,6 +3789,7 @@ function render(){
     '</div>' +
     (state.modal ? renderModal() : '') +
     renderInstallBanner() +
+    renderOfflineQueueBanner() +
     (state.toast ? ('<div class="toast '+(state.toastErr?'err':'')+'">'+escapeHtml(state.toast)+'</div>') : '');
   attachHandlers();
 }
@@ -3961,9 +4217,25 @@ function renderSales(){
 }
 
 function renderSalesLog(){
+  const pending = pendingSalesFromQueue();
   const rows = state.sales.slice().sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
+  const pendingHtml = pending.map(function(s){
+    return '<tr style="background:var(--panel-2);">' +
+      '<td class="mono">'+escapeHtml(s.date)+'</td>' +
+      '<td class="strong">'+escapeHtml(s.model)+'<div style="margin-top:3px;"><span class="badge badge-reserved" title="Saved on this device — will sync once you\'re back online">⏳ Pending sync</span></div>' +
+        (s._lastError ? ('<div style="font-size:10.5px;color:var(--danger);margin-top:3px;">'+escapeHtml(s._lastError)+'</div>') : '') + '</td>' +
+      '<td>'+escapeHtml(s.customer_name||'—')+'<br><span class="mono" style="color:var(--text-faint);font-size:11px">'+escapeHtml(s.customer_phone||'')+'</span></td>' +
+      '<td class="mono">'+naira(s.sale_price)+'</td>' +
+      '<td class="mono" style="color:var(--success)">'+naira((Number(s.sale_price)||0)-(Number(s.cost)||0))+'</td>' +
+      '<td>'+escapeHtml(s.payment_method||'—')+'</td>' +
+      '<td>'+escapeHtml(s.staff||'—')+'</td>' +
+      '<td>—</td>' +
+      '<td style="display:flex;gap:6px;white-space:nowrap;"><button class="btn btn-sm" data-retry-queue-item="'+s._queueId+'">Retry</button><button class="btn btn-sm btn-danger" data-discard-queue-item="'+s._queueId+'">Discard</button></td>' +
+    '</tr>';
+  }).join('');
   return '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
-      (rows.length ? ('<table><thead><tr><th>Date</th><th>Phone</th><th>Customer</th><th>Sale price</th><th>Profit</th><th>Payment</th><th>Staff</th><th>Warranty</th><th></th></tr></thead><tbody>' +
+      ((rows.length||pending.length) ? ('<table><thead><tr><th>Date</th><th>Phone</th><th>Customer</th><th>Sale price</th><th>Profit</th><th>Payment</th><th>Staff</th><th>Warranty</th><th></th></tr></thead><tbody>' +
+        pendingHtml +
         rows.map(function(s){
           const expiry = new Date(s.date); expiry.setDate(expiry.getDate()+Number(s.warranty_days||0));
           const daysLeft = daysBetween(todayISO(), expiry.toISOString().slice(0,10));
@@ -4244,16 +4516,60 @@ function dealerPhone(id){
 // Contacts you can chat with: saved contacts you've linked to a real
 // PhoneHub account (via the "pick from registered dealers" suggestion
 // when adding/editing a contact under Network > My contacts).
+/* ---------- group chats ---------- */
+// Per-group "last seen" timestamps, persisted per device (same pattern as
+// NETWORK_SEEN_KEY elsewhere in this file) — group messages don't have a
+// per-recipient read_at, since a group has many recipients, so unread state
+// for groups is derived client-side from "newer than when I last opened it."
+const GROUP_SEEN_KEY = 'phonehub-group-last-seen';
+function loadGroupLastSeen(){
+  try{ const raw = localStorage.getItem(GROUP_SEEN_KEY); return raw ? JSON.parse(raw) : {}; } catch(e){ return {}; }
+}
+function saveGroupLastSeen(map){
+  try{ localStorage.setItem(GROUP_SEEN_KEY, JSON.stringify(map||{})); } catch(e){ /* ignore */ }
+}
+function markGroupSeenNow(groupId){
+  const map = loadGroupLastSeen();
+  map[groupId] = new Date().toISOString();
+  saveGroupLastSeen(map);
+}
+function groupMembersOf(groupId){
+  return state.chatGroupMembers.filter(function(m){ return m.group_id===groupId; });
+}
+function groupById(groupId){ return state.chatGroups.find(function(g){ return g.id===groupId; }); }
+function messagesInGroup(groupId){
+  return state.messages.filter(function(m){ return m.group_id===groupId; });
+}
+function lastMessageInGroup(groupId){
+  const list = messagesInGroup(groupId);
+  return list.length ? list[list.length-1] : null;
+}
+function unreadCountInGroup(groupId){
+  const seenMap = loadGroupLastSeen();
+  const seenAt = seenMap[groupId] ? new Date(seenMap[groupId]) : null;
+  return messagesInGroup(groupId).filter(function(m){
+    return m.sender_id !== state.profile.id && (!seenAt || new Date(m.created_at) > seenAt);
+  }).length;
+}
+function computeUnreadGroupCount(){
+  return state.chatGroups.reduce(function(a,g){ return a + unreadCountInGroup(g.id); }, 0);
+}
+
 function chatContacts(){
   const seen = {}; const list = [];
   state.suppliers.forEach(function(s){
     if(s.linked_dealer_id && !seen[s.linked_dealer_id]){
       seen[s.linked_dealer_id] = true;
-      list.push({ dealerId: s.linked_dealer_id, name: s.name, phone: s.phone });
+      list.push({ kind:'dealer', dealerId: s.linked_dealer_id, name: s.name, phone: s.phone });
     }
   });
+  state.chatGroups.forEach(function(g){
+    const memberCount = groupMembersOf(g.id).length;
+    list.push({ kind:'group', groupId: g.id, name: g.name, memberCount: memberCount });
+  });
   return list.sort(function(a,b){
-    const la = lastMessageWith(a.dealerId), lb = lastMessageWith(b.dealerId);
+    const la = a.kind==='group' ? lastMessageInGroup(a.groupId) : lastMessageWith(a.dealerId);
+    const lb = b.kind==='group' ? lastMessageInGroup(b.groupId) : lastMessageWith(b.dealerId);
     const ta = la ? new Date(la.created_at).getTime() : 0;
     const tb = lb ? new Date(lb.created_at).getTime() : 0;
     return tb - ta;
@@ -4261,8 +4577,9 @@ function chatContacts(){
 }
 function messagesWith(dealerId){
   return state.messages.filter(function(m){
-    return (m.sender_id===dealerId && m.recipient_id===state.profile.id) ||
-           (m.recipient_id===dealerId && m.sender_id===state.profile.id);
+    return !m.group_id && (
+      (m.sender_id===dealerId && m.recipient_id===state.profile.id) ||
+      (m.recipient_id===dealerId && m.sender_id===state.profile.id));
   });
 }
 function lastMessageWith(dealerId){
@@ -4270,21 +4587,35 @@ function lastMessageWith(dealerId){
   return list.length ? list[list.length-1] : null;
 }
 function unreadCountWith(dealerId){
-  return state.messages.filter(function(m){ return m.sender_id===dealerId && m.recipient_id===state.profile.id && !m.read_at; }).length;
+  return state.messages.filter(function(m){ return !m.group_id && m.sender_id===dealerId && m.recipient_id===state.profile.id && !m.read_at; }).length;
 }
 function computeUnreadMessageCount(){
-  return state.messages.filter(function(m){ return m.recipient_id===state.profile.id && !m.read_at; }).length;
+  return state.messages.filter(function(m){ return !m.group_id && m.recipient_id===state.profile.id && !m.read_at; }).length + computeUnreadGroupCount();
 }
 async function openChat(dealerId){
+  leaveTypingChannel(conversationKey());
+  state.chatActiveGroupId = null;
   state.chatActiveDealerId = dealerId; state.chatText = '';
   state.chatEditingId = null; state.chatEditText = ''; state.chatConfirmDeleteId = null;
   clearPendingChatImage();
   render();
   scrollChatToBottom();
+  joinTypingChannel(conversationKey());
   await markMessagesRead(dealerId);
 }
+async function openGroupChat(groupId){
+  leaveTypingChannel(conversationKey());
+  state.chatActiveDealerId = null;
+  state.chatActiveGroupId = groupId; state.chatText = '';
+  state.chatEditingId = null; state.chatEditText = ''; state.chatConfirmDeleteId = null;
+  clearPendingChatImage();
+  markGroupSeenNow(groupId);
+  render();
+  scrollChatToBottom();
+  joinTypingChannel(conversationKey());
+}
 async function markMessagesRead(dealerId){
-  const unreadIds = state.messages.filter(function(m){ return m.sender_id===dealerId && m.recipient_id===state.profile.id && !m.read_at; }).map(function(m){ return m.id; });
+  const unreadIds = state.messages.filter(function(m){ return !m.group_id && m.sender_id===dealerId && m.recipient_id===state.profile.id && !m.read_at; }).map(function(m){ return m.id; });
   if(!unreadIds.length) return;
   try{
     const nowIso = new Date().toISOString();
@@ -4296,9 +4627,10 @@ async function markMessagesRead(dealerId){
 }
 async function sendChatMessage(){
   const dealerId = state.chatActiveDealerId;
+  const groupId = state.chatActiveGroupId;
   const text = (state.chatText||'').trim();
   const pending = state.chatPendingImage;
-  if(!dealerId || (!text && !pending)) return;
+  if((!dealerId && !groupId) || (!text && !pending)) return;
 
   state.chatText = '';
   let imageUrl = null;
@@ -4315,12 +4647,15 @@ async function sendChatMessage(){
   clearPendingChatImage();
   state.chatSendingImage = false;
 
+  const row = groupId
+    ? { sender_id: state.profile.id, group_id: groupId, body: text||null, image_url: imageUrl }
+    : { sender_id: state.profile.id, recipient_id: dealerId, body: text||null, image_url: imageUrl };
+
   try{
-    const { data, error } = await sb.from('messages')
-      .insert({ sender_id: state.profile.id, recipient_id: dealerId, body: text||null, image_url: imageUrl })
-      .select().single();
+    const { data, error } = await sb.from('messages').insert(row).select().single();
     if(error) throw error;
     state.messages.push(data);
+    if(groupId) markGroupSeenNow(groupId);
     render();
     scrollChatToBottom();
   } catch(e){ showToast('Could not send: '+(e.message||e), true); render(); }
@@ -4398,8 +4733,10 @@ function scrollToNetworkUnreadIfNeeded(){
 }
 async function refreshMessagesData(){
   if(!state.profile) return;
+  // RLS scopes this to rows where I'm sender/recipient OR a member of the
+  // row's group_id — see the comment in refreshAll() for why no .or() filter
+  // is needed here anymore.
   const { data, error } = await sb.from('messages').select('*')
-    .or('sender_id.eq.'+state.profile.id+',recipient_id.eq.'+state.profile.id)
     .order('created_at',{ascending:true});
   if(!error) state.messages = data || [];
   render();
@@ -4569,11 +4906,32 @@ function renderAdmin(){
 
 function renderChats(){
   if(state.chatActiveDealerId) return renderChatThread(state.chatActiveDealerId);
+  if(state.chatActiveGroupId) return renderGroupChatThread(state.chatActiveGroupId);
   const contacts = chatContacts();
-  return '<h1 class="page-title">Chats</h1>' +
-    '<p class="page-sub">Message your saved contacts who are on PhoneHub. Tap a contact to start chatting.</p>' +
+  return '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">' +
+      '<div><h1 class="page-title">Chats</h1><p class="page-sub">Message your saved contacts who are on PhoneHub, or start a group. Tap one to start chatting.</p></div>' +
+      '<button class="btn btn-accent" data-open-modal="newGroupChat">'+ICONS.plus+' New group</button>' +
+    '</div>' +
     '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
       (contacts.length ? contacts.map(function(c){
+        if(c.kind==='group'){
+          const last = lastMessageInGroup(c.groupId);
+          const unread = unreadCountInGroup(c.groupId);
+          const mine = last && last.sender_id===state.profile.id;
+          let previewText;
+          if(!last) previewText = 'No messages yet — say hello';
+          else if(last.deleted_at) previewText = (mine?'You: ':'')+'Message deleted';
+          else if(last.body) previewText = (mine?'You: ':'')+last.body;
+          else if(last.image_url) previewText = (mine?'You: ':'')+'📷 Photo';
+          else previewText = 'No messages yet — say hello';
+          return '<div class="search-row" data-open-group-chat="'+c.groupId+'" style="padding:14px 16px;">' +
+            '<div style="min-width:0;flex:1;">' +
+              '<div class="sr-main">👥 '+escapeHtml(c.name)+' <span style="font-size:10.5px;color:var(--text-faint);font-weight:400;">('+c.memberCount+')</span></div>' +
+              '<div class="sr-sub" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escapeHtml(previewText)+'</div>' +
+            '</div>' +
+            (unread>0 ? '<span class="badge" style="background:var(--accent);color:#10141C;flex-shrink:0;">'+unread+'</span>' : (last ? '<span style="font-size:10.5px;color:var(--text-faint);flex-shrink:0;">'+new Date(last.created_at).toLocaleDateString()+'</span>' : '')) +
+          '</div>';
+        }
         const last = lastMessageWith(c.dealerId);
         const unread = unreadCountWith(c.dealerId);
         const mine = last && last.sender_id===state.profile.id;
@@ -4586,12 +4944,12 @@ function renderChats(){
         const preview = previewText;
         return '<div class="search-row" data-open-chat="'+c.dealerId+'" style="padding:14px 16px;">' +
           '<div style="min-width:0;flex:1;">' +
-            '<div class="sr-main">'+escapeHtml(c.name)+'</div>' +
+            '<div class="sr-main">'+escapeHtml(c.name)+(isDealerOnline(c.dealerId)?' <span title="Online" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--success);vertical-align:1px;"></span>':'')+'</div>' +
             '<div class="sr-sub" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escapeHtml(preview)+'</div>' +
           '</div>' +
           (unread>0 ? '<span class="badge" style="background:var(--accent);color:#10141C;flex-shrink:0;">'+unread+'</span>' : (last ? '<span style="font-size:10.5px;color:var(--text-faint);flex-shrink:0;">'+new Date(last.created_at).toLocaleDateString()+'</span>' : '')) +
         '</div>';
-      }).join('') : ('<div class="empty">'+ICONS.empty+'<div>No linked contacts yet.<br/>Add one under Network → My contacts and pick a suggested registered dealer to link them — then they\'ll show up here.</div></div>')) +
+      }).join('') : ('<div class="empty">'+ICONS.empty+'<div>No linked contacts yet.<br/>Add one under Network → My contacts and pick a suggested registered dealer to link them, or start a group — then they\'ll show up here.</div></div>')) +
     '</div></div>';
 }
 
@@ -4695,6 +5053,7 @@ function renderModal(){
   if(m.name==='viewStockItem') return renderStockItemModal(m);
   if(m.name==='viewNetworkItem') return renderNetworkItemModal(m);
   if(m.name==='clearInventory') return renderClearInventoryModal();
+  if(m.name==='offlineQueueDetails') return renderOfflineQueueModal();
   return '';
 }
 
@@ -5401,6 +5760,37 @@ function attachHandlers(){
 
   const forceCacheUpdateBtn = document.getElementById('forceCacheUpdateBtn');
   if(forceCacheUpdateBtn) forceCacheUpdateBtn.addEventListener('click', forceCacheUpdate);
+
+  const offlineQueueDetailsBtn = document.getElementById('offlineQueueDetailsBtn');
+  if(offlineQueueDetailsBtn) offlineQueueDetailsBtn.addEventListener('click', function(){ openModal('offlineQueueDetails'); });
+  const offlineQueueRetryBtn = document.getElementById('offlineQueueRetryBtn');
+  if(offlineQueueRetryBtn) offlineQueueRetryBtn.addEventListener('click', function(){ processOfflineQueue(); });
+  const offlineQueueRetryAllBtn = document.getElementById('offlineQueueRetryAllBtn');
+  if(offlineQueueRetryAllBtn) offlineQueueRetryAllBtn.addEventListener('click', function(){ processOfflineQueue(); });
+  app.querySelectorAll('[data-retry-queue-item]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-retry-queue-item');
+    const item = state.offlineQueue.find(function(x){ return x.id===id; });
+    if(!item) return;
+    try{
+      await replayOfflineItem(item);
+      state.offlineQueue = state.offlineQueue.filter(function(x){ return x.id!==id; });
+      saveOfflineQueue(state.offlineQueue);
+      await refreshAll();
+      showToast('Synced successfully');
+    } catch(e){
+      item.attempts = (item.attempts||0)+1; item.lastError = (e && (e.message||String(e))) || 'Unknown error';
+      saveOfflineQueue(state.offlineQueue);
+      showToast('Still failing: '+(item.lastError), true);
+    }
+    render();
+  }); });
+  app.querySelectorAll('[data-discard-queue-item]').forEach(function(el){ el.addEventListener('click', function(){
+    const id = el.getAttribute('data-discard-queue-item');
+    state.offlineQueue = state.offlineQueue.filter(function(x){ return x.id!==id; });
+    saveOfflineQueue(state.offlineQueue);
+    showToast('Discarded — this item will not be synced');
+    render();
+  }); });
   const hamburgerBtn = document.getElementById('hamburgerBtn');
   if(hamburgerBtn) hamburgerBtn.addEventListener('click', function(){ state.mobileMenuOpen = true; render(); });
   const railCloseBtn = document.getElementById('railCloseBtn');
@@ -5721,9 +6111,11 @@ function attachHandlers(){
   }); });
 
   app.querySelectorAll('[data-open-chat]').forEach(function(el){ el.addEventListener('click', function(){ openChat(el.getAttribute('data-open-chat')); }); });
+  app.querySelectorAll('[data-open-group-chat]').forEach(function(el){ el.addEventListener('click', function(){ openGroupChat(el.getAttribute('data-open-group-chat')); }); });
   const chatBackBtn = document.getElementById('chatBackBtn');
   if(chatBackBtn) chatBackBtn.addEventListener('click', function(){
-    state.chatActiveDealerId = null; state.chatEditingId = null; state.chatConfirmDeleteId = null;
+    leaveTypingChannel(conversationKey());
+    state.chatActiveDealerId = null; state.chatActiveGroupId = null; state.chatEditingId = null; state.chatConfirmDeleteId = null;
     clearPendingChatImage();
     render();
   });
@@ -5733,6 +6125,7 @@ function attachHandlers(){
       state.chatText = e.target.value;
       e.target.style.height = 'auto';
       e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+      broadcastTyping();
     });
     chatInput.addEventListener('keydown', function(e){
       if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendChatMessage(); }
@@ -6041,20 +6434,33 @@ function attachHandlers(){
     if(!inventoryId){ showToast('Select an item to sell', true); return; }
     const price = Number(val('s-price'));
     if(!price){ showToast('Enter a sale price', true); return; }
+    const params = {
+      p_inventory_id: inventoryId, p_sale_price: price, p_customer_name: val('s-name'), p_customer_phone: val('s-phone'),
+      p_payment_method: val('s-payment'), p_staff: val('s-staff'), p_warranty_days: Number(val('s-warranty'))||0,
+      p_accessories: val('s-accessories'), p_notes: '',
+      p_imei: val('s-imei')||null, p_quantity: Number(val('s-quantity'))||1
+    };
     try{
-      const { data, error } = await sb.rpc('sell_phone', {
-        p_inventory_id: inventoryId, p_sale_price: price, p_customer_name: val('s-name'), p_customer_phone: val('s-phone'),
-        p_payment_method: val('s-payment'), p_staff: val('s-staff'), p_warranty_days: Number(val('s-warranty'))||0,
-        p_accessories: val('s-accessories'), p_notes: '',
-        p_imei: val('s-imei')||null, p_quantity: Number(val('s-quantity'))||1
-      });
+      const { data, error } = await sb.rpc('sell_phone', params);
       if(error) throw error;
       await refreshAll();
       state.saleModalQuery = ''; state.saleModalSelectedId = null; state.saleModalOpen = false;
       closeModal(); showToast('Sale logged — invoice downloading');
       const savedSale = Array.isArray(data) ? data[0] : data;
       if(savedSale) generateInvoicePDF(savedSale);
-    } catch(e){ showToast('Sale failed: '+e.message, true); render(); }
+    } catch(e){
+      if(isLikelyNetworkError(e)){
+        const item = state.inventory.find(function(p){ return p.id===inventoryId; });
+        applyOptimisticSaleQuantity(inventoryId, params.p_quantity);
+        enqueueOfflineWrite('sell_phone', params, { model: item ? item.model : null });
+        state.saleModalQuery = ''; state.saleModalSelectedId = null; state.saleModalOpen = false;
+        closeModal();
+        showToast('No connection — sale saved on this device and will sync automatically once you\'re back online');
+        render();
+      } else {
+        showToast('Sale failed: '+(e.message||e), true); render();
+      }
+    }
   }); });
 
   app.querySelectorAll('[data-save-supplier]').forEach(function(el){ el.addEventListener('click', async function(){
@@ -6301,7 +6707,15 @@ function attachHandlers(){
       state.bulkImportRows = []; state.bulkImportText=''; state.bulkImportSupplierId='';
       closeModal();
       showToast(toInsert.length+' phones imported'+(dupCount ? ' ('+dupCount+' duplicate'+(dupCount===1?'':'s')+' skipped)' : ''));
-    } catch(e){ showToast('Import failed: '+e.message, true); render(); }
+    } catch(e){
+      if(isLikelyNetworkError(e)){
+        enqueueOfflineWrite('bulk_insert_inventory', { rows: toInsert }, { itemType: 'phone' });
+        state.bulkImportRows = []; state.bulkImportText=''; state.bulkImportSupplierId='';
+        closeModal();
+        showToast('No connection — '+toInsert.length+' phones saved on this device and will import automatically once you\'re back online');
+        render();
+      } else { showToast('Import failed: '+(e.message||e), true); render(); }
+    }
   });
 
   const bliParseBtn = document.getElementById('bli-parse-btn');
@@ -6358,7 +6772,15 @@ function attachHandlers(){
       state.bulkImportLaptopRows = []; state.bulkImportLaptopText=''; state.bulkImportLaptopSupplierId='';
       closeModal();
       showToast(toInsert.length+' laptops imported'+(dupCount ? ' ('+dupCount+' duplicate'+(dupCount===1?'':'s')+' skipped)' : ''));
-     } catch(e){ showToast('Import failed: '+(e.message||e), true); render(); }
+     } catch(e){
+      if(isLikelyNetworkError(e)){
+        enqueueOfflineWrite('bulk_insert_inventory', { rows: toInsert }, { itemType: 'laptop' });
+        state.bulkImportLaptopRows = []; state.bulkImportLaptopText=''; state.bulkImportLaptopSupplierId='';
+        closeModal();
+        showToast('No connection — '+toInsert.length+' laptops saved on this device and will import automatically once you\'re back online');
+        render();
+      } else { showToast('Import failed: '+(e.message||e), true); render(); }
+    }
   });
 
   const bgiParseBtn = document.getElementById('bgi-parse-btn');
@@ -6415,7 +6837,15 @@ function attachHandlers(){
       state.bulkImportGadgetRows = []; state.bulkImportGadgetText=''; state.bulkImportGadgetSupplierId='';
       closeModal();
       showToast(toInsert.length+' gadgets imported'+(dupCount ? ' ('+dupCount+' duplicate'+(dupCount===1?'':'s')+' skipped)' : ''));
-    } catch(e){ showToast('Import failed: '+(e.message||e), true); render(); }
+    } catch(e){
+      if(isLikelyNetworkError(e)){
+        enqueueOfflineWrite('bulk_insert_inventory', { rows: toInsert }, { itemType: 'gadget' });
+        state.bulkImportGadgetRows = []; state.bulkImportGadgetText=''; state.bulkImportGadgetSupplierId='';
+        closeModal();
+        showToast('No connection — '+toInsert.length+' gadgets saved on this device and will import automatically once you\'re back online');
+        render();
+      } else { showToast('Import failed: '+(e.message||e), true); render(); }
+    }
   });
 
   ['calc-cost','calc-target','calc-min','calc-offer'].forEach(function(id){
@@ -6429,9 +6859,10 @@ function attachHandlers(){
   window.addEventListener('hashchange', applyHashTab);
   scrollToNetworkUnreadIfNeeded();
 }
-}
+
 
 applyTheme();
+setInterval(function(){ if(state.stage==='app') processOfflineQueue(); }, 25000); // background safety-net, in case the 'online' event doesn't fire on flaky (rather than fully dropped) connections
 init();
 })();
 </script>
@@ -6735,10 +7166,84 @@ In a trust/reputation-driven market, a well-regarded shop visibly using and vouc
 ## Improvements for the chat interface
 
 - Typing indicators / online status
-- Image attachments in chat (would reuse the existing phone-images storage bucket + resizeImageFile)
 - Group chats
-- Deleting/editing sent messages
-- multi line text using shift enter
+
+Typing indicators / online status
+
+Approach: Use Supabase Realtime Presence rather than a DB table, so there's no extra write per keystroke and nothing to clean up.
+
+Each dealer joins a presence channel keyed to their own id on login (track({online_at: ...})); any contact who has them linked can subscribe to see "online" / "last seen."
+Typing uses a lightweight broadcast (not presence) on a per-conversation channel — debounce ~1.5s on keystroke, show "typing…" for ~3s after the last event, then auto-clear.
+Shown as a badge next to the contact name in the chat list and thread header; typing shows as a small line under the last bubble in #chatScroll.
+No schema changes required.
+Group chats
+
+Approach: Add conversation objects instead of overloading the existing 1:1 messages table.
+
+sql
+create table if not exists chat_groups (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  created_by uuid not null references dealers(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists chat_group_members (
+  group_id uuid not null references chat_groups(id) on delete cascade,
+  dealer_id uuid not null references dealers(id) on delete cascade,
+  joined_at timestamptz not null default now(),
+  primary key (group_id, dealer_id)
+);
+
+alter table messages add column if not exists group_id uuid references chat_groups(id) on delete cascade;
+alter table messages alter column recipient_id drop not null;
+alter table messages add constraint messages_target_check
+  check ((recipient_id is not null and group_id is null) or (recipient_id is null and group_id is not null));
+RLS: insert/select gated on exists (select 1 from chat_group_members where group_id = messages.group_id and dealer_id = auth.uid()).
+Realtime subscription keys off group_id instead of dealer pairs; chat_group_members also goes into the realtime publication so membership changes update live.
+notify_new_message_push() gets a group branch that fans out to every member except the sender, reusing the existing dealer_ids array push pattern.
+UI: chatContacts() merges 1:1 contacts and groups into one list; renderChatThread() accepts either a dealerId or groupId and swaps the header between a contact name and a group name + member count.
+
+
+Change barnd name to "dts GadgetHub"
+
+Good context — merging everything into one clean set, deduplicated. I've kept the strongest framing from each version where they overlapped.
+
+Flagship: Verified Sub-Dealer / Agent Network
+
+This is the centerpiece — it's the one thing WhatsApp structurally cannot replicate, and it flips the pitch from "pay for what you already have" to "make money you couldn't make before."
+
+How it works:
+
+A KYC'd, verified store owner ("Principal") approves one or more Sub-Dealers/Agents — people with no stock of their own who want to sell.
+The agent gets their own storefront in the Customer App — own name, photo, location — but it draws live from the Principal's real inventory, tagged "available via [Agent Name]."
+The agent shares their personal storefront link (WhatsApp status, Instagram, TikTok) — this is the viral loop that pulls in people who don't currently touch your app at all.
+On a closed sale, the app auto-splits the money: Principal gets cost + agreed margin, Agent gets an agreed commission (flat ₦ or %) — tracked for both sides, no manual accounting.
+Hard structural rule, enforced at signup: a sub-dealer links to exactly one Principal, and cannot themselves have sub-dealers. Two-tier tree only, never deeper. State this explicitly in the KYC flow as "retail agency, not MLM" — this protects you legally and protects trust in the platform.
+KYC on the sub-dealer (phone, ID, selfie, Principal's in-app consent confirmation) protects the Principal from impersonation and gives you a paper trail if an agent runs off with a customer's payment.
+
+Why it actually generates money, not just data:
+
+Agent earns commission with zero capital — the "come for free income, stay for the app" hook for the huge population of non-dealers in Computer Village who currently just refer customers informally for nothing.
+Principal gets sales volume they'd never get from their own shop floor or contact list, for free labor.
+The platform can charge here specifically because this money didn't exist before you built it — you're not asking anyone to start paying for inventory tracking they already get free.
+Near-term (low build effort, direct cash line)
+Transaction fee on sub-dealer sales — small % taken only when a sale actually closes through an agent's storefront. No sale, no fee. This is the natural monetization on top of the agent network above, not a separate idea.
+Sub-dealer KYC/verification fee — small one-time fee to get an agent verified and linked, framed as a "digital agent badge" rather than a tax. Pairs with a real ID-verification API (Smile ID, Youverify, etc.).
+Referral/affiliate links for ordinary customers — lighter than full agent onboarding: "share this phone's link, earn ₦2,000 if it sells." Much lower friction, and it's the funnel that surfaces your best future agents.
+Boosted/featured listings — dealers pay to rank a hot model first in Network Search or the Customer App browse view. Doesn't require any behavior change, just a small spend to sell faster.
+"Verified Dealer" trust badge — KYC'd dealers get a visible checkmark and rank higher in search. In a trust-driven market like Computer Village, status is genuinely something dealers will pay for once buyers start preferring badged shops.
+Sponsored broadcasts — importers or accessory brands pay to broadcast to the entire network, not just their own contacts — a paid version of the existing free broadcast feature, aimed upstream at wholesalers rather than individual dealers.
+Medium-term (needs a bit more trust/volume first)
+Extended warranty / device insurance upsell at checkout — partner with an insurer; offered as an optional add-on when logging a sale. Pure upside for the dealer, no cost or effort on their side, platform + dealer share the commission.
+Buy-now-pay-later for customers — partner with a BNPL provider; dealer gets paid in full immediately, customer pays in installments, platform/dealer split the financing fee. Also raises average sale size.
+Inventory/stock financing — once you've got 3–6 months of a dealer's real sales data (which only your app has — WhatsApp never will), partner with a fintech to offer short-term stock loans against that track record, Shopify-Capital-style. Capital, not sales volume, is often the actual bottleneck for these dealers, so this can be a bigger unlock than it sounds.
+Escrow / in-app payment take-rate — if you build payment collection into the flow (this also solves the trust gap in agent-to-customer-to-principal money movement, which is exactly where things break down without a formal system), take a small cut per transaction processed.
+Aggregated market data — anonymized pricing/demand trends sold to importers or manufacturers. Monetizes data you're already collecting without charging the dealers who generated it.
+Longer-term (needs real scale first)
+Group buying / bulk import pooling — aggregate demand across many dealers for the same model ("200 dealers want iPhone 15 128GB this week") to negotiate better import pricing than any single dealer could alone, and split the savings. Needs real platform volume to have negotiating leverage.
+Verified trade-in / buy-back desk — ties directly into the IMEI/anti-theft registry already planned. Platform runs or partners on a buy-back program; dealers earn a finder's fee for every trade-in they source, and it deepens the anti-theft network's value at the same time.
+Anti-theft network — freemium tier — basic IMEI registration/lookup stays free (drives adoption of the safety feature itself), but bulk/API-style verification for repair shops, importers, or high-volume dealers is a paid tier.
 
 ======================================================================================================================================================
 
@@ -9106,7 +9611,16 @@ let state = {
   chatEditingId:null, chatEditText:'', chatConfirmDeleteId:null,
   chatPendingImage:null, // {file, previewUrl} — selected but not-yet-sent photo attachment
   chatSendingImage:false,
+  offlineQueue:[], // loaded from localStorage at login — writes waiting for a connection, see "offline write queue" section
+  offlineSyncing:false,
+  onlineDealerIds:{}, // presence: dealer_id -> true, for contacts currently online (see initPresence)
+  typingFrom:{}, // key ('dealer:'+id or 'group:'+id) -> true while the other side is typing
+  chatGroups:[], chatGroupMembers:[], // chat_groups / chat_group_members rows this dealer belongs to
+  newGroupName:'', newGroupSelectedIds:[], // draft state for the "New group" modal
 };
+let presenceChannel = null;
+let typingChannels = {}; // conversation key -> subscribed realtime channel, so we don't resubscribe every render
+let typingClearTimers = {}; // conversation key -> setTimeout handle for auto-clearing a stale "typing…" flag
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function shuffleArray(arr){
@@ -9142,6 +9656,153 @@ function escapeAttr(s){ return (s||'').toString().replace(/"/g,'&quot;'); }
 function escapeHtml(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function val(id){ const el = document.getElementById(id); return el ? el.value : ''; }
 function slugify(s){ return (s||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,''); }
+
+/* ---------- offline write queue ---------- */
+// Computer Village connections drop mid-transaction often — this queue makes
+// sure that never means a lost sale or a lost bulk import. When a write that
+// matters (logging a sale, importing stock) fails because of the network
+// rather than because the data itself is invalid, it's saved to this
+// localStorage-backed queue instead of just showing an error, and retried
+// automatically the moment a connection is available again (on the browser's
+// 'online' event, on a background timer, and once right after login).
+const OFFLINE_QUEUE_KEY = 'phonehub-offline-queue';
+function loadOfflineQueue(){
+  try{ const raw = localStorage.getItem(OFFLINE_QUEUE_KEY); return raw ? JSON.parse(raw) : []; }
+  catch(e){ return []; }
+}
+function saveOfflineQueue(q){
+  try{ localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(q||[])); } catch(e){ /* ignore */ }
+}
+// Distinguishes "the connection dropped" (queue it, retry later) from "the
+// server rejected this" (show the real error — retrying won't fix a
+// validation failure or an RLS violation, and silently queuing it would just
+// hide a mistake from the dealer instead of letting them fix it).
+function isLikelyNetworkError(e){
+  if(typeof navigator!=='undefined' && navigator.onLine===false) return true;
+  const msg = (e && (e.message || String(e))) || '';
+  return /failed to fetch|networkerror|network request failed|load failed|err_internet|err_connection|timeout|the internet connection appears to be offline/i.test(msg);
+}
+function enqueueOfflineWrite(type, payload, meta){
+  const item = { id: uid(), type: type, createdAt: new Date().toISOString(), payload: payload, meta: meta||{}, attempts: 0, lastError: null };
+  state.offlineQueue.push(item);
+  saveOfflineQueue(state.offlineQueue);
+  return item;
+}
+// Replays a single queued write against Supabase. Throws on failure (network
+// or otherwise) so the caller can decide whether to keep it queued.
+async function replayOfflineItem(item){
+  if(item.type === 'sell_phone'){
+    const { error } = await sb.rpc('sell_phone', item.payload);
+    if(error) throw error;
+  } else if(item.type === 'bulk_insert_inventory'){
+    const { error } = await sb.from('inventory').insert(item.payload.rows);
+    if(error) throw error;
+  } else {
+    throw new Error('Unknown queued item type: '+item.type);
+  }
+}
+// Walks the queue oldest-first (so a phone sold twice offline settles in the
+// order it actually happened) and replays each item. Network failures stay
+// queued for the next attempt; anything else (a real server-side rejection)
+// also stays queued but is flagged with lastError so the dealer can see it
+// in "Pending sync" and choose to retry or discard it themselves, rather
+// than it silently retrying forever.
+async function processOfflineQueue(){
+  if(state.offlineSyncing || !state.offlineQueue.length) return;
+  if(typeof navigator!=='undefined' && navigator.onLine===false) return;
+  state.offlineSyncing = true; render();
+  let syncedCount = 0;
+  const remaining = [];
+  for(const item of state.offlineQueue){
+    try{
+      await replayOfflineItem(item);
+      syncedCount++;
+    } catch(e){
+      item.attempts = (item.attempts||0) + 1;
+      item.lastError = (e && (e.message || String(e))) || 'Unknown error';
+      remaining.push(item);
+    }
+  }
+  state.offlineQueue = remaining;
+  saveOfflineQueue(state.offlineQueue);
+  state.offlineSyncing = false;
+  if(syncedCount > 0){
+    await refreshAll();
+    showToast(syncedCount+' pending item'+(syncedCount===1?'':'s')+' synced successfully');
+  }
+  render();
+}
+// Optimistic local-only stock decrement so a dealer who sells the same
+// offline phone twice in a row (before either sale has synced) doesn't
+// accidentally oversell it from this device. This is UI-only — the real,
+// authoritative decrement happens server-side inside sell_phone() once the
+// queued write actually syncs, so this can be safely overwritten by the
+// next refreshAll() without any risk of double-counting on the server.
+function applyOptimisticSaleQuantity(inventoryId, quantitySold){
+  const item = state.inventory.find(function(p){ return p.id===inventoryId; });
+  if(!item) return;
+  const remaining = (Number(item.quantity)||1) - (Number(quantitySold)||1);
+  item.quantity = Math.max(remaining, 0);
+  if(remaining <= 0) item.status = 'Sold';
+}
+// Reconstructs "pending sale" rows purely for display from whatever
+// sell_phone writes are still sitting in the offline queue — nothing here
+// is written to state.sales, so there's no risk of it duplicating the real
+// row once refreshAll() pulls it in after a successful sync.
+function pendingSalesFromQueue(){
+  return state.offlineQueue.filter(function(q){ return q.type==='sell_phone'; }).map(function(q){
+    const item = state.inventory.find(function(p){ return p.id===q.payload.p_inventory_id; });
+    return {
+      date: q.createdAt.slice(0,10),
+      model: (item && item.model) || q.meta.model || 'Item',
+      customer_name: q.payload.p_customer_name, customer_phone: q.payload.p_customer_phone,
+      sale_price: q.payload.p_sale_price, cost: (item && item.cost) || 0,
+      payment_method: q.payload.p_payment_method, staff: q.payload.p_staff,
+      _pendingSync: true, _queueId: q.id, _lastError: q.lastError
+    };
+  });
+}
+function renderOfflineQueueBanner(){
+  const q = state.offlineQueue;
+  if(!q.length) return '';
+  const bottomOffset = shouldShowInstallBanner() ? '64px' : '0';
+  const failing = q.filter(function(i){ return i.attempts>0; }).length;
+  return '<div id="offlineQueueBanner" style="position:fixed;left:0;right:0;bottom:'+bottomOffset+';z-index:140;background:var(--panel-2);border-top:1px solid var(--danger);padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;box-shadow:0 -6px 20px rgba(0,0,0,.35);">' +
+    '<div style="flex:1;min-width:200px;font-size:12.5px;color:var(--text);">' +
+      '<strong>'+q.length+' item'+(q.length===1?'':'s')+' waiting to sync</strong>' +
+      (typeof navigator!=='undefined' && navigator.onLine===false ? ' <span style="color:var(--text-faint);">— you\'re offline</span>' : '') +
+      (failing ? (' <span style="color:var(--danger);">· '+failing+' retried and failed — see details</span>') : '') +
+    '</div>' +
+    '<button class="btn btn-sm" id="offlineQueueDetailsBtn">Details</button>' +
+    '<button class="btn btn-accent btn-sm" id="offlineQueueRetryBtn" '+(state.offlineSyncing?'disabled':'')+'>'+(state.offlineSyncing?'Syncing…':'Retry now')+'</button>' +
+  '</div>';
+}
+function renderOfflineQueueModal(){
+  const rows = state.offlineQueue.slice().sort(function(a,b){ return new Date(a.createdAt)-new Date(b.createdAt); });
+  return '<div class="overlay" data-close-overlay="1"><div class="modal" data-stop="1" style="max-width:560px;">' +
+    '<div class="modal-head"><h3>Pending sync</h3><button class="close-x" data-close-modal="1">×</button></div>' +
+    '<div class="modal-body">' +
+      '<p style="color:var(--text-dim);font-size:12.5px;margin-top:0;">These were saved on this device because the connection dropped. They\'ll sync automatically — you only need to act here if one keeps failing.</p>' +
+      (rows.length ? rows.map(function(item){
+        const label = item.type==='sell_phone'
+          ? ('Sale: '+((item.meta&&item.meta.model)||'item')+' — '+naira(item.payload.p_sale_price))
+          : ('Bulk import: '+((item.payload.rows&&item.payload.rows.length)||0)+' '+((item.meta&&item.meta.itemType)||'item')+'(s)');
+        return '<div class="section" style="margin-bottom:10px;"><div class="section-body" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">' +
+          '<div><div class="strong" style="font-size:13px;">'+escapeHtml(label)+'</div>' +
+          '<div style="font-size:11px;color:var(--text-faint);">Queued '+new Date(item.createdAt).toLocaleString()+(item.attempts?(' · '+item.attempts+' attempt'+(item.attempts===1?'':'s')+' failed'):'')+'</div>' +
+          (item.lastError ? ('<div style="font-size:11px;color:var(--danger);margin-top:2px;">'+escapeHtml(item.lastError)+'</div>') : '') +
+          '</div>' +
+          '<div style="display:flex;gap:6px;flex-shrink:0;">' +
+            '<button class="btn btn-sm" data-retry-queue-item="'+item.id+'">Retry</button>' +
+            '<button class="btn btn-sm btn-danger" data-discard-queue-item="'+item.id+'">Discard</button>' +
+          '</div>' +
+        '</div></div>';
+      }).join('') : '<div class="empty">Nothing pending.</div>') +
+    '</div>' +
+    '<div class="modal-foot"><button class="btn" data-close-modal="1">Close</button>' +
+      (rows.length ? ('<button class="btn btn-accent" id="offlineQueueRetryAllBtn" '+(state.offlineSyncing?'disabled':'')+'>Retry all</button>') : '') +
+    '</div></div></div>';
+}
 
 /* ---------- phone photos ---------- */
 function thumbHTML(url){
@@ -9334,6 +9995,14 @@ window.addEventListener('visibilitychange', function(){
   if(document.visibilityState === 'hidden') commitNetworkLastSeenIfViewingBroadcasts();
 });
 
+// Offline write queue: retry the moment the browser reports a connection,
+// and warn the dealer up front the moment it's lost so a dropped sale isn't
+// a silent surprise later.
+window.addEventListener('online', function(){ processOfflineQueue(); });
+window.addEventListener('offline', function(){
+  showToast('You\'re offline — sales and stock imports will be saved on this device and sync automatically once you\'re back online.');
+});
+
 function checkInstallBannerVisibility(){
   if(state.stage === 'app' || state.stage === 'auth'){
     render();
@@ -9427,7 +10096,72 @@ async function initRealtime(){
       refreshMessagesData();
     }).subscribe();
   } catch(e){ console.warn('Realtime init failed:', e); }
+  initPresence();
 }
+
+/* ---------- presence (online status) ---------- */
+// Every logged-in dealer joins this single shared channel and "tracks"
+// themselves as present. Everyone else's client sees the full presence
+// state (a map of dealer_id -> [{...}]) and we just check "is this dealer's
+// id a key in that map" to show an online dot next to their name. No table,
+// no writes, no cleanup — presence auto-clears when a client disconnects.
+function initPresence(){
+  if(!sb || !state.profile) return;
+  try{
+    presenceChannel = sb.channel('presence:dealers', { config:{ presence:{ key: state.profile.id } } });
+    presenceChannel.on('presence', { event:'sync' }, function(){
+      const s = presenceChannel.presenceState();
+      state.onlineDealerIds = {};
+      Object.keys(s||{}).forEach(function(id){ state.onlineDealerIds[id] = true; });
+      render();
+    }).subscribe(async function(status){
+      if(status === 'SUBSCRIBED'){
+        await presenceChannel.track({ online_at: new Date().toISOString() });
+      }
+    });
+  } catch(e){ console.warn('Presence init failed:', e); }
+}
+function isDealerOnline(dealerId){ return !!state.onlineDealerIds[dealerId]; }
+
+/* ---------- typing indicator ---------- */
+// Lightweight realtime "broadcast" (not a DB write) per open conversation.
+// A conversation key is either 'dealer:<other_dealer_id>' (1:1) or
+// 'group:<group_id>'. Subscribing/broadcasting only happens for the
+// conversation currently open, and the channel is torn down when leaving it.
+function conversationKey(){
+  if(state.chatActiveGroupId) return 'group:'+state.chatActiveGroupId;
+  if(state.chatActiveDealerId) return 'dealer:'+state.chatActiveDealerId;
+  return null;
+}
+function joinTypingChannel(key){
+  if(!sb || !key || typingChannels[key]) return;
+  const ch = sb.channel('typing:'+key);
+  ch.on('broadcast', { event:'typing' }, function(payload){
+    const fromId = payload.payload && payload.payload.dealer_id;
+    if(!fromId || fromId === state.profile.id) return;
+    state.typingFrom[key] = true;
+    render();
+    if(typingClearTimers[key]) clearTimeout(typingClearTimers[key]);
+    typingClearTimers[key] = setTimeout(function(){ state.typingFrom[key] = false; render(); }, 3000);
+  }).subscribe();
+  typingChannels[key] = ch;
+}
+function leaveTypingChannel(key){
+  if(!key || !typingChannels[key]) return;
+  try{ sb.removeChannel(typingChannels[key]); } catch(e){ /* ignore */ }
+  delete typingChannels[key];
+  state.typingFrom[key] = false;
+  if(typingClearTimers[key]){ clearTimeout(typingClearTimers[key]); delete typingClearTimers[key]; }
+}
+let typingBroadcastDebounce = null;
+function broadcastTyping(){
+  const key = conversationKey();
+  if(!key || !typingChannels[key]) return;
+  if(typingBroadcastDebounce) return; // already sent one recently, wait for it to cool down
+  typingChannels[key].send({ type:'broadcast', event:'typing', payload:{ dealer_id: state.profile.id } });
+  typingBroadcastDebounce = setTimeout(function(){ typingBroadcastDebounce = null; }, 1500);
+}
+
 async function refreshBroadcastsData(){
   if(!state.profile) return;
   const [bc, br] = await Promise.all([
@@ -10055,11 +10789,13 @@ async function loadAfterAuth(){
     if(pErr) throw pErr;
     state.profile = profile; state.isAdmin = !!profile.is_admin;
     state.networkLastSeenAt = loadNetworkLastSeen(profile.id);
+    state.offlineQueue = loadOfflineQueue();
     await refreshAll();
     state.stage = 'app';
     initPush();
     initRealtime();
     applyHashTab();
+    processOfflineQueue(); // in case anything was left over from a previous dropped-connection session
   } catch(e){
     state.stage = 'auth'; state.authError = 'Could not load your shop profile: ' + (e.message||e);
   }
@@ -10077,13 +10813,17 @@ async function refreshAll(){
     sb.from('dealer_reputation_view').select('*'),
     sb.from('consignments').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
     sb.from('consignment_payments').select('*').eq('dealer_id', state.profile.id).order('created_at',{ascending:false}),
-    sb.from('messages').select('*').or('sender_id.eq.'+state.profile.id+',recipient_id.eq.'+state.profile.id).order('created_at',{ascending:true}),
+    // No .or() filter here anymore — RLS on `messages` already scopes rows to
+    // (sender_id/recipient_id = me) OR (I'm a member of the row's group_id),
+    // so a plain select('*') picks up both 1:1 AND group messages correctly.
+    sb.from('messages').select('*').order('created_at',{ascending:true}),
   ]);
   state.inventory = inv.data || []; state.sales = sales.data || []; state.requests = reqs.data || [];
   state.suppliers = sups.data || []; state.dealerNetwork = dn.data || []; state.broadcasts = bc.data || [];
   state.consignments = cons.data || [];
   state.consignmentPayments = cnp.data || [];
   state.messages = msgs.data || [];
+  await refreshGroupsData();
   syncNetworkOrder();
   const repMap = {};
   (rep.data || []).forEach(function(r){ repMap[r.dealer_id] = r; });
@@ -10102,6 +10842,26 @@ async function refreshAll(){
     ]);
     state.adminDealers = ad.data || []; state.adminInventory = ai.data || []; state.adminSales = as_.data || [];
   }
+}
+
+// Loads every group this dealer belongs to, plus the full member roster for
+// each of those groups (needed for member counts / names in the group list
+// and thread header). Two queries: "which group_ids am I in" -> "who's in
+// those groups" — RLS on chat_group_members only lets you see rows for
+// groups you're actually a member of, so this can't leak other groups.
+async function refreshGroupsData(){
+  if(!state.profile) return;
+  try{
+    const mine = await sb.from('chat_group_members').select('group_id').eq('dealer_id', state.profile.id);
+    const groupIds = (mine.data||[]).map(function(r){ return r.group_id; });
+    if(!groupIds.length){ state.chatGroups = []; state.chatGroupMembers = []; return; }
+    const [groups, members] = await Promise.all([
+      sb.from('chat_groups').select('*').in('id', groupIds),
+      sb.from('chat_group_members').select('*').in('group_id', groupIds)
+    ]);
+    state.chatGroups = groups.data || [];
+    state.chatGroupMembers = members.data || [];
+  } catch(e){ console.warn('Could not load chat groups:', e); }
 }
 
 async function refreshOne(table, target, extraFilter){
@@ -10280,6 +11040,7 @@ function render(){
     '</div>' +
     (state.modal ? renderModal() : '') +
     renderInstallBanner() +
+    renderOfflineQueueBanner() +
     (state.toast ? ('<div class="toast '+(state.toastErr?'err':'')+'">'+escapeHtml(state.toast)+'</div>') : '');
   attachHandlers();
 }
@@ -10707,9 +11468,25 @@ function renderSales(){
 }
 
 function renderSalesLog(){
+  const pending = pendingSalesFromQueue();
   const rows = state.sales.slice().sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
+  const pendingHtml = pending.map(function(s){
+    return '<tr style="background:var(--panel-2);">' +
+      '<td class="mono">'+escapeHtml(s.date)+'</td>' +
+      '<td class="strong">'+escapeHtml(s.model)+'<div style="margin-top:3px;"><span class="badge badge-reserved" title="Saved on this device — will sync once you\'re back online">⏳ Pending sync</span></div>' +
+        (s._lastError ? ('<div style="font-size:10.5px;color:var(--danger);margin-top:3px;">'+escapeHtml(s._lastError)+'</div>') : '') + '</td>' +
+      '<td>'+escapeHtml(s.customer_name||'—')+'<br><span class="mono" style="color:var(--text-faint);font-size:11px">'+escapeHtml(s.customer_phone||'')+'</span></td>' +
+      '<td class="mono">'+naira(s.sale_price)+'</td>' +
+      '<td class="mono" style="color:var(--success)">'+naira((Number(s.sale_price)||0)-(Number(s.cost)||0))+'</td>' +
+      '<td>'+escapeHtml(s.payment_method||'—')+'</td>' +
+      '<td>'+escapeHtml(s.staff||'—')+'</td>' +
+      '<td>—</td>' +
+      '<td style="display:flex;gap:6px;white-space:nowrap;"><button class="btn btn-sm" data-retry-queue-item="'+s._queueId+'">Retry</button><button class="btn btn-sm btn-danger" data-discard-queue-item="'+s._queueId+'">Discard</button></td>' +
+    '</tr>';
+  }).join('');
   return '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
-      (rows.length ? ('<table><thead><tr><th>Date</th><th>Phone</th><th>Customer</th><th>Sale price</th><th>Profit</th><th>Payment</th><th>Staff</th><th>Warranty</th><th></th></tr></thead><tbody>' +
+      ((rows.length||pending.length) ? ('<table><thead><tr><th>Date</th><th>Phone</th><th>Customer</th><th>Sale price</th><th>Profit</th><th>Payment</th><th>Staff</th><th>Warranty</th><th></th></tr></thead><tbody>' +
+        pendingHtml +
         rows.map(function(s){
           const expiry = new Date(s.date); expiry.setDate(expiry.getDate()+Number(s.warranty_days||0));
           const daysLeft = daysBetween(todayISO(), expiry.toISOString().slice(0,10));
@@ -10990,16 +11767,60 @@ function dealerPhone(id){
 // Contacts you can chat with: saved contacts you've linked to a real
 // PhoneHub account (via the "pick from registered dealers" suggestion
 // when adding/editing a contact under Network > My contacts).
+/* ---------- group chats ---------- */
+// Per-group "last seen" timestamps, persisted per device (same pattern as
+// NETWORK_SEEN_KEY elsewhere in this file) — group messages don't have a
+// per-recipient read_at, since a group has many recipients, so unread state
+// for groups is derived client-side from "newer than when I last opened it."
+const GROUP_SEEN_KEY = 'phonehub-group-last-seen';
+function loadGroupLastSeen(){
+  try{ const raw = localStorage.getItem(GROUP_SEEN_KEY); return raw ? JSON.parse(raw) : {}; } catch(e){ return {}; }
+}
+function saveGroupLastSeen(map){
+  try{ localStorage.setItem(GROUP_SEEN_KEY, JSON.stringify(map||{})); } catch(e){ /* ignore */ }
+}
+function markGroupSeenNow(groupId){
+  const map = loadGroupLastSeen();
+  map[groupId] = new Date().toISOString();
+  saveGroupLastSeen(map);
+}
+function groupMembersOf(groupId){
+  return state.chatGroupMembers.filter(function(m){ return m.group_id===groupId; });
+}
+function groupById(groupId){ return state.chatGroups.find(function(g){ return g.id===groupId; }); }
+function messagesInGroup(groupId){
+  return state.messages.filter(function(m){ return m.group_id===groupId; });
+}
+function lastMessageInGroup(groupId){
+  const list = messagesInGroup(groupId);
+  return list.length ? list[list.length-1] : null;
+}
+function unreadCountInGroup(groupId){
+  const seenMap = loadGroupLastSeen();
+  const seenAt = seenMap[groupId] ? new Date(seenMap[groupId]) : null;
+  return messagesInGroup(groupId).filter(function(m){
+    return m.sender_id !== state.profile.id && (!seenAt || new Date(m.created_at) > seenAt);
+  }).length;
+}
+function computeUnreadGroupCount(){
+  return state.chatGroups.reduce(function(a,g){ return a + unreadCountInGroup(g.id); }, 0);
+}
+
 function chatContacts(){
   const seen = {}; const list = [];
   state.suppliers.forEach(function(s){
     if(s.linked_dealer_id && !seen[s.linked_dealer_id]){
       seen[s.linked_dealer_id] = true;
-      list.push({ dealerId: s.linked_dealer_id, name: s.name, phone: s.phone });
+      list.push({ kind:'dealer', dealerId: s.linked_dealer_id, name: s.name, phone: s.phone });
     }
   });
+  state.chatGroups.forEach(function(g){
+    const memberCount = groupMembersOf(g.id).length;
+    list.push({ kind:'group', groupId: g.id, name: g.name, memberCount: memberCount });
+  });
   return list.sort(function(a,b){
-    const la = lastMessageWith(a.dealerId), lb = lastMessageWith(b.dealerId);
+    const la = a.kind==='group' ? lastMessageInGroup(a.groupId) : lastMessageWith(a.dealerId);
+    const lb = b.kind==='group' ? lastMessageInGroup(b.groupId) : lastMessageWith(b.dealerId);
     const ta = la ? new Date(la.created_at).getTime() : 0;
     const tb = lb ? new Date(lb.created_at).getTime() : 0;
     return tb - ta;
@@ -11007,8 +11828,9 @@ function chatContacts(){
 }
 function messagesWith(dealerId){
   return state.messages.filter(function(m){
-    return (m.sender_id===dealerId && m.recipient_id===state.profile.id) ||
-           (m.recipient_id===dealerId && m.sender_id===state.profile.id);
+    return !m.group_id && (
+      (m.sender_id===dealerId && m.recipient_id===state.profile.id) ||
+      (m.recipient_id===dealerId && m.sender_id===state.profile.id));
   });
 }
 function lastMessageWith(dealerId){
@@ -11016,21 +11838,35 @@ function lastMessageWith(dealerId){
   return list.length ? list[list.length-1] : null;
 }
 function unreadCountWith(dealerId){
-  return state.messages.filter(function(m){ return m.sender_id===dealerId && m.recipient_id===state.profile.id && !m.read_at; }).length;
+  return state.messages.filter(function(m){ return !m.group_id && m.sender_id===dealerId && m.recipient_id===state.profile.id && !m.read_at; }).length;
 }
 function computeUnreadMessageCount(){
-  return state.messages.filter(function(m){ return m.recipient_id===state.profile.id && !m.read_at; }).length;
+  return state.messages.filter(function(m){ return !m.group_id && m.recipient_id===state.profile.id && !m.read_at; }).length + computeUnreadGroupCount();
 }
 async function openChat(dealerId){
+  leaveTypingChannel(conversationKey());
+  state.chatActiveGroupId = null;
   state.chatActiveDealerId = dealerId; state.chatText = '';
   state.chatEditingId = null; state.chatEditText = ''; state.chatConfirmDeleteId = null;
   clearPendingChatImage();
   render();
   scrollChatToBottom();
+  joinTypingChannel(conversationKey());
   await markMessagesRead(dealerId);
 }
+async function openGroupChat(groupId){
+  leaveTypingChannel(conversationKey());
+  state.chatActiveDealerId = null;
+  state.chatActiveGroupId = groupId; state.chatText = '';
+  state.chatEditingId = null; state.chatEditText = ''; state.chatConfirmDeleteId = null;
+  clearPendingChatImage();
+  markGroupSeenNow(groupId);
+  render();
+  scrollChatToBottom();
+  joinTypingChannel(conversationKey());
+}
 async function markMessagesRead(dealerId){
-  const unreadIds = state.messages.filter(function(m){ return m.sender_id===dealerId && m.recipient_id===state.profile.id && !m.read_at; }).map(function(m){ return m.id; });
+  const unreadIds = state.messages.filter(function(m){ return !m.group_id && m.sender_id===dealerId && m.recipient_id===state.profile.id && !m.read_at; }).map(function(m){ return m.id; });
   if(!unreadIds.length) return;
   try{
     const nowIso = new Date().toISOString();
@@ -11042,9 +11878,10 @@ async function markMessagesRead(dealerId){
 }
 async function sendChatMessage(){
   const dealerId = state.chatActiveDealerId;
+  const groupId = state.chatActiveGroupId;
   const text = (state.chatText||'').trim();
   const pending = state.chatPendingImage;
-  if(!dealerId || (!text && !pending)) return;
+  if((!dealerId && !groupId) || (!text && !pending)) return;
 
   state.chatText = '';
   let imageUrl = null;
@@ -11061,12 +11898,15 @@ async function sendChatMessage(){
   clearPendingChatImage();
   state.chatSendingImage = false;
 
+  const row = groupId
+    ? { sender_id: state.profile.id, group_id: groupId, body: text||null, image_url: imageUrl }
+    : { sender_id: state.profile.id, recipient_id: dealerId, body: text||null, image_url: imageUrl };
+
   try{
-    const { data, error } = await sb.from('messages')
-      .insert({ sender_id: state.profile.id, recipient_id: dealerId, body: text||null, image_url: imageUrl })
-      .select().single();
+    const { data, error } = await sb.from('messages').insert(row).select().single();
     if(error) throw error;
     state.messages.push(data);
+    if(groupId) markGroupSeenNow(groupId);
     render();
     scrollChatToBottom();
   } catch(e){ showToast('Could not send: '+(e.message||e), true); render(); }
@@ -11144,8 +11984,10 @@ function scrollToNetworkUnreadIfNeeded(){
 }
 async function refreshMessagesData(){
   if(!state.profile) return;
+  // RLS scopes this to rows where I'm sender/recipient OR a member of the
+  // row's group_id — see the comment in refreshAll() for why no .or() filter
+  // is needed here anymore.
   const { data, error } = await sb.from('messages').select('*')
-    .or('sender_id.eq.'+state.profile.id+',recipient_id.eq.'+state.profile.id)
     .order('created_at',{ascending:true});
   if(!error) state.messages = data || [];
   render();
@@ -11315,11 +12157,32 @@ function renderAdmin(){
 
 function renderChats(){
   if(state.chatActiveDealerId) return renderChatThread(state.chatActiveDealerId);
+  if(state.chatActiveGroupId) return renderGroupChatThread(state.chatActiveGroupId);
   const contacts = chatContacts();
-  return '<h1 class="page-title">Chats</h1>' +
-    '<p class="page-sub">Message your saved contacts who are on PhoneHub. Tap a contact to start chatting.</p>' +
+  return '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">' +
+      '<div><h1 class="page-title">Chats</h1><p class="page-sub">Message your saved contacts who are on PhoneHub, or start a group. Tap one to start chatting.</p></div>' +
+      '<button class="btn btn-accent" data-open-modal="newGroupChat">'+ICONS.plus+' New group</button>' +
+    '</div>' +
     '<div class="section"><div class="section-body table-scroll" style="padding:0;">' +
       (contacts.length ? contacts.map(function(c){
+        if(c.kind==='group'){
+          const last = lastMessageInGroup(c.groupId);
+          const unread = unreadCountInGroup(c.groupId);
+          const mine = last && last.sender_id===state.profile.id;
+          let previewText;
+          if(!last) previewText = 'No messages yet — say hello';
+          else if(last.deleted_at) previewText = (mine?'You: ':'')+'Message deleted';
+          else if(last.body) previewText = (mine?'You: ':'')+last.body;
+          else if(last.image_url) previewText = (mine?'You: ':'')+'📷 Photo';
+          else previewText = 'No messages yet — say hello';
+          return '<div class="search-row" data-open-group-chat="'+c.groupId+'" style="padding:14px 16px;">' +
+            '<div style="min-width:0;flex:1;">' +
+              '<div class="sr-main">👥 '+escapeHtml(c.name)+' <span style="font-size:10.5px;color:var(--text-faint);font-weight:400;">('+c.memberCount+')</span></div>' +
+              '<div class="sr-sub" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escapeHtml(previewText)+'</div>' +
+            '</div>' +
+            (unread>0 ? '<span class="badge" style="background:var(--accent);color:#10141C;flex-shrink:0;">'+unread+'</span>' : (last ? '<span style="font-size:10.5px;color:var(--text-faint);flex-shrink:0;">'+new Date(last.created_at).toLocaleDateString()+'</span>' : '')) +
+          '</div>';
+        }
         const last = lastMessageWith(c.dealerId);
         const unread = unreadCountWith(c.dealerId);
         const mine = last && last.sender_id===state.profile.id;
@@ -11332,12 +12195,12 @@ function renderChats(){
         const preview = previewText;
         return '<div class="search-row" data-open-chat="'+c.dealerId+'" style="padding:14px 16px;">' +
           '<div style="min-width:0;flex:1;">' +
-            '<div class="sr-main">'+escapeHtml(c.name)+'</div>' +
+            '<div class="sr-main">'+escapeHtml(c.name)+(isDealerOnline(c.dealerId)?' <span title="Online" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--success);vertical-align:1px;"></span>':'')+'</div>' +
             '<div class="sr-sub" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escapeHtml(preview)+'</div>' +
           '</div>' +
           (unread>0 ? '<span class="badge" style="background:var(--accent);color:#10141C;flex-shrink:0;">'+unread+'</span>' : (last ? '<span style="font-size:10.5px;color:var(--text-faint);flex-shrink:0;">'+new Date(last.created_at).toLocaleDateString()+'</span>' : '')) +
         '</div>';
-      }).join('') : ('<div class="empty">'+ICONS.empty+'<div>No linked contacts yet.<br/>Add one under Network → My contacts and pick a suggested registered dealer to link them — then they\'ll show up here.</div></div>')) +
+      }).join('') : ('<div class="empty">'+ICONS.empty+'<div>No linked contacts yet.<br/>Add one under Network → My contacts and pick a suggested registered dealer to link them, or start a group — then they\'ll show up here.</div></div>')) +
     '</div></div>';
 }
 
@@ -11441,6 +12304,7 @@ function renderModal(){
   if(m.name==='viewStockItem') return renderStockItemModal(m);
   if(m.name==='viewNetworkItem') return renderNetworkItemModal(m);
   if(m.name==='clearInventory') return renderClearInventoryModal();
+  if(m.name==='offlineQueueDetails') return renderOfflineQueueModal();
   return '';
 }
 
@@ -12147,6 +13011,37 @@ function attachHandlers(){
 
   const forceCacheUpdateBtn = document.getElementById('forceCacheUpdateBtn');
   if(forceCacheUpdateBtn) forceCacheUpdateBtn.addEventListener('click', forceCacheUpdate);
+
+  const offlineQueueDetailsBtn = document.getElementById('offlineQueueDetailsBtn');
+  if(offlineQueueDetailsBtn) offlineQueueDetailsBtn.addEventListener('click', function(){ openModal('offlineQueueDetails'); });
+  const offlineQueueRetryBtn = document.getElementById('offlineQueueRetryBtn');
+  if(offlineQueueRetryBtn) offlineQueueRetryBtn.addEventListener('click', function(){ processOfflineQueue(); });
+  const offlineQueueRetryAllBtn = document.getElementById('offlineQueueRetryAllBtn');
+  if(offlineQueueRetryAllBtn) offlineQueueRetryAllBtn.addEventListener('click', function(){ processOfflineQueue(); });
+  app.querySelectorAll('[data-retry-queue-item]').forEach(function(el){ el.addEventListener('click', async function(){
+    const id = el.getAttribute('data-retry-queue-item');
+    const item = state.offlineQueue.find(function(x){ return x.id===id; });
+    if(!item) return;
+    try{
+      await replayOfflineItem(item);
+      state.offlineQueue = state.offlineQueue.filter(function(x){ return x.id!==id; });
+      saveOfflineQueue(state.offlineQueue);
+      await refreshAll();
+      showToast('Synced successfully');
+    } catch(e){
+      item.attempts = (item.attempts||0)+1; item.lastError = (e && (e.message||String(e))) || 'Unknown error';
+      saveOfflineQueue(state.offlineQueue);
+      showToast('Still failing: '+(item.lastError), true);
+    }
+    render();
+  }); });
+  app.querySelectorAll('[data-discard-queue-item]').forEach(function(el){ el.addEventListener('click', function(){
+    const id = el.getAttribute('data-discard-queue-item');
+    state.offlineQueue = state.offlineQueue.filter(function(x){ return x.id!==id; });
+    saveOfflineQueue(state.offlineQueue);
+    showToast('Discarded — this item will not be synced');
+    render();
+  }); });
   const hamburgerBtn = document.getElementById('hamburgerBtn');
   if(hamburgerBtn) hamburgerBtn.addEventListener('click', function(){ state.mobileMenuOpen = true; render(); });
   const railCloseBtn = document.getElementById('railCloseBtn');
@@ -12467,9 +13362,11 @@ function attachHandlers(){
   }); });
 
   app.querySelectorAll('[data-open-chat]').forEach(function(el){ el.addEventListener('click', function(){ openChat(el.getAttribute('data-open-chat')); }); });
+  app.querySelectorAll('[data-open-group-chat]').forEach(function(el){ el.addEventListener('click', function(){ openGroupChat(el.getAttribute('data-open-group-chat')); }); });
   const chatBackBtn = document.getElementById('chatBackBtn');
   if(chatBackBtn) chatBackBtn.addEventListener('click', function(){
-    state.chatActiveDealerId = null; state.chatEditingId = null; state.chatConfirmDeleteId = null;
+    leaveTypingChannel(conversationKey());
+    state.chatActiveDealerId = null; state.chatActiveGroupId = null; state.chatEditingId = null; state.chatConfirmDeleteId = null;
     clearPendingChatImage();
     render();
   });
@@ -12479,6 +13376,7 @@ function attachHandlers(){
       state.chatText = e.target.value;
       e.target.style.height = 'auto';
       e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+      broadcastTyping();
     });
     chatInput.addEventListener('keydown', function(e){
       if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendChatMessage(); }
@@ -12787,20 +13685,33 @@ function attachHandlers(){
     if(!inventoryId){ showToast('Select an item to sell', true); return; }
     const price = Number(val('s-price'));
     if(!price){ showToast('Enter a sale price', true); return; }
+    const params = {
+      p_inventory_id: inventoryId, p_sale_price: price, p_customer_name: val('s-name'), p_customer_phone: val('s-phone'),
+      p_payment_method: val('s-payment'), p_staff: val('s-staff'), p_warranty_days: Number(val('s-warranty'))||0,
+      p_accessories: val('s-accessories'), p_notes: '',
+      p_imei: val('s-imei')||null, p_quantity: Number(val('s-quantity'))||1
+    };
     try{
-      const { data, error } = await sb.rpc('sell_phone', {
-        p_inventory_id: inventoryId, p_sale_price: price, p_customer_name: val('s-name'), p_customer_phone: val('s-phone'),
-        p_payment_method: val('s-payment'), p_staff: val('s-staff'), p_warranty_days: Number(val('s-warranty'))||0,
-        p_accessories: val('s-accessories'), p_notes: '',
-        p_imei: val('s-imei')||null, p_quantity: Number(val('s-quantity'))||1
-      });
+      const { data, error } = await sb.rpc('sell_phone', params);
       if(error) throw error;
       await refreshAll();
       state.saleModalQuery = ''; state.saleModalSelectedId = null; state.saleModalOpen = false;
       closeModal(); showToast('Sale logged — invoice downloading');
       const savedSale = Array.isArray(data) ? data[0] : data;
       if(savedSale) generateInvoicePDF(savedSale);
-    } catch(e){ showToast('Sale failed: '+e.message, true); render(); }
+    } catch(e){
+      if(isLikelyNetworkError(e)){
+        const item = state.inventory.find(function(p){ return p.id===inventoryId; });
+        applyOptimisticSaleQuantity(inventoryId, params.p_quantity);
+        enqueueOfflineWrite('sell_phone', params, { model: item ? item.model : null });
+        state.saleModalQuery = ''; state.saleModalSelectedId = null; state.saleModalOpen = false;
+        closeModal();
+        showToast('No connection — sale saved on this device and will sync automatically once you\'re back online');
+        render();
+      } else {
+        showToast('Sale failed: '+(e.message||e), true); render();
+      }
+    }
   }); });
 
   app.querySelectorAll('[data-save-supplier]').forEach(function(el){ el.addEventListener('click', async function(){
@@ -13047,7 +13958,15 @@ function attachHandlers(){
       state.bulkImportRows = []; state.bulkImportText=''; state.bulkImportSupplierId='';
       closeModal();
       showToast(toInsert.length+' phones imported'+(dupCount ? ' ('+dupCount+' duplicate'+(dupCount===1?'':'s')+' skipped)' : ''));
-    } catch(e){ showToast('Import failed: '+e.message, true); render(); }
+    } catch(e){
+      if(isLikelyNetworkError(e)){
+        enqueueOfflineWrite('bulk_insert_inventory', { rows: toInsert }, { itemType: 'phone' });
+        state.bulkImportRows = []; state.bulkImportText=''; state.bulkImportSupplierId='';
+        closeModal();
+        showToast('No connection — '+toInsert.length+' phones saved on this device and will import automatically once you\'re back online');
+        render();
+      } else { showToast('Import failed: '+(e.message||e), true); render(); }
+    }
   });
 
   const bliParseBtn = document.getElementById('bli-parse-btn');
@@ -13104,7 +14023,15 @@ function attachHandlers(){
       state.bulkImportLaptopRows = []; state.bulkImportLaptopText=''; state.bulkImportLaptopSupplierId='';
       closeModal();
       showToast(toInsert.length+' laptops imported'+(dupCount ? ' ('+dupCount+' duplicate'+(dupCount===1?'':'s')+' skipped)' : ''));
-     } catch(e){ showToast('Import failed: '+(e.message||e), true); render(); }
+     } catch(e){
+      if(isLikelyNetworkError(e)){
+        enqueueOfflineWrite('bulk_insert_inventory', { rows: toInsert }, { itemType: 'laptop' });
+        state.bulkImportLaptopRows = []; state.bulkImportLaptopText=''; state.bulkImportLaptopSupplierId='';
+        closeModal();
+        showToast('No connection — '+toInsert.length+' laptops saved on this device and will import automatically once you\'re back online');
+        render();
+      } else { showToast('Import failed: '+(e.message||e), true); render(); }
+    }
   });
 
   const bgiParseBtn = document.getElementById('bgi-parse-btn');
@@ -13161,7 +14088,15 @@ function attachHandlers(){
       state.bulkImportGadgetRows = []; state.bulkImportGadgetText=''; state.bulkImportGadgetSupplierId='';
       closeModal();
       showToast(toInsert.length+' gadgets imported'+(dupCount ? ' ('+dupCount+' duplicate'+(dupCount===1?'':'s')+' skipped)' : ''));
-    } catch(e){ showToast('Import failed: '+(e.message||e), true); render(); }
+    } catch(e){
+      if(isLikelyNetworkError(e)){
+        enqueueOfflineWrite('bulk_insert_inventory', { rows: toInsert }, { itemType: 'gadget' });
+        state.bulkImportGadgetRows = []; state.bulkImportGadgetText=''; state.bulkImportGadgetSupplierId='';
+        closeModal();
+        showToast('No connection — '+toInsert.length+' gadgets saved on this device and will import automatically once you\'re back online');
+        render();
+      } else { showToast('Import failed: '+(e.message||e), true); render(); }
+    }
   });
 
   ['calc-cost','calc-target','calc-min','calc-offer'].forEach(function(id){
@@ -13175,9 +14110,10 @@ function attachHandlers(){
   window.addEventListener('hashchange', applyHashTab);
   scrollToNetworkUnreadIfNeeded();
 }
-}
+
 
 applyTheme();
+setInterval(function(){ if(state.stage==='app') processOfflineQueue(); }, 25000); // background safety-net, in case the 'online' event doesn't fire on flaky (rather than fully dropped) connections
 init();
 })();
 </script>
@@ -13408,6 +14344,157 @@ begin
 end;
 $$;
 grant execute on function sell_phone(uuid,numeric,text,text,text,text,int,text,text) to authenticated;
+
+======================================================================================================================================================
+
+PhoneHub_Pro_Improvement_Suggestions.md
+
+# PhoneHub Pro — Improvement Suggestions
+
+_Compiled July 23, 2026_
+
+---
+
+## 1. Notification overload — reducing noise from broadcasts/requests
+
+**Problem:** Once many dealers are on the platform, every open-market broadcast or request pushes a notification to every other dealer. This gets noisy fast and risks people muting or uninstalling the app.
+
+**Status: implemented (see migration `20260723_broadcast_push_preferences.sql` and the updated `seller/index.html`)**
+
+- [x] **Split the trigger.** `notify_broadcast_push()` now only calls the push Edge Function for `visibility = 'private'` broadcasts (ones addressed directly to specific saved contacts). Open-market (`visibility = 'network'`) broadcasts no longer push to everyone by default — dealers still see them via the existing Network tab badge count and realtime subscription.
+- [x] **Opt-in for power dealers.** Added `dealers.notify_network_broadcasts` (default `false`). Surfaced as a toggle in the Notifications modal: _"Also alert me for open-market broadcasts."_ Dealers actively sourcing rare phones can turn this on; everyone else stays quiet by default.
+- [x] **Brand relevance filtering.** Added `dealers.brand_focus` (text array, recommended max 3). When a dealer has opted into network-broadcast pushes, they can narrow it to specific brands (e.g. "iPhone, Samsung") so they're not pushed for phones they don't deal in. Empty list = no filtering (push for everything they opted into).
+
+**Still worth considering, not yet built:**
+- **Digest instead of instant.** For dealers who want ambient awareness without instant pings, a scheduled digest (e.g. every 2 hours: "14 new broadcasts since your last check") via the existing `pg_cron` daily-alerts job, instead of a push per event.
+- **Reputation-weighted push.** Only push opted-in dealers about broadcasts from `trusted`/`elite` tier dealers (already computed in `dealer_reputation_view`), so new/unproven dealers' broadcasts stay in-app-only until they've built a track record.
+
+---
+
+## 2. Making the platform "irresistible" to Computer Village dealers
+
+Roughly in order of leverage:
+
+### a) Ship the anti-theft network — the strongest differentiator
+IMEI registration + a shared stolen-phone blacklist is the one feature no WhatsApp-based workflow can replicate. Even a lightweight MVP would be a genuine reason to switch, not just a nicer inventory sheet:
+- Register IMEI + ownership at sale (already partially supported — IMEI field exists)
+- "Mark as Stolen" button on a sale/IMEI record
+- Shared blacklist check triggered at trade-in, repair, or resale
+- Optional digital ownership transfer (QR code / web portal) for user-to-user resale
+
+### b) Lower login friction
+Email/password is an odd fit for a market that already lives on WhatsApp and phone numbers. Consider phone-number + OTP auth (Supabase supports this natively) as the primary signup/login path instead of email — removes "forgot password" friction and matches how dealers already identify each other.
+
+### c) Make the network effect visible and social
+- **Public leaderboard** using the existing `dealer_reputation_view` — "Top 10 dealers this month by fulfillment rate." Shareable, and markets the platform for you.
+- **"Founding member" badge** for the first 50–100 dealers, permanently visible on their profile/network listings — status matters in a tight-knit market.
+- **Referral mechanic** — a dealer who brings in 3 colleagues gets a free month of Pro tier.
+
+### d) Reduce the fear of switching
+- Explicitly market the existing RLS-based privacy in onboarding copy: _"Your prices, suppliers, and profit are never visible to anyone else — only what you choose to advertise."_
+- Offer one-click CSV export of a dealer's own inventory/sales at any time, so "what if I want to leave" is never a blocker to signing up.
+
+### e) Design for bad connectivity, not just slow connectivity
+Computer Village Wi-Fi/data can drop mid-transaction. Image compression is already handled well; consider also:
+- Queuing failed writes (sale logging, bulk import) locally in the browser
+- Auto-retry on reconnect, so a dropped connection never silently loses a logged sale
+
+### f) Bridge to WhatsApp rather than replace it outright, at first
+Dealers won't abandon WhatsApp overnight. A "share this broadcast to WhatsApp" button (pre-filled text + link back to the listing in-app) lets PhoneHub ride along inside existing habits instead of demanding a full behavior change on day one.
+
+### g) Anchor adoption with one respected, well-known dealer
+In a trust/reputation-driven market, a well-regarded shop visibly using and vouching for the app will do more for adoption than any feature list. Worth prioritizing outreach to one or two "anchor" dealers before a broader launch.
+
+---
+
+## Open questions / things to revisit later
+
+- Should the brand-focus filter also apply to the Network tab's default random-order listing (not just push notifications) — i.e. let dealers set a persistent "show me X brand first" preference?
+- Does the anti-theft blacklist need a formal dispute/appeal process (e.g. someone wrongly marked as receiving a stolen phone)?
+- At what dealer count does the free Supabase tier need to be revisited (500MB DB storage / 50k MAU)?
+
+
+## Improvements for the chat interface
+
+- Typing indicators / online status
+- Group chats
+
+Typing indicators / online status
+
+Approach: Use Supabase Realtime Presence rather than a DB table, so there's no extra write per keystroke and nothing to clean up.
+
+Each dealer joins a presence channel keyed to their own id on login (track({online_at: ...})); any contact who has them linked can subscribe to see "online" / "last seen."
+Typing uses a lightweight broadcast (not presence) on a per-conversation channel — debounce ~1.5s on keystroke, show "typing…" for ~3s after the last event, then auto-clear.
+Shown as a badge next to the contact name in the chat list and thread header; typing shows as a small line under the last bubble in #chatScroll.
+No schema changes required.
+Group chats
+
+Approach: Add conversation objects instead of overloading the existing 1:1 messages table.
+
+sql
+create table if not exists chat_groups (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  created_by uuid not null references dealers(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists chat_group_members (
+  group_id uuid not null references chat_groups(id) on delete cascade,
+  dealer_id uuid not null references dealers(id) on delete cascade,
+  joined_at timestamptz not null default now(),
+  primary key (group_id, dealer_id)
+);
+
+alter table messages add column if not exists group_id uuid references chat_groups(id) on delete cascade;
+alter table messages alter column recipient_id drop not null;
+alter table messages add constraint messages_target_check
+  check ((recipient_id is not null and group_id is null) or (recipient_id is null and group_id is not null));
+RLS: insert/select gated on exists (select 1 from chat_group_members where group_id = messages.group_id and dealer_id = auth.uid()).
+Realtime subscription keys off group_id instead of dealer pairs; chat_group_members also goes into the realtime publication so membership changes update live.
+notify_new_message_push() gets a group branch that fans out to every member except the sender, reusing the existing dealer_ids array push pattern.
+UI: chatContacts() merges 1:1 contacts and groups into one list; renderChatThread() accepts either a dealerId or groupId and swaps the header between a contact name and a group name + member count.
+
+
+Change barnd name to "dts GadgetHub"
+
+Good context — merging everything into one clean set, deduplicated. I've kept the strongest framing from each version where they overlapped.
+
+Flagship: Verified Sub-Dealer / Agent Network
+
+This is the centerpiece — it's the one thing WhatsApp structurally cannot replicate, and it flips the pitch from "pay for what you already have" to "make money you couldn't make before."
+
+How it works:
+
+A KYC'd, verified store owner ("Principal") approves one or more Sub-Dealers/Agents — people with no stock of their own who want to sell.
+The agent gets their own storefront in the Customer App — own name, photo, location — but it draws live from the Principal's real inventory, tagged "available via [Agent Name]."
+The agent shares their personal storefront link (WhatsApp status, Instagram, TikTok) — this is the viral loop that pulls in people who don't currently touch your app at all.
+On a closed sale, the app auto-splits the money: Principal gets cost + agreed margin, Agent gets an agreed commission (flat ₦ or %) — tracked for both sides, no manual accounting.
+Hard structural rule, enforced at signup: a sub-dealer links to exactly one Principal, and cannot themselves have sub-dealers. Two-tier tree only, never deeper. State this explicitly in the KYC flow as "retail agency, not MLM" — this protects you legally and protects trust in the platform.
+KYC on the sub-dealer (phone, ID, selfie, Principal's in-app consent confirmation) protects the Principal from impersonation and gives you a paper trail if an agent runs off with a customer's payment.
+
+Why it actually generates money, not just data:
+
+Agent earns commission with zero capital — the "come for free income, stay for the app" hook for the huge population of non-dealers in Computer Village who currently just refer customers informally for nothing.
+Principal gets sales volume they'd never get from their own shop floor or contact list, for free labor.
+The platform can charge here specifically because this money didn't exist before you built it — you're not asking anyone to start paying for inventory tracking they already get free.
+Near-term (low build effort, direct cash line)
+Transaction fee on sub-dealer sales — small % taken only when a sale actually closes through an agent's storefront. No sale, no fee. This is the natural monetization on top of the agent network above, not a separate idea.
+Sub-dealer KYC/verification fee — small one-time fee to get an agent verified and linked, framed as a "digital agent badge" rather than a tax. Pairs with a real ID-verification API (Smile ID, Youverify, etc.).
+Referral/affiliate links for ordinary customers — lighter than full agent onboarding: "share this phone's link, earn ₦2,000 if it sells." Much lower friction, and it's the funnel that surfaces your best future agents.
+Boosted/featured listings — dealers pay to rank a hot model first in Network Search or the Customer App browse view. Doesn't require any behavior change, just a small spend to sell faster.
+"Verified Dealer" trust badge — KYC'd dealers get a visible checkmark and rank higher in search. In a trust-driven market like Computer Village, status is genuinely something dealers will pay for once buyers start preferring badged shops.
+Sponsored broadcasts — importers or accessory brands pay to broadcast to the entire network, not just their own contacts — a paid version of the existing free broadcast feature, aimed upstream at wholesalers rather than individual dealers.
+Medium-term (needs a bit more trust/volume first)
+Extended warranty / device insurance upsell at checkout — partner with an insurer; offered as an optional add-on when logging a sale. Pure upside for the dealer, no cost or effort on their side, platform + dealer share the commission.
+Buy-now-pay-later for customers — partner with a BNPL provider; dealer gets paid in full immediately, customer pays in installments, platform/dealer split the financing fee. Also raises average sale size.
+Inventory/stock financing — once you've got 3–6 months of a dealer's real sales data (which only your app has — WhatsApp never will), partner with a fintech to offer short-term stock loans against that track record, Shopify-Capital-style. Capital, not sales volume, is often the actual bottleneck for these dealers, so this can be a bigger unlock than it sounds.
+Escrow / in-app payment take-rate — if you build payment collection into the flow (this also solves the trust gap in agent-to-customer-to-principal money movement, which is exactly where things break down without a formal system), take a small cut per transaction processed.
+Aggregated market data — anonymized pricing/demand trends sold to importers or manufacturers. Monetizes data you're already collecting without charging the dealers who generated it.
+Longer-term (needs real scale first)
+Group buying / bulk import pooling — aggregate demand across many dealers for the same model ("200 dealers want iPhone 15 128GB this week") to negotiate better import pricing than any single dealer could alone, and split the savings. Needs real platform volume to have negotiating leverage.
+Verified trade-in / buy-back desk — ties directly into the IMEI/anti-theft registry already planned. Platform runs or partners on a buy-back program; dealers earn a finder's fee for every trade-in they source, and it deepens the anti-theft network's value at the same time.
+Anti-theft network — freemium tier — basic IMEI registration/lookup stays free (drives adoption of the safety feature itself), but bulk/API-style verification for repair shops, importers, or high-volume dealers is a paid tier.
 
 ======================================================================================================================================================
 
@@ -14405,6 +15492,828 @@ $$;
 --    (or `where id = 'your-auth-user-id'` — find it in Authentication > Users)
 -- 3. Edit the two app_config rows in section 9 with your real Edge Function
 --    URL and webhook secret (or leave them if you already have push working).
+-- ============================================================
+
+-- ============================================================
+-- SUBDEALER / AGENT LINKING (from migrations/subdealer_linking.sql)
+-- ============================================================
+-- A sub-dealer is a dealer account with no inventory of their own,
+-- representing exactly one principal dealer's stock at any given time.
+-- Both sides must consent before a link goes active. Strictly two-tier.
+
+alter table dealers add column if not exists is_sub_dealer boolean not null default false;
+comment on column dealers.is_sub_dealer is
+  'True if this dealer account operates as a sub-dealer/agent — sells on behalf of a principal dealer''s stock, no inventory of their own. Can never itself be a principal to other sub-dealers.';
+
+create table if not exists sub_dealer_links (
+  id uuid primary key default gen_random_uuid(),
+  sub_dealer_id uuid not null references dealers(id) on delete cascade,
+  principal_dealer_id uuid not null references dealers(id) on delete cascade,
+  status text not null default 'pending'
+    check (status in ('pending','active','release_requested','ended','revoked')),
+  commission_type text check (commission_type in ('flat','percent')),
+  commission_value numeric,
+  requested_by text not null default 'sub_dealer' check (requested_by in ('sub_dealer','principal')),
+  ended_reason text check (
+    ended_reason is null or ended_reason in (
+      'rejected_by_principal','cancelled_by_sub_dealer',
+      'released_by_principal','revoked_by_principal'
+    )
+  ),
+  created_at timestamptz not null default now(),
+  activated_at timestamptz,
+  ended_at timestamptz,
+  check (sub_dealer_id <> principal_dealer_id)
+);
+
+create index if not exists idx_sdl_sub_dealer on sub_dealer_links(sub_dealer_id);
+create index if not exists idx_sdl_principal on sub_dealer_links(principal_dealer_id);
+
+-- Only one in-flight link per sub-dealer at a time (pending, active, or mid-release).
+create unique index if not exists uniq_inflight_link_per_subdealer
+  on sub_dealer_links(sub_dealer_id)
+  where status in ('pending','active','release_requested');
+
+-- Hard backstop: a sub-dealer can never be listed as someone else's principal.
+create or replace function check_subdealer_link_tiers()
+returns trigger language plpgsql as $$
+declare
+  v_principal_is_sub boolean;
+begin
+  select is_sub_dealer into v_principal_is_sub from dealers where id = new.principal_dealer_id;
+  if v_principal_is_sub then
+    raise exception 'A sub-dealer account cannot act as a principal for other sub-dealers';
+  end if;
+  return new;
+end; $$;
+
+drop trigger if exists trg_check_subdealer_link_tiers on sub_dealer_links;
+create trigger trg_check_subdealer_link_tiers before insert on sub_dealer_links
+for each row execute function check_subdealer_link_tiers();
+
+alter table sub_dealer_links enable row level security;
+
+drop policy if exists "sdl_select_related" on sub_dealer_links;
+create policy "sdl_select_related" on sub_dealer_links for select
+  using (sub_dealer_id = auth.uid() or principal_dealer_id = auth.uid() or is_admin());
+
+-- Sub-dealer requests a link to a principal.
+create or replace function request_subdealer_link(
+  p_principal_id uuid, p_commission_type text default null, p_commission_value numeric default null
+)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_row sub_dealer_links;
+  v_principal_is_sub boolean;
+  v_caller_is_principal_elsewhere boolean;
+begin
+  if p_principal_id = auth.uid() then
+    raise exception 'Cannot link to yourself';
+  end if;
+
+  select is_sub_dealer into v_principal_is_sub from dealers where id = p_principal_id;
+  if v_principal_is_sub then
+    raise exception 'That account is itself a sub-dealer and cannot take on sub-dealers of its own';
+  end if;
+
+  select exists(
+    select 1 from sub_dealer_links
+    where principal_dealer_id = auth.uid() and status in ('pending','active','release_requested')
+  ) into v_caller_is_principal_elsewhere;
+  if v_caller_is_principal_elsewhere then
+    raise exception 'You currently have your own sub-dealers linked to you — a dealer cannot be both a principal and a sub-dealer';
+  end if;
+
+  insert into sub_dealer_links (sub_dealer_id, principal_dealer_id, status, commission_type, commission_value, requested_by)
+  values (auth.uid(), p_principal_id, 'pending', p_commission_type, p_commission_value, 'sub_dealer')
+  returning * into v_row;
+
+  update dealers set is_sub_dealer = true where id = auth.uid() and is_sub_dealer is distinct from true;
+
+  return v_row;
+exception
+  when unique_violation then
+    raise exception 'You already have an active or pending principal link — end it first before requesting a new one';
+end; $$;
+grant execute on function request_subdealer_link(uuid, text, numeric) to authenticated;
+
+-- Principal approves a sub-dealer-initiated request.
+create or replace function approve_subdealer_link(
+  p_link_id uuid, p_commission_type text default null, p_commission_value numeric default null
+)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'active',
+        activated_at = now(),
+        commission_type = coalesce(p_commission_type, commission_type),
+        commission_value = coalesce(p_commission_value, commission_value)
+    where id = p_link_id and principal_dealer_id = auth.uid()
+      and status = 'pending' and requested_by = 'sub_dealer'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No pending request found for you to approve'; end if;
+  return v_row;
+end; $$;
+grant execute on function approve_subdealer_link(uuid, text, numeric) to authenticated;
+
+-- Principal rejects a sub-dealer-initiated request.
+create or replace function reject_subdealer_link(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'ended', ended_at = now(), ended_reason = 'rejected_by_principal'
+    where id = p_link_id and principal_dealer_id = auth.uid()
+      and status = 'pending' and requested_by = 'sub_dealer'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No pending request found for you to reject'; end if;
+  return v_row;
+end; $$;
+grant execute on function reject_subdealer_link(uuid) to authenticated;
+
+-- Sub-dealer withdraws their own still-pending request.
+create or replace function cancel_own_subdealer_request(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'ended', ended_at = now(), ended_reason = 'cancelled_by_sub_dealer'
+    where id = p_link_id and sub_dealer_id = auth.uid()
+      and status = 'pending' and requested_by = 'sub_dealer'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No pending request found to cancel'; end if;
+  return v_row;
+end; $$;
+grant execute on function cancel_own_subdealer_request(uuid) to authenticated;
+
+-- Principal invites a specific dealer to become their sub-dealer.
+create or replace function invite_subdealer_link(
+  p_subdealer_id uuid, p_commission_type text default null, p_commission_value numeric default null
+)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_row sub_dealer_links;
+  v_caller_is_sub boolean;
+begin
+  if p_subdealer_id = auth.uid() then
+    raise exception 'Cannot link to yourself';
+  end if;
+
+  select is_sub_dealer into v_caller_is_sub from dealers where id = auth.uid();
+  if v_caller_is_sub then
+    raise exception 'A sub-dealer account cannot invite sub-dealers of its own';
+  end if;
+
+  insert into sub_dealer_links (sub_dealer_id, principal_dealer_id, status, commission_type, commission_value, requested_by)
+  values (p_subdealer_id, auth.uid(), 'pending', p_commission_type, p_commission_value, 'principal')
+  returning * into v_row;
+
+  return v_row;
+exception
+  when unique_violation then
+    raise exception 'That dealer already has an active or pending principal link';
+end; $$;
+grant execute on function invite_subdealer_link(uuid, text, numeric) to authenticated;
+
+-- Invited sub-dealer accepts.
+create or replace function accept_subdealer_invite(
+  p_link_id uuid, p_commission_type text default null, p_commission_value numeric default null
+)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_row sub_dealer_links;
+  v_caller_is_principal_elsewhere boolean;
+begin
+  select exists(
+    select 1 from sub_dealer_links
+    where principal_dealer_id = auth.uid() and status in ('pending','active','release_requested')
+  ) into v_caller_is_principal_elsewhere;
+  if v_caller_is_principal_elsewhere then
+    raise exception 'You currently have your own sub-dealers linked to you — a dealer cannot be both a principal and a sub-dealer';
+  end if;
+
+  update sub_dealer_links
+    set status = 'active', activated_at = now(),
+        commission_type = coalesce(p_commission_type, commission_type),
+        commission_value = coalesce(p_commission_value, commission_value)
+    where id = p_link_id and sub_dealer_id = auth.uid()
+      and status = 'pending' and requested_by = 'principal'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No pending invite found for you to accept'; end if;
+
+  update dealers set is_sub_dealer = true where id = auth.uid() and is_sub_dealer is distinct from true;
+
+  return v_row;
+end; $$;
+grant execute on function accept_subdealer_invite(uuid, text, numeric) to authenticated;
+
+-- Invited sub-dealer declines.
+create or replace function decline_subdealer_invite(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'ended', ended_at = now(), ended_reason = 'cancelled_by_sub_dealer'
+    where id = p_link_id and sub_dealer_id = auth.uid()
+      and status = 'pending' and requested_by = 'principal'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No pending invite found to decline'; end if;
+  return v_row;
+end; $$;
+grant execute on function decline_subdealer_invite(uuid) to authenticated;
+
+-- Sub-dealer asks to leave their current active link (principal must approve release).
+create or replace function request_subdealer_release(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'release_requested'
+    where id = p_link_id and sub_dealer_id = auth.uid() and status = 'active'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No active link found to release'; end if;
+  return v_row;
+end; $$;
+grant execute on function request_subdealer_release(uuid) to authenticated;
+
+-- Principal approves the release.
+create or replace function approve_subdealer_release(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'ended', ended_at = now(), ended_reason = 'released_by_principal'
+    where id = p_link_id and principal_dealer_id = auth.uid() and status = 'release_requested'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No release request found for you to approve'; end if;
+  return v_row;
+end; $$;
+grant execute on function approve_subdealer_release(uuid) to authenticated;
+
+-- Principal can terminate a link at any stage unilaterally.
+create or replace function revoke_subdealer_link(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'revoked', ended_at = now(), ended_reason = 'revoked_by_principal'
+    where id = p_link_id and principal_dealer_id = auth.uid()
+      and status in ('pending','active','release_requested')
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No linkable request found for you to revoke'; end if;
+  return v_row;
+end; $$;
+grant execute on function revoke_subdealer_link(uuid) to authenticated;
+
+-- Convenience view — "my current link" for whichever side is calling.
+create or replace view my_subdealer_link_view
+  with (security_invoker = true) as
+  select
+    l.*,
+    dp.shop_name as principal_shop_name, dp.phone as principal_phone,
+    ds.shop_name as sub_dealer_shop_name, ds.phone as sub_dealer_phone
+  from sub_dealer_links l
+  join dealers dp on dp.id = l.principal_dealer_id
+  join dealers ds on ds.id = l.sub_dealer_id
+  where l.status in ('pending','active','release_requested');
+grant select on my_subdealer_link_view to authenticated;
+
+-- ============================================================
+-- DEALER CHAT (from migrations/20260724_add_dealer_chat.sql)
+-- ============================================================
+
+create table if not exists messages (
+  id uuid primary key default gen_random_uuid(),
+  sender_id uuid not null references dealers(id) on delete cascade,
+  recipient_id uuid not null references dealers(id) on delete cascade,
+  body text not null,
+  read_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_messages_sender on messages(sender_id);
+create index if not exists idx_messages_recipient on messages(recipient_id);
+create index if not exists idx_messages_conversation
+  on messages(least(sender_id, recipient_id), greatest(sender_id, recipient_id), created_at);
+
+alter table messages enable row level security;
+
+drop policy if exists "messages_select_own" on messages;
+create policy "messages_select_own" on messages for select
+  using (sender_id = auth.uid() or recipient_id = auth.uid());
+
+drop policy if exists "messages_insert_own" on messages;
+create policy "messages_insert_own" on messages for insert
+  with check (sender_id = auth.uid());
+
+drop policy if exists "messages_update_mark_read" on messages;
+create policy "messages_update_mark_read" on messages for update
+  using (recipient_id = auth.uid())
+  with check (recipient_id = auth.uid());
+
+drop policy if exists "messages_select_admin" on messages;
+create policy "messages_select_admin" on messages for select
+  using (is_admin());
+
+-- Add messages to realtime publication so both sides see new messages live.
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'messages'
+  ) then
+    alter publication supabase_realtime add table messages;
+  end if;
+end $$;
+
+-- Push notification for new chat messages.
+create or replace function notify_new_message_push()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_url text; v_secret text; v_sender_name text;
+begin
+  select value into v_url from app_config where key='edge_function_url';
+  select value into v_secret from app_config where key='edge_function_secret';
+  if v_url is null then return new; end if;
+
+  select shop_name into v_sender_name from dealers where id = new.sender_id;
+
+  perform net.http_post(
+    url := v_url,
+    headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', v_secret),
+    body := jsonb_build_object(
+      'dealer_id', new.recipient_id,
+      'title', 'New message from ' || coalesce(v_sender_name, 'a dealer'),
+      'body', left(new.body, 120),
+      'url', './#tab=chats', 'type', 'message'
+    )
+  );
+  return new;
+end; $$;
+
+drop trigger if exists trg_notify_new_message_push on messages;
+create trigger trg_notify_new_message_push after insert on messages
+for each row execute function notify_new_message_push();
+
+======================================================================================================================================================
+
+migrations\subdealer_linking.sql
+
+-- Migration: sub-dealer / agent linking — one active principal at a time
+--
+-- Model:
+--   - A "sub-dealer" is a dealer account with no inventory of their own,
+--     representing exactly one principal dealer's stock at any given time.
+--   - A sub-dealer can request a link to a principal (or a principal can
+--     invite a specific sub-dealer) — either way, BOTH sides must consent
+--     before the link goes 'active'.
+--   - Strictly two-tier: a sub-dealer can never themselves be a principal
+--     to other sub-dealers, and a dealer who already has sub-dealers under
+--     them cannot become someone else's sub-dealer. Enforced both in the
+--     RPCs (friendly error messages) and via a DB trigger (hard backstop).
+--   - Only ONE in-flight link (pending / active / release_requested) is
+--     allowed per sub-dealer at a time — enforced by a partial unique
+--     index. To switch principals, the sub-dealer must fully exit their
+--     current link first:
+--       1. Sub-dealer calls request_subdealer_release() on their active link
+--       2. Current principal calls approve_subdealer_release() to let them go
+--          (or the principal can immediately revoke_subdealer_link() any time,
+--          no consent needed from the sub-dealer for that direction)
+--       3. Sub-dealer is now free to request_subdealer_link() with a new
+--          principal, who must approve_subdealer_link() to activate it
+--   - Full history is kept (ended/revoked rows are never deleted) so both
+--     sides — and admins — can see past relationships.
+--
+-- NOT covered by this migration (deliberately out of scope for now):
+--   - KYC document upload/verification for sub-dealer accounts
+--   - Commission payout calculation / integration into sell_phone()
+--   - Any UI — this is the data + RPC layer only
+--
+-- Safe to re-run: uses IF NOT EXISTS / CREATE OR REPLACE / DROP ... IF EXISTS.
+-- Run in Supabase: Dashboard > SQL Editor > New query > paste > Run.
+-- ============================================================
+
+-- 1. Flag a dealer account as a sub-dealer/agent (no inventory of their own).
+--    Set automatically the first time a link request succeeds — see the
+--    RPCs below. Real KYC (ID + selfie + principal's explicit written
+--    consent) should gate this before any real money commission flows,
+--    but that's a separate feature to build on top of this.
+alter table dealers add column if not exists is_sub_dealer boolean not null default false;
+comment on column dealers.is_sub_dealer is
+  'True if this dealer account operates as a sub-dealer/agent — sells on behalf of a principal dealer''s stock, no inventory of their own. Can never itself be a principal to other sub-dealers (enforced by trg_check_subdealer_link_tiers).';
+
+-- 2. The link table itself.
+create table if not exists sub_dealer_links (
+  id uuid primary key default gen_random_uuid(),
+  sub_dealer_id uuid not null references dealers(id) on delete cascade,
+  principal_dealer_id uuid not null references dealers(id) on delete cascade,
+  status text not null default 'pending'
+    check (status in ('pending','active','release_requested','ended','revoked')),
+  commission_type text check (commission_type in ('flat','percent')),
+  commission_value numeric,
+  requested_by text not null default 'sub_dealer' check (requested_by in ('sub_dealer','principal')),
+  ended_reason text check (
+    ended_reason is null or ended_reason in (
+      'rejected_by_principal','cancelled_by_sub_dealer',
+      'released_by_principal','revoked_by_principal'
+    )
+  ),
+  created_at timestamptz not null default now(),
+  activated_at timestamptz,
+  ended_at timestamptz,
+  check (sub_dealer_id <> principal_dealer_id)
+);
+
+create index if not exists idx_sdl_sub_dealer on sub_dealer_links(sub_dealer_id);
+create index if not exists idx_sdl_principal on sub_dealer_links(principal_dealer_id);
+
+-- Only one in-flight link per sub-dealer at a time (pending, active, or
+-- mid-release). This is what makes the "clean handoff" model work — a
+-- second request simply cannot be created until the current one reaches a
+-- terminal state (ended/revoked). Race-condition safe since it's a real
+-- unique index, not an application-level check.
+create unique index if not exists uniq_inflight_link_per_subdealer
+  on sub_dealer_links(sub_dealer_id)
+  where status in ('pending','active','release_requested');
+
+-- 3. Hard backstop: a sub-dealer can never be listed as someone else's
+--    principal. (The RPCs below also check this up front for a friendlier
+--    error message — this trigger is the last line of defense against any
+--    direct insert bypassing the RPCs.)
+create or replace function check_subdealer_link_tiers()
+returns trigger language plpgsql as $$
+declare
+  v_principal_is_sub boolean;
+begin
+  select is_sub_dealer into v_principal_is_sub from dealers where id = new.principal_dealer_id;
+  if v_principal_is_sub then
+    raise exception 'A sub-dealer account cannot act as a principal for other sub-dealers';
+  end if;
+  return new;
+end; $$;
+
+drop trigger if exists trg_check_subdealer_link_tiers on sub_dealer_links;
+create trigger trg_check_subdealer_link_tiers before insert on sub_dealer_links
+for each row execute function check_subdealer_link_tiers();
+
+-- 4. RLS — read-only for the two parties involved (+ admin). All writes go
+--    through the security-definer functions below, which enforce the state
+--    machine and ownership checks manually. No direct insert/update
+--    policies, so a client can't hand-craft a row that skips a consent step.
+alter table sub_dealer_links enable row level security;
+
+drop policy if exists "sdl_select_related" on sub_dealer_links;
+create policy "sdl_select_related" on sub_dealer_links for select
+  using (sub_dealer_id = auth.uid() or principal_dealer_id = auth.uid() or is_admin());
+
+-- ------------------------------------------------------------
+-- 5. RPCs — sub-dealer-initiated request flow
+-- ------------------------------------------------------------
+
+-- Sub-dealer requests a link to a principal. Auto-flags the caller as a
+-- sub-dealer on first successful request. Blocks the request if the caller
+-- is currently someone else's principal (keeps the tree strictly two-level
+-- in both directions) or already has an in-flight link of their own.
+create or replace function request_subdealer_link(
+  p_principal_id uuid, p_commission_type text default null, p_commission_value numeric default null
+)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_row sub_dealer_links;
+  v_principal_is_sub boolean;
+  v_caller_is_principal_elsewhere boolean;
+begin
+  if p_principal_id = auth.uid() then
+    raise exception 'Cannot link to yourself';
+  end if;
+
+  select is_sub_dealer into v_principal_is_sub from dealers where id = p_principal_id;
+  if v_principal_is_sub then
+    raise exception 'That account is itself a sub-dealer and cannot take on sub-dealers of its own';
+  end if;
+
+  select exists(
+    select 1 from sub_dealer_links
+    where principal_dealer_id = auth.uid() and status in ('pending','active','release_requested')
+  ) into v_caller_is_principal_elsewhere;
+  if v_caller_is_principal_elsewhere then
+    raise exception 'You currently have your own sub-dealers linked to you — a dealer cannot be both a principal and a sub-dealer';
+  end if;
+
+  insert into sub_dealer_links (sub_dealer_id, principal_dealer_id, status, commission_type, commission_value, requested_by)
+  values (auth.uid(), p_principal_id, 'pending', p_commission_type, p_commission_value, 'sub_dealer')
+  returning * into v_row;
+
+  update dealers set is_sub_dealer = true where id = auth.uid() and is_sub_dealer is distinct from true;
+
+  return v_row;
+exception
+  when unique_violation then
+    raise exception 'You already have an active or pending principal link — end it first before requesting a new one';
+end; $$;
+grant execute on function request_subdealer_link(uuid, text, numeric) to authenticated;
+
+-- Principal approves a sub-dealer-initiated request.
+create or replace function approve_subdealer_link(
+  p_link_id uuid, p_commission_type text default null, p_commission_value numeric default null
+)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'active',
+        activated_at = now(),
+        commission_type = coalesce(p_commission_type, commission_type),
+        commission_value = coalesce(p_commission_value, commission_value)
+    where id = p_link_id and principal_dealer_id = auth.uid()
+      and status = 'pending' and requested_by = 'sub_dealer'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No pending request found for you to approve'; end if;
+  return v_row;
+end; $$;
+grant execute on function approve_subdealer_link(uuid, text, numeric) to authenticated;
+
+-- Principal rejects a sub-dealer-initiated request.
+create or replace function reject_subdealer_link(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'ended', ended_at = now(), ended_reason = 'rejected_by_principal'
+    where id = p_link_id and principal_dealer_id = auth.uid()
+      and status = 'pending' and requested_by = 'sub_dealer'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No pending request found for you to reject'; end if;
+  return v_row;
+end; $$;
+grant execute on function reject_subdealer_link(uuid) to authenticated;
+
+-- Sub-dealer withdraws their own still-pending request.
+create or replace function cancel_own_subdealer_request(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'ended', ended_at = now(), ended_reason = 'cancelled_by_sub_dealer'
+    where id = p_link_id and sub_dealer_id = auth.uid()
+      and status = 'pending' and requested_by = 'sub_dealer'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No pending request found to cancel'; end if;
+  return v_row;
+end; $$;
+grant execute on function cancel_own_subdealer_request(uuid) to authenticated;
+
+-- ------------------------------------------------------------
+-- 6. RPCs — principal-initiated invite flow (mirror of the above)
+-- ------------------------------------------------------------
+
+-- Principal invites a specific dealer to become their sub-dealer.
+create or replace function invite_subdealer_link(
+  p_subdealer_id uuid, p_commission_type text default null, p_commission_value numeric default null
+)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_row sub_dealer_links;
+  v_caller_is_sub boolean;
+begin
+  if p_subdealer_id = auth.uid() then
+    raise exception 'Cannot link to yourself';
+  end if;
+
+  select is_sub_dealer into v_caller_is_sub from dealers where id = auth.uid();
+  if v_caller_is_sub then
+    raise exception 'A sub-dealer account cannot invite sub-dealers of its own';
+  end if;
+
+  insert into sub_dealer_links (sub_dealer_id, principal_dealer_id, status, commission_type, commission_value, requested_by)
+  values (p_subdealer_id, auth.uid(), 'pending', p_commission_type, p_commission_value, 'principal')
+  returning * into v_row;
+
+  return v_row;
+exception
+  when unique_violation then
+    raise exception 'That dealer already has an active or pending principal link';
+end; $$;
+grant execute on function invite_subdealer_link(uuid, text, numeric) to authenticated;
+
+-- Invited sub-dealer accepts. Same two-tier / one-in-flight checks as
+-- request_subdealer_link(), since this is the moment they actually become
+-- a sub-dealer in practice.
+create or replace function accept_subdealer_invite(
+  p_link_id uuid, p_commission_type text default null, p_commission_value numeric default null
+)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_row sub_dealer_links;
+  v_caller_is_principal_elsewhere boolean;
+begin
+  select exists(
+    select 1 from sub_dealer_links
+    where principal_dealer_id = auth.uid() and status in ('pending','active','release_requested')
+  ) into v_caller_is_principal_elsewhere;
+  if v_caller_is_principal_elsewhere then
+    raise exception 'You currently have your own sub-dealers linked to you — a dealer cannot be both a principal and a sub-dealer';
+  end if;
+
+  update sub_dealer_links
+    set status = 'active', activated_at = now(),
+        commission_type = coalesce(p_commission_type, commission_type),
+        commission_value = coalesce(p_commission_value, commission_value)
+    where id = p_link_id and sub_dealer_id = auth.uid()
+      and status = 'pending' and requested_by = 'principal'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No pending invite found for you to accept'; end if;
+
+  update dealers set is_sub_dealer = true where id = auth.uid() and is_sub_dealer is distinct from true;
+
+  return v_row;
+end; $$;
+grant execute on function accept_subdealer_invite(uuid, text, numeric) to authenticated;
+
+-- Invited sub-dealer declines.
+create or replace function decline_subdealer_invite(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'ended', ended_at = now(), ended_reason = 'cancelled_by_sub_dealer'
+    where id = p_link_id and sub_dealer_id = auth.uid()
+      and status = 'pending' and requested_by = 'principal'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No pending invite found to decline'; end if;
+  return v_row;
+end; $$;
+grant execute on function decline_subdealer_invite(uuid) to authenticated;
+
+-- ------------------------------------------------------------
+-- 7. RPCs — ending an active link (the "clean handoff" mechanics)
+-- ------------------------------------------------------------
+
+-- Sub-dealer asks to leave their current active link. Does NOT end it
+-- immediately — the principal must approve the release. This gives the
+-- principal a chance to settle any outstanding commission/consignment
+-- balance before the relationship formally ends.
+create or replace function request_subdealer_release(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'release_requested'
+    where id = p_link_id and sub_dealer_id = auth.uid() and status = 'active'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No active link found to release'; end if;
+  return v_row;
+end; $$;
+grant execute on function request_subdealer_release(uuid) to authenticated;
+
+-- Principal approves the release. Once this runs, the sub-dealer is free
+-- to request/accept a link with a different principal.
+create or replace function approve_subdealer_release(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'ended', ended_at = now(), ended_reason = 'released_by_principal'
+    where id = p_link_id and principal_dealer_id = auth.uid() and status = 'release_requested'
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No release request found for you to approve'; end if;
+  return v_row;
+end; $$;
+grant execute on function approve_subdealer_release(uuid) to authenticated;
+
+-- Principal can terminate a link at ANY stage (pending, active, or
+-- mid-release) unilaterally — no consent needed from the sub-dealer for
+-- this direction, since a principal should always be able to cut off
+-- someone representing their stock immediately if something's wrong.
+create or replace function revoke_subdealer_link(p_link_id uuid)
+returns sub_dealer_links
+language plpgsql
+security definer set search_path = public
+as $$
+declare v_row sub_dealer_links;
+begin
+  update sub_dealer_links
+    set status = 'revoked', ended_at = now(), ended_reason = 'revoked_by_principal'
+    where id = p_link_id and principal_dealer_id = auth.uid()
+      and status in ('pending','active','release_requested')
+    returning * into v_row;
+
+  if v_row.id is null then raise exception 'No linkable request found for you to revoke'; end if;
+  return v_row;
+end; $$;
+grant execute on function revoke_subdealer_link(uuid) to authenticated;
+
+-- ------------------------------------------------------------
+-- 8. Convenience view — "my current link" for whichever side is calling.
+--    Scoped by the underlying table's RLS (security_invoker), so it only
+--    ever shows rows the caller is actually part of.
+-- ------------------------------------------------------------
+create or replace view my_subdealer_link_view
+  with (security_invoker = true) as
+  select
+    l.*,
+    dp.shop_name as principal_shop_name, dp.phone as principal_phone,
+    ds.shop_name as sub_dealer_shop_name, ds.phone as sub_dealer_phone
+  from sub_dealer_links l
+  join dealers dp on dp.id = l.principal_dealer_id
+  join dealers ds on ds.id = l.sub_dealer_id
+  where l.status in ('pending','active','release_requested');
+grant select on my_subdealer_link_view to authenticated;
+
+-- ============================================================
+-- After running this:
+-- - A dealer can call request_subdealer_link(principal_id) to ask to become
+--   someone's sub-dealer, or a principal can call
+--   invite_subdealer_link(subdealer_id) to invite a specific dealer.
+-- - Both sides need to be able to look up each other's dealer id — reuse
+--   the existing public_shops view / "search dealer directory" pattern
+--   already used for suppliers.linked_dealer_id in the Seller App.
+-- - Query my_subdealer_link_view (as the sub-dealer) to show "you're linked
+--   to X" / "pending approval from Y" / "free to link" in the UI, and query
+--   sub_dealer_links directly (as a principal) filtered to
+--   principal_dealer_id = auth.uid() to list all sub-dealers under them,
+--   past and present.
+-- - Commission calculation is NOT wired into sell_phone() yet — that's the
+--   next piece once this linking flow is tested, and it'll need to resolve
+--   which inventory rows a sub-dealer is allowed to sell (their active
+--   principal's stock only) and record a commission-owed entry per sale,
+--   likely reusing the consignment_payments pattern already in the schema.
+-- - Real KYC (ID + selfie + explicit written consent capture) for sub-dealer
+--   accounts is a separate feature to build before any real money changes
+--   hands on commission — this migration only handles the relationship
+--   state machine, not identity verification.
 -- ============================================================
 
 ======================================================================================================================================================
